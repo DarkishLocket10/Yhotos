@@ -1,0 +1,25 @@
+# Rust
+/target
+**/*.rs.bk
+*.pdb
+
+# Node (frontend islands)
+node_modules/
+dist/
+
+# Local config and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Editors and OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Test artefacts
+/fixtures/large/
+/bench-results/
