@@ -5,20 +5,25 @@
 
 pub mod access_sql;
 pub mod albums;
+pub mod audit;
 pub mod derivatives;
 pub mod flags;
 pub mod grants;
 pub mod groups;
 pub mod jobs;
 pub mod likes;
+pub mod mfa;
 pub mod photos;
 pub mod redirects;
+pub mod sessions;
 pub mod settings;
 pub mod share_links;
 pub mod tags;
 pub mod users;
 
 use secrecy::{ExposeSecret, SecretString};
+/// Connection type for composing repository calls in a transaction.
+pub use sqlx::{Error as PoolError, PgConnection};
 use sqlx::{
     PgPool,
     postgres::{PgConnectOptions, PgPoolOptions, PgSslMode},

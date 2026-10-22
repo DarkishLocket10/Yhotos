@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "CREATE ROLE yhotos_009_start_admin LOGIN IN ROLE yhotos_admin",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "d389d6b461ab882543fbb6ec851e1a97033542ce309386023a0e9caea9a17a18"
+}

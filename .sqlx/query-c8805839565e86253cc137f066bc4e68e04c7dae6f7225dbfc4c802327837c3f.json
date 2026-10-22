@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE pending_login SET expires_at=now()-interval '1 second' WHERE user_id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c8805839565e86253cc137f066bc4e68e04c7dae6f7225dbfc4c802327837c3f"
+}

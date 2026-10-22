@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM auth_lockout WHERE updated_at<clock_timestamp()-interval '1 day'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "c6e09837c585c32d907dcf334a4c20f536a23ea46ba04ca8d87e60584aa90c4a"
+}

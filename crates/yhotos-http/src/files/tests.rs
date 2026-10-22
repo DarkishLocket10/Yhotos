@@ -18,11 +18,12 @@ use yhotos_core::{
     GroupId, Slug, UserId,
     access::{Grant, Visibility},
 };
-use yhotos_db::{albums, grants};
+use yhotos_db::{DatabaseTls, Db, Role, albums, grants, groups, sessions, users};
 use yhotos_storage::Store;
 
 struct Fixture {
     _dir: tempfile::TempDir,
+    pool: PgPool,
     state: AppState,
     photo: photos::PhotoRow,
     hash: String,
@@ -82,9 +83,10 @@ impl Fixture {
             .unwrap();
         tokio::fs::write(path, &bytes).await.unwrap();
         let config = crate::tests::state_with_global_cap(false, 100_000, global_stream_cap).config;
-        let state = AppState::new(config, pool, store);
+        let state = AppState::new(config, pool.clone(), store, None);
         Self {
             _dir: dir,
+            pool,
             state,
             photo,
             hash,
@@ -102,13 +104,74 @@ impl Fixture {
     }
     async fn restrict(&self) {
         photos::set_visibility(
-            &mut self.state.pool.acquire().await.unwrap(),
+            &mut self.pool.acquire().await.unwrap(),
             &[self.photo.id],
             Visibility::Restricted,
         )
         .await
         .unwrap();
         self.state.files.invalidate_all();
+    }
+    async fn session(&mut self, groups: &[GroupId]) -> (UserId, String) {
+        use secrecy::SecretString;
+        use std::sync::Arc;
+        use yhotos_auth::{Token, TokenKind};
+
+        let mut conn = self.pool.acquire().await.unwrap();
+        let password = yhotos_auth::generate_temp_password();
+        let hash = yhotos_auth::hash_password(&password).unwrap();
+        let user = users::create(
+            &mut conn,
+            &Uuid::now_v7().to_string(),
+            &SecretString::from(hash.as_str()),
+            false,
+        )
+        .await
+        .unwrap();
+        for group in groups {
+            groups::add_member(&mut conn, *group, user.id)
+                .await
+                .unwrap();
+        }
+        let token = Token::generate();
+        let now = time::OffsetDateTime::now_utc();
+        sessions::create(
+            &mut conn,
+            &sessions::Session {
+                id: Uuid::now_v7(),
+                user_id: user.id,
+                admin: false,
+                created_at: now,
+                last_seen_at: now,
+                expires_at: now + time::Duration::days(90),
+                reauth_at: Some(now),
+                mfa_at: None,
+                ip_hash: token.hash(TokenKind::Session).as_bytes().to_vec(),
+                ua_class: "other".into(),
+                token_hash: token.hash(TokenKind::Session).as_bytes().to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+        let url = SecretString::from(self.pool.connect_options().to_url_lossy().to_string());
+        let db = Arc::new(
+            Db::connect(&url, Role::Public, 2, DatabaseTls::Disable)
+                .await
+                .unwrap(),
+        );
+        let auth = crate::auth::Auth::new(self.state.config, db.clone(), None)
+            .await
+            .unwrap();
+        self.state = AppState::new(
+            self.state.config,
+            db.pool().clone(),
+            self.state.store.clone(),
+            Some(auth),
+        );
+        (
+            user.id,
+            format!("__Host-ys={}", token.encode(TokenKind::Session)),
+        )
     }
 }
 fn req(path: &str) -> Request {
@@ -180,7 +243,7 @@ async fn public_derivative_headers_body_conditional_and_head(pool: PgPool) {
 
 #[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
 async fn denied_and_missing_are_byte_identical_and_granted_requests_are_private(pool: PgPool) {
-    let f = Fixture::new(pool).await;
+    let mut f = Fixture::new(pool).await;
     f.restrict().await;
     // Compare exact handler responses before request-specific nonce/id middleware.
     let app = bare(f.state.clone());
@@ -193,9 +256,9 @@ async fn denied_and_missing_are_byte_identical_and_granted_requests_are_private(
     assert_eq!(denied.status(), missing.status());
     assert_eq!(denied.headers(), missing.headers());
     assert_eq!(bytes(denied).await, bytes(missing).await);
-    let user = UserId::new();
+    let (user, cookie) = f.session(&[]).await;
     grants::grant_photo(
-        &mut f.state.pool.acquire().await.unwrap(),
+        &mut f.pool.acquire().await.unwrap(),
         f.photo.id,
         Grant::User(user),
     )
@@ -204,11 +267,9 @@ async fn denied_and_missing_are_byte_identical_and_granted_requests_are_private(
     f.state.files.invalidate_all();
     let app = crate::public_router(f.state.clone());
     let mut request = req(&f.derivative());
-    request.extensions_mut().insert(SessionIdentity::User {
-        id: user,
-        groups: vec![],
-        is_admin: false,
-    });
+    request
+        .headers_mut()
+        .insert(header::COOKIE, cookie.parse().unwrap());
     let response = app.clone().oneshot(request).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -335,6 +396,7 @@ async fn invalid_hashes_and_selectors_never_reach_database_or_missing_store() {
         original_state.config,
         original_state.pool.clone(),
         Store::open(dir.path()).unwrap(),
+        None,
     );
     dir.close().unwrap();
     state.pool.close().await;
@@ -870,7 +932,7 @@ async fn video_metadata_uses_hash_even_when_requested_codec_is_missing(pool: PgP
 
 #[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
 async fn ancestor_group_grants_deletion_cycles_and_duplicate_owners(pool: PgPool) {
-    let f = Fixture::new(pool.clone()).await;
+    let mut f = Fixture::new(pool.clone()).await;
     let mut conn = pool.acquire().await.unwrap();
     let root = albums::create(
         &mut conn,
@@ -889,20 +951,19 @@ async fn ancestor_group_grants_deletion_cycles_and_duplicate_owners(pool: PgPool
     .execute(&mut *conn)
     .await
     .unwrap();
-    let group = GroupId::new();
+    let group = groups::create(&mut conn, "Viewers").await.unwrap().id;
     grants::grant_album(&mut conn, root.id, Grant::Group(group))
         .await
         .unwrap();
     drop(conn);
+    let (_, cookie) = f.session(&[group]).await;
     let app = crate::public_router(f.state.clone());
     let response = app.clone().oneshot(req(&f.derivative())).await.unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     let mut allowed = req(&f.derivative());
-    allowed.extensions_mut().insert(SessionIdentity::User {
-        id: UserId::new(),
-        groups: vec![group],
-        is_admin: false,
-    });
+    allowed
+        .headers_mut()
+        .insert(header::COOKIE, cookie.parse().unwrap());
     let response = app.clone().oneshot(allowed).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -972,14 +1033,16 @@ async fn ancestor_group_grants_deletion_cycles_and_duplicate_owners(pool: PgPool
                 .unwrap();
         }
         f.state.files.invalidate_all();
-        let mut request = req(&f.derivative());
-        request.extensions_mut().insert(SessionIdentity::User {
-            id: UserId::new(),
-            groups: vec![],
-            is_admin: true,
-        });
+        let admin = Router::new()
+            .route("/i/{hash}/{name}", get(derivative))
+            .layer(Extension(SessionIdentity::User {
+                id: UserId::new(),
+                groups: vec![],
+                is_admin: true,
+            }))
+            .with_state(f.state.clone());
         assert_eq!(
-            app.clone().oneshot(request).await.unwrap().status(),
+            admin.oneshot(req(&f.derivative())).await.unwrap().status(),
             StatusCode::NOT_FOUND
         );
     }

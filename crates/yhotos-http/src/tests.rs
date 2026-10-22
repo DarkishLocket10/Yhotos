@@ -9,6 +9,7 @@ use axum::{
 use base64::{Engine, engine::general_purpose::STANDARD};
 use figment::Figment;
 use http_body_util::BodyExt;
+use secrecy::ExposeSecret;
 use std::net::SocketAddr;
 use tower::ServiceExt;
 use yhotos_config::Config;
@@ -21,7 +22,7 @@ pub(crate) fn state_with_global_cap(trust_proxy: bool, cheap: u32, global: u16) 
     let dir = tempfile::tempdir().unwrap();
     let f = Figment::new()
         .merge((
-            "database_url",
+            "database_url_public",
             format!("postgres://{}@localhost/test", uuid::Uuid::now_v7()),
         ))
         .merge((
@@ -31,6 +32,8 @@ pub(crate) fn state_with_global_cap(trust_proxy: bool, cheap: u32, global: u16) 
         .merge(("data_dir", dir.path().to_string_lossy().as_ref()))
         .merge(("public_base_url", "https://example.test"))
         .merge(("admin_listen", "127.0.0.1:8081"))
+        .merge(("admin_base_url", "https://admin.example.test:8443"))
+        .merge(("database_url_admin", "postgres://127.0.0.1/test"))
         .merge(("trust_proxy", trust_proxy))
         .merge(("global_stream_cap", global))
         .merge(("rate_limits.cheap_per_min", cheap));
@@ -41,6 +44,7 @@ pub(crate) fn state_with_global_cap(trust_proxy: bool, cheap: u32, global: u16) 
             .connect_lazy("postgres://127.0.0.1/test")
             .unwrap(),
         yhotos_storage::Store::open(dir.path()).unwrap(),
+        None,
     )
 }
 fn request(path: &str, ip: &str) -> Request<Body> {
@@ -82,10 +86,10 @@ fn security(headers: &HeaderMap, cross_origin: bool) {
         "max-age=63072000; includeSubDomains; preload"
     );
     assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
-    assert_eq!(
-        headers[header::REFERRER_POLICY],
-        "strict-origin-when-cross-origin"
-    );
+    assert!(matches!(
+        headers[header::REFERRER_POLICY].to_str().unwrap(),
+        "strict-origin-when-cross-origin" | "no-referrer"
+    ));
     assert!(
         headers["permissions-policy"]
             .to_str()
@@ -127,7 +131,12 @@ async fn health_is_minimal_and_server_header_is_removed() {
 #[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
 async fn templates_assets_and_errors_get_nonce_and_security_headers(pool: sqlx::PgPool) {
     let initial = state(false, 600);
-    let app = public_router(AppState::new(initial.config, pool, initial.store.clone()));
+    let app = public_router(AppState::new(
+        initial.config,
+        pool,
+        initial.store.clone(),
+        None,
+    ));
     let home = app
         .clone()
         .oneshot(request("/", "127.0.0.1:1"))
@@ -372,9 +381,8 @@ async fn admin_never_leaks_onto_public_listener() {
             .oneshot(request("/admin/healthz", "127.0.0.1:1"))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        security(response.headers(), false);
-        assert_eq!(body(response).await, "ok");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(response.headers()[header::LOCATION], "/admin/login");
     }
 }
 #[tokio::test(start_paused = true)]
@@ -424,18 +432,18 @@ async fn csrf_tokens_are_generated_validated_and_body_is_replayed() {
     );
     for (cookie_header, value, expected) in [
         (Some(cookie_pair.to_owned()), token, StatusCode::OK),
-        (None, token, StatusCode::BAD_REQUEST),
+        (None, token, StatusCode::FORBIDDEN),
         (
             Some(cookie_pair.to_owned()),
             other.form_value(),
-            StatusCode::BAD_REQUEST,
+            StatusCode::FORBIDDEN,
         ),
         (
             Some(format!("{cookie_pair}; {cookie_pair}")),
             token,
-            StatusCode::BAD_REQUEST,
+            StatusCode::FORBIDDEN,
         ),
-        (Some(cookie_pair.to_owned()), "bad", StatusCode::BAD_REQUEST),
+        (Some(cookie_pair.to_owned()), "bad", StatusCode::FORBIDDEN),
     ] {
         let mut req = request("/__test/form", "127.0.0.1:1");
         *req.method_mut() = axum::http::Method::POST;
@@ -452,4 +460,58 @@ async fn csrf_tokens_are_generated_validated_and_body_is_replayed() {
         assert_eq!(response.status(), expected);
         security(response.headers(), false);
     }
+}
+
+#[tokio::test]
+async fn auth_posts_share_a_bucket_and_get_forms_use_the_cheap_bucket() {
+    let state = state(false, 600);
+    let config = Box::leak(Box::new(Config {
+        rate_limits: yhotos_config::RateLimits {
+            auth_per_min: 1,
+            ..state.config.rate_limits
+        },
+        ..Config::from_figment(
+            figment::Figment::new()
+                .merge((
+                    "database_url_public",
+                    state.config.database_url_public.expose_secret(),
+                ))
+                .merge((
+                    "data_dir",
+                    std::env::current_dir().unwrap().to_string_lossy().as_ref(),
+                ))
+                .merge(("public_base_url", "https://example.test"))
+                .merge(("session_key", state.config.session_key.expose_secret()))
+                .merge(("admin_listen", "127.0.0.1:8081"))
+                .merge(("admin_base_url", "https://admin.example.test:8443"))
+                .merge(("database_url_admin", "postgres://127.0.0.1/test")),
+        )
+        .unwrap()
+    }));
+    let app = public_router(AppState::new(
+        config,
+        state.pool.clone(),
+        state.store.clone(),
+        None,
+    ));
+    for path in ["/login", "/login/mfa", "/u/security"] {
+        let response = app
+            .clone()
+            .oneshot(request(path, "127.0.0.1:1"))
+            .await
+            .unwrap();
+        assert_ne!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+    let mut first = request("/login/mfa", "127.0.0.1:1");
+    *first.method_mut() = axum::http::Method::POST;
+    assert_eq!(
+        app.clone().oneshot(first).await.unwrap().status(),
+        StatusCode::FORBIDDEN
+    );
+    let mut second = request("/u/security/passkey/start", "127.0.0.1:1");
+    *second.method_mut() = axum::http::Method::POST;
+    assert_eq!(
+        app.oneshot(second).await.unwrap().status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
 }

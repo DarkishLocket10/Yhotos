@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DROP ROLE IF EXISTS yhotos_009_start_public, yhotos_009_start_admin",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "f626ae23a128e3ff6bd588c4e4b5bd13cfeb303e16d37e527217db7bafc14324"
+}

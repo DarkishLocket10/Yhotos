@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS(SELECT FROM pg_stat_activity\n                WHERE datname=current_database() AND wait_event_type='Lock'\n                AND query LIKE 'WITH touched AS (%') AS \"blocked!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "blocked!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "6fee57635b365f9a968ef398bb924457f5aad78240128cc8c148f0df05de0179"
+}

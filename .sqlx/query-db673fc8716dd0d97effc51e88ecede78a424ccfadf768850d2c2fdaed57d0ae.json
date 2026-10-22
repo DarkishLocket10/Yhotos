@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM pending_login WHERE expires_at<clock_timestamp()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "db673fc8716dd0d97effc51e88ecede78a424ccfadf768850d2c2fdaed57d0ae"
+}

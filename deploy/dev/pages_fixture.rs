@@ -186,14 +186,16 @@ async fn main() -> Result<()> {
     let session = STANDARD.encode(format!("{}{}", uuid::Uuid::now_v7(), uuid::Uuid::now_v7()));
     let config = Box::leak(Box::new(yhotos_config::Config::from_figment(
         figment::Figment::new()
-            .merge(("database_url", url))
+            .merge(("database_url_public", url))
             .merge(("session_key", session))
             .merge(("data_dir", data.path().to_string_lossy().as_ref()))
             .merge(("public_base_url", "https://gallery.example"))
             .merge(("admin_listen", "127.0.0.1:8081"))
+            .merge(("admin_base_url", "https://admin.gallery.example"))
+            .merge(("database_url_admin", "postgres://127.0.0.1/test"))
             .merge(("rate_limits.cheap_per_min", 100_000)),
     )?));
-    let state = yhotos_http::AppState::new(config, db.pool().clone(), store);
+    let state = yhotos_http::AppState::new(config, db.pool().clone(), store, None);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:18011").await?;
     eprintln!("Fixture album: http://127.0.0.1:18011/a/gallery-fixture");
     axum::serve(

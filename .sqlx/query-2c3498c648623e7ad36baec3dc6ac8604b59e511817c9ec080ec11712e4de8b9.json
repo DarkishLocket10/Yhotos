@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE pg_authid SET rolpassword=(SELECT rolpassword FROM pg_authid WHERE rolname=current_user) WHERE rolname IN ('yhotos_009_start_public','yhotos_009_start_admin')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "2c3498c648623e7ad36baec3dc6ac8604b59e511817c9ec080ec11712e4de8b9"
+}

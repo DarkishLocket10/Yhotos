@@ -2,6 +2,7 @@
 
 //! Isolated public and admin routers, compiled templates and request controls.
 
+pub mod auth;
 pub mod error;
 pub mod files;
 pub mod middleware;
@@ -11,7 +12,7 @@ pub use state::{AppResources, AppState};
 mod static_assets;
 
 use axum::{
-    Router,
+    Extension, Router,
     http::{StatusCode, header},
     middleware::{from_fn, from_fn_with_state},
     response::IntoResponse,
@@ -37,8 +38,7 @@ pub fn public_router(state: AppState) -> Router {
     let files = Router::new()
         .route("/i/{hash}/{name}", get(files::derivative))
         .route("/o/{hash}/{name}", get(files::original))
-        .route("/v/{hash}/{name}", get(files::video))
-        .route_layer(from_fn(middleware::session::load));
+        .route("/v/{hash}/{name}", get(files::video));
     let router = Router::new()
         .route("/", get(pages::home))
         .route("/a/{*path}", get(pages::album))
@@ -47,7 +47,7 @@ pub fn public_router(state: AppState) -> Router {
         .route("/index.php", get(pages::legacy))
         .route("/picture.php", get(pages::legacy))
         .route_layer(from_fn(pages::privacy))
-        .route_layer(from_fn(middleware::session::load))
+        .merge(auth::routes(auth::Audience(false)))
         .route("/healthz", get(health).with_state(()))
         .route("/static/{*path}", get(static_assets::serve))
         .merge(files);
@@ -79,23 +79,31 @@ pub fn public_router(state: AppState) -> Router {
                 "late"
             }),
         );
-    stack(router, state)
+    stack(router, state, auth::Audience(false))
 }
 
 /// Compiles only with `admin`, and must be served on the separate admin socket.
 #[cfg(feature = "admin")]
 pub fn admin_router(state: AppState) -> Router {
     stack(
-        Router::new().route("/admin/healthz", get(health).with_state(())),
+        Router::new()
+            .merge(auth::routes(auth::Audience(true)))
+            .route("/admin/healthz", get(health))
+            .route("/admin/", get(health))
+            .route("/admin/setup-mfa", get(auth::security::setup))
+            .route("/static/{*path}", get(static_assets::serve)),
         state,
+        auth::Audience(true),
     )
 }
 
-fn stack(router: Router<AppState>, state: AppState) -> Router {
+fn stack(router: Router<AppState>, state: AppState, audience: auth::Audience) -> Router {
     let limits = RateLimiter::new(state.config.rate_limits, state.config.trust_proxy);
     router
         .fallback(|| async { HttpError::NotFound })
-        .layer(from_fn(middleware::csrf::protect))
+        .layer(from_fn_with_state(state.clone(), middleware::session::load))
+        .layer(from_fn_with_state(state.clone(), middleware::csrf::protect))
+        .layer(Extension(audience))
         .layer(from_fn_with_state(limits, middleware::rate_limit::limit))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,

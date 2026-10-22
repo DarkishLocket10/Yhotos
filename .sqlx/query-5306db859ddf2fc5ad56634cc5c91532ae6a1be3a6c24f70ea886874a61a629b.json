@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO pending_webauthn(binding_id,user_id,kind,state) VALUES($1,$2,$3,$4) ON CONFLICT(binding_id,kind) DO UPDATE SET state=EXCLUDED.state,user_id=EXCLUDED.user_id,expires_at=clock_timestamp()+interval '5 minutes'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5306db859ddf2fc5ad56634cc5c91532ae6a1be3a6c24f70ea886874a61a629b"
+}

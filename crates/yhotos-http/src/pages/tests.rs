@@ -9,28 +9,72 @@ use axum::{body::Body, extract::ConnectInfo, http::Request};
 use flate2::{Compression, write::GzEncoder};
 use http_body_util::BodyExt;
 use sqlx::{ConnectOptions, PgPool};
-use std::{io::Write, net::SocketAddr};
+use std::{io::Write, net::SocketAddr, sync::Arc};
 use tower::ServiceExt;
 use uuid::Uuid;
+use yhotos_auth::{Token, TokenKind};
 use yhotos_core::{
     AlbumId, PhotoId, UserId,
     access::{Grant, ShareTarget, Visibility},
 };
-use yhotos_db::grants;
+use yhotos_db::{DatabaseTls, Db, Role, grants, sessions, users};
 
 struct Fixture {
     state: AppState,
     album: AlbumId,
     photos: Vec<ShortId>,
     user: UserId,
+    cookie: String,
 }
 impl Fixture {
     async fn new(pool: PgPool, count: usize) -> Self {
         let initial = crate::tests::state(false, 100_000);
-        let state = AppState::new(initial.config, pool, initial.store.clone());
+        let url = pool.connect_options().to_url_lossy().to_string().into();
+        let db = Arc::new(
+            Db::connect(&url, Role::Public, 4, DatabaseTls::Disable)
+                .await
+                .unwrap(),
+        );
+        let auth = crate::auth::Auth::new_for_tests(initial.config, db, None)
+            .await
+            .unwrap();
+        let state = AppState::new(initial.config, pool, initial.store.clone(), Some(auth));
         let mut conn = state.pool.acquire().await.unwrap();
         let album = AlbumId(Uuid::from_u128(100));
-        let user = UserId(Uuid::from_u128(200));
+        let password = yhotos_auth::generate_temp_password();
+        let hash = yhotos_auth::PasswordHasher::for_tests()
+            .hash_password(&password)
+            .unwrap();
+        let user = users::create(
+            &mut conn,
+            &Uuid::now_v7().to_string(),
+            &hash.as_str().into(),
+            false,
+        )
+        .await
+        .unwrap()
+        .id;
+        let token = Token::generate();
+        let now = time::OffsetDateTime::now_utc();
+        sessions::create(
+            &mut conn,
+            &sessions::Session {
+                id: Uuid::now_v7(),
+                user_id: user,
+                admin: false,
+                created_at: now,
+                last_seen_at: now,
+                expires_at: now + time::Duration::days(1),
+                reauth_at: Some(now),
+                mfa_at: None,
+                ip_hash: token.hash(TokenKind::Session).as_bytes().to_vec(),
+                ua_class: "other".into(),
+                token_hash: token.hash(TokenKind::Session).as_bytes().to_vec(),
+            },
+        )
+        .await
+        .unwrap();
+        let cookie = format!("__Host-ys={}", token.encode(TokenKind::Session));
         sqlx::query!("INSERT INTO albums(id,slug,title,description) VALUES($1,'gallery','Fixture gallery','Photos from the garden')",album.0).execute(&mut *conn).await.unwrap();
         let mut photos = Vec::new();
         for i in 0..count {
@@ -70,6 +114,7 @@ impl Fixture {
             album,
             photos,
             user,
+            cookie,
         }
     }
     fn request(path: &str) -> Request<Body> {
@@ -79,11 +124,18 @@ impl Fixture {
         req
     }
     async fn get(&self, path: &str) -> Response {
-        self.get_as(path, SessionIdentity::Anonymous).await
+        self.send(path, false).await
     }
-    async fn get_as(&self, path: &str, identity: SessionIdentity) -> Response {
+    async fn get_as_user(&self, path: &str) -> Response {
+        self.send(path, true).await
+    }
+    async fn send(&self, path: &str, authenticated: bool) -> Response {
         let mut request = Self::request(path);
-        request.extensions_mut().insert(identity);
+        if authenticated {
+            request
+                .headers_mut()
+                .insert(header::COOKIE, self.cookie.parse().unwrap());
+        }
         crate::public_router(self.state.clone())
             .oneshot(request)
             .await
@@ -155,12 +207,7 @@ async fn album_snapshots_anonymous_and_user_with_grant(pool: PgPool) {
         "album_granted",
         render_album(&granted, 1, PageSort::Taken, &context()).unwrap()
     );
-    let mut req = Fixture::request("/a/gallery");
-    req.extensions_mut().insert(identity);
-    let response = crate::public_router(f.state.clone())
-        .oneshot(req)
-        .await
-        .unwrap();
+    let response = f.get_as_user("/a/gallery").await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
         response.headers()[header::CACHE_CONTROL],
@@ -600,12 +647,7 @@ async fn legacy_visibility_matches_pages_for_targets_and_ancestors(pool: PgPool)
     grants::grant_photo(&mut conn, photo, Grant::User(f.user))
         .await
         .unwrap();
-    let user = SessionIdentity::User {
-        id: f.user,
-        groups: vec![],
-        is_admin: false,
-    };
-    let allowed = f.get_as(photo_url, user.clone()).await;
+    let allowed = f.get_as_user(photo_url).await;
     assert_eq!(allowed.status(), StatusCode::MOVED_PERMANENTLY);
     assert_eq!(
         allowed.headers()[header::LOCATION],
@@ -636,8 +678,8 @@ async fn legacy_visibility_matches_pages_for_targets_and_ancestors(pool: PgPool)
         "/index.php?/category/13",
         photo_url,
     ] {
-        for identity in [SessionIdentity::Anonymous, user.clone()] {
-            let denied = f.get_as(url, identity).await;
+        for authenticated in [false, true] {
+            let denied = f.send(url, authenticated).await;
             assert_eq!(denied.status(), StatusCode::NOT_FOUND);
             assert!(!denied.headers().contains_key(header::LOCATION));
             assert_eq!(body(denied).await, missing);
@@ -651,7 +693,7 @@ async fn legacy_visibility_matches_pages_for_targets_and_ancestors(pool: PgPool)
         ("/index.php?/category/13", "/a/gallery/child".to_owned()),
         (photo_url, format!("/p/{}", f.photos[0])),
     ] {
-        let allowed = f.get_as(url, user.clone()).await;
+        let allowed = f.get_as_user(url).await;
         assert_eq!(allowed.status(), StatusCode::MOVED_PERMANENTLY);
         assert_eq!(allowed.headers()[header::LOCATION], destination);
     }

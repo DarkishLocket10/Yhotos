@@ -1050,3 +1050,41 @@ async fn two_claimers_ten_jobs_no_double_claim(pool: PgPool) {
         10
     );
 }
+
+#[sqlx::test(migrations = "./migrations")]
+async fn user_creation_and_lookup_share_username_normalization(pool: PgPool) {
+    let mut c = pool.acquire().await.unwrap();
+    let hash = secret();
+    let user = users::create(&mut c, " \u{2003}e\u{301} \t", &hash, false)
+        .await
+        .unwrap();
+    assert_eq!(user.username, "é");
+    assert_eq!(
+        users::get_by_username(&mut c, " e\u{301} ")
+            .await
+            .unwrap()
+            .unwrap()
+            .id,
+        user.id
+    );
+    assert!(users::create(&mut c, "é", &hash, false).await.is_err());
+    for invalid in [
+        String::new(),
+        " \t\u{2003}".into(),
+        "x\0y".into(),
+        "x".repeat(65),
+    ] {
+        assert!(matches!(
+            users::create(&mut c, &invalid, &hash, false).await,
+            Err(yhotos_db::DbError::InvalidInput)
+        ));
+    }
+    let longest = "é".repeat(64);
+    assert_eq!(
+        users::create(&mut c, &longest, &hash, false)
+            .await
+            .unwrap()
+            .username,
+        longest
+    );
+}

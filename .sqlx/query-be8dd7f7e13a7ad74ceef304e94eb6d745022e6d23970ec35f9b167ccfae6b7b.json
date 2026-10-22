@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE auth_lockout SET state=$2,updated_at=clock_timestamp() WHERE key=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "be8dd7f7e13a7ad74ceef304e94eb6d745022e6d23970ec35f9b167ccfae6b7b"
+}

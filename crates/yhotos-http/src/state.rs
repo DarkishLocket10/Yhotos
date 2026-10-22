@@ -1,6 +1,6 @@
 //! Startup resources shared by all requests and router clones.
 
-use crate::files::FileCache;
+use crate::{auth::Auth, files::FileCache};
 use sqlx::PgPool;
 use std::{ops::Deref, sync::Arc};
 use yhotos_config::Config;
@@ -14,6 +14,8 @@ pub struct AppState(Arc<AppResources>);
 pub struct AppResources {
     /// Leaked once at startup so every handler borrows the same configuration.
     pub config: &'static Config,
+    /// Shared authentication services; absent only in isolated handler tests.
+    pub auth: Option<Arc<Auth>>,
     /// Role-scoped PostgreSQL connections for cold file lookups.
     pub pool: PgPool,
     /// Canonical content-addressed storage root.
@@ -30,9 +32,15 @@ impl Deref for AppState {
 impl AppState {
     /// Shares metadata and stream caps: four per IP and the configured global cap.
     #[must_use]
-    pub fn new(config: &'static Config, pool: PgPool, store: Store) -> Self {
+    pub fn new(
+        config: &'static Config,
+        pool: PgPool,
+        store: Store,
+        auth: Option<Arc<Auth>>,
+    ) -> Self {
         Self::from(AppResources {
             config,
+            auth,
             pool,
             store,
             files: FileCache::new(4, config.global_stream_cap),

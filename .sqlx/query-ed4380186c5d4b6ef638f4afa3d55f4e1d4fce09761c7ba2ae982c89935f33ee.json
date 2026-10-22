@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM pending_webauthn WHERE expires_at<clock_timestamp()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "ed4380186c5d4b6ef638f4afa3d55f4e1d4fce09761c7ba2ae982c89935f33ee"
+}
