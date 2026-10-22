@@ -1,0 +1,5 @@
+# LLVM's libFuzzer runtime carries NCSA alongside its Rust wrapper's MIT/Apache license.
+# This exception is restricted to the fuzz-only runtime and this pinned version.
+exceptions = [
+    { crate = "libfuzzer-sys@0.4.13", allow = ["NCSA"] },
+]

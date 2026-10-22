@@ -10,3 +10,8 @@ workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
+yhotos-auth = { path = "../yhotos-auth" }
+
+[[bench]]
+name = "auth"
+harness = false
