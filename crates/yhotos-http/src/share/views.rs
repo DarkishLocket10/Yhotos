@@ -44,7 +44,14 @@ pub(super) fn page(
     let csrf = CsrfToken::for_page(headers)?;
     let context = pages::context(nonce, state)?;
     let html = match &s.landing.page {
-        LandingPage::Album(page) => pages::render_album(page, number, sort, &context)?,
+        LandingPage::Album(page) => pages::render_album_for(
+            page,
+            number,
+            sort,
+            &context,
+            &crate::middleware::session::SessionIdentity::Anonymous,
+            &super::Links(vec![super::scoped(&s.landing.link)]),
+        )?,
         LandingPage::Photo(page) => {
             let mut page = page.clone();
             page.chain.clear();

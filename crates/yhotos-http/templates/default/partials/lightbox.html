@@ -1,0 +1,10 @@
+<dialog id="lightbox" aria-labelledby="lightbox-title" aria-describedby="lightbox-status">
+<div class="lightbox-toolbar"><h2 id="lightbox-title"></h2><button type="button" data-close aria-label="Close photo viewer">Close</button></div>
+<div class="lightbox-stage" data-stage><picture data-picture><img data-image alt="" width="4" height="3" decoding="async"></picture></div>
+<nav aria-label="Lightbox navigation"><button type="button" data-previous aria-label="Previous photo">Previous</button><button type="button" data-next aria-label="Next photo">Next</button></nav>
+<div class="lightbox-tools"><button type="button" data-zoom aria-label="Zoom photo" aria-pressed="false">Zoom</button><button type="button" data-info aria-expanded="false" aria-controls="lightbox-info">Photo details</button>{% if download %}<button type="button" data-download aria-expanded="false" aria-controls="lightbox-downloads">Download photo</button>{% endif %}
+{% if like %}<button type="button" data-like aria-pressed="false" hidden>Like photo</button>{% endif %}{% if flag %}<button type="button" data-flag aria-pressed="false" hidden>Flag photo for review</button>{% endif %}
+<button type="button" data-share>Copy photo link</button><button type="button" data-slideshow aria-pressed="false">Play slideshow</button><button type="button" data-fullscreen>Enter fullscreen</button></div>
+<section id="lightbox-info" aria-label="Photo details" hidden><p data-description></p><dl data-details></dl></section>{% if download %}<ul id="lightbox-downloads" aria-label="Download sizes" hidden></ul>{% endif %}
+<p id="lightbox-status" role="status" aria-live="polite"></p>
+</dialog>

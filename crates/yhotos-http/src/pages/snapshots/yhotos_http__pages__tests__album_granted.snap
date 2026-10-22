@@ -1,6 +1,6 @@
 ---
 source: crates/yhotos-http/src/pages/tests.rs
-expression: "render_album(&granted, 1, PageSort::Taken, &context()).unwrap()"
+expression: "snapshot_html(render_album(&granted, 1, PageSort::Taken, &context()).unwrap())"
 ---
 <!doctype html>
 <html lang="en">
@@ -24,7 +24,7 @@ expression: "render_album(&granted, 1, PageSort::Taken, &context()).unwrap()"
 
 <form method="get" class="sort-form"><label for="sort">Sort photos</label><select name="sort" id="sort">
 <option value="taken" selected>Date taken</option><option value="posted">Date posted</option><option value="name">Name</option><option value="manual">Manual order</option></select><button type="submit">Apply sorting</button></form>
-<p>3 photos</p><section aria-label="Photos" class="photo-grid"><div class="grid-row"><a class="cell" id="cell0" href="/p/aaaaaaaaaaad?sort=taken"><picture>
+<p>3 photos</p><section aria-label="Photos" class="photo-grid"><div class="grid-row"><a data-photo-link class="cell" id="cell0" href="/p/aaaaaaaaaaad?sort=taken"><picture>
 
 
 
@@ -37,7 +37,7 @@ expression: "render_album(&granted, 1, PageSort::Taken, &context()).unwrap()"
 <source type="image/jxl" srcset="/i/7aa906a1ba51c165954350845f56deb1385f7b9d4dabdf3858fd6e88ff5e2d8e/small.jxl 640w, /i/45ae236d38a8d21cbc2be69ebb33c66548a040728ee3e7ecd8b33e815ba0457b/medium.jxl 1280w, /i/925a971de6226453fcd82b650340fe06fafe9c8780e7a89ac07766d9fdad813c/large.jxl 2048w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.441379), 530px">
 <source type="image/avif" srcset="/i/6cf3e54a5c9e927cf86865f4ff0a79ad85c4534d32d297fdf528077d6c7d067b/small.avif 640w, /i/e164bf7cd70e04ca13d0ce157c53c8cd8a7222ee82c9db08bf8a4bed04bcd094/medium.avif 1280w, /i/7ef08270b189090c374302a6c1103ca40eb7ec729242fcbb360024b945931b85/large.avif 2048w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.441379), 530px">
 <img src="/i/731e071cb526f2fd8f6620fa108872b432b6940df30c53ddcbe893ac702c6e36/medium.jpeg" srcset="/i/3ea375a133d3ff442837481f8684264a3d59433215687ee4ed65edd662ef3306/small.jpeg 640w, /i/731e071cb526f2fd8f6620fa108872b432b6940df30c53ddcbe893ac702c6e36/medium.jpeg 1280w, /i/35d66f3f200f0a561284881a0d1346e52c538d97f140898f1d3a3ff060cb4235/large.jpeg 2048w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.441379), 530px" width="1600" height="900" loading="eager" decoding="async" alt="Photo 01" data-thumbhash="AAgCBwAAAAAAAAAAAAAAAAAAAAAAAAAA">
-</picture><span class="badge">Play video</span></a><a class="cell" id="cell1" href="/p/aaaaaaaaaaac?sort=taken"><picture>
+</picture><span class="badge">Play video</span></a><a data-photo-link class="cell" id="cell1" href="/p/aaaaaaaaaaac?sort=taken"><picture>
 
 
 
@@ -50,7 +50,7 @@ expression: "render_album(&granted, 1, PageSort::Taken, &context()).unwrap()"
 <source type="image/jxl" srcset="/i/f164205fdcd05ae1fb296713aed7a3c851a54b653a7d192431875e83b045308a/small.jxl 640w, /i/9a7129b6a4a4f10bd5eb1404fe569d9f12ee1147374eaed6451cbb0d1500c7e4/medium.jxl 1280w, /i/b7f5f8781a9aa593e7e5780d7db190f0527206051a3a6afb77c40f68d3e515e8/large.jxl 2048w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.186207), 223px">
 <source type="image/avif" srcset="/i/b1a550371a9c3f719760d5b606cf0e23b6b1544ecf77d05227f3a33423aa2268/small.avif 640w, /i/dddea048532a7231621ea492ddf09438d96d86482e32de0c60fccd7de385661c/medium.avif 1280w, /i/ccd3ed994194bf0568838d7f4a0790df319b50d50223c3e8e98522d2ea9bb3b4/large.avif 2048w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.186207), 223px">
 <img src="/i/37f87f33ef65612185943e0fffa399acd6138ce96884cf302d1abbd60e191d1f/medium.jpeg" srcset="/i/28c5872a55a7e9fa8d04af8583eec3df258cba7cc78c4b5916d09fc4bf931ae3/small.jpeg 640w, /i/37f87f33ef65612185943e0fffa399acd6138ce96884cf302d1abbd60e191d1f/medium.jpeg 1280w, /i/600c183ed7648d5fb90b923a4287fe24342a31009da7f0bba0ae3e2ab68ea5d1/large.jpeg 2048w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.186207), 223px" width="900" height="1200" loading="eager" decoding="async" alt="Photo 02" data-thumbhash="AAgCBwAAAAAAAAAAAAAAAAAAAAAAAAAA">
-</picture><span class="badge">RAW</span></a><a class="cell" id="cell2" href="/p/aaaaaaaaaaab?sort=taken"><picture>
+</picture><span class="badge">RAW</span></a><a data-photo-link class="cell" id="cell2" href="/p/aaaaaaaaaaab?sort=taken"><picture>
 
 
 
@@ -66,6 +66,16 @@ expression: "render_album(&granted, 1, PageSort::Taken, &context()).unwrap()"
 </picture></a></div></section>
 
 <nav aria-label="Pagination" class="pagination"><span>Page 1</span></nav>
-<script type="application/json" nonce="fixture-nonce" id="gallery-data">{"photos":[{"id":"aaaaaaaaaaad","title":"Photo 01"},{"id":"aaaaaaaaaaac","title":"Photo 02"},{"id":"aaaaaaaaaaab","title":"Photo 03"}]}</script>
-</main><footer>Yhotos photo gallery</footer></body>
+<script type="application/json" nonce="fixture-nonce" id="gallery-data">[JSON island data]</script>
+</main><dialog id="lightbox" aria-labelledby="lightbox-title" aria-describedby="lightbox-status">
+<div class="lightbox-toolbar"><h2 id="lightbox-title"></h2><button type="button" data-close aria-label="Close photo viewer">Close</button></div>
+<div class="lightbox-stage" data-stage><picture data-picture><img data-image alt="" width="4" height="3" decoding="async"></picture></div>
+<nav aria-label="Lightbox navigation"><button type="button" data-previous aria-label="Previous photo">Previous</button><button type="button" data-next aria-label="Next photo">Next</button></nav>
+<div class="lightbox-tools"><button type="button" data-zoom aria-label="Zoom photo" aria-pressed="false">Zoom</button><button type="button" data-info aria-expanded="false" aria-controls="lightbox-info">Photo details</button><button type="button" data-download aria-expanded="false" aria-controls="lightbox-downloads">Download photo</button>
+
+<button type="button" data-share>Copy photo link</button><button type="button" data-slideshow aria-pressed="false">Play slideshow</button><button type="button" data-fullscreen>Enter fullscreen</button></div>
+<section id="lightbox-info" aria-label="Photo details" hidden><p data-description></p><dl data-details></dl></section><ul id="lightbox-downloads" aria-label="Download sizes" hidden></ul>
+<p id="lightbox-status" role="status" aria-live="polite"></p>
+</dialog>
+<script type="module" nonce="fixture-nonce" src="/static/lightbox.fixture.js"></script><script type="module" nonce="fixture-nonce" src="/static/prefetch.fixture.js"></script><script type="module" nonce="fixture-nonce" src="/static/transitions.fixture.js"></script><footer>Yhotos photo gallery</footer></body>
 </html>

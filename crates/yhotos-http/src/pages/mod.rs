@@ -2,7 +2,7 @@
 pub mod grid;
 mod view;
 pub use view::{PageContext, render_album, render_home, render_photo};
-pub(crate) use view::{PhotoControls, render_scoped_photo};
+pub(crate) use view::{PhotoControls, island, island_photo, render_album_for, render_scoped_photo};
 
 use crate::{
     AppState,
@@ -171,7 +171,14 @@ pub(crate) async fn album(
     .map_err(db_error)?
     .ok_or(HttpError::NotFound)?;
     let nonce = nonce.to_string();
-    let html = render_album(&row, number, options.sort(), &context(&nonce, &state)?)?;
+    let html = render_album_for(
+        &row,
+        number,
+        options.sort(),
+        &context(&nonce, &state)?,
+        &identity,
+        &links,
+    )?;
     cached(
         html,
         &headers,
@@ -201,45 +208,34 @@ pub(crate) async fn photo(
     let nonce = nonce.to_string();
     let csrf = CsrfToken::for_page(&headers)?;
     let context = context(&nonce, &state)?;
-    let html = if links.0.is_empty() {
-        render_photo(&row, options.sort(), &context)?
-    } else {
-        let covering: Vec<_> = links
+    let caps = crate::api::caps(&row.photo, &identity, &links);
+    if !row.photo.account_view
+        && !links.0.is_empty()
+        && links
             .0
             .iter()
-            .filter(|link| match link.target {
-                yhotos_core::access::ShareTarget::Photo(id) => id == row.photo.id,
-                yhotos_core::access::ShareTarget::Album(id) => {
-                    row.photo.shared_albums.contains(&id)
-                }
-            })
-            .collect();
-        if !row.photo.account_view
-            && covering
-                .iter()
-                .all(|l| matches!(l.target, yhotos_core::access::ShareTarget::Photo(_)))
-        {
-            row.chain.clear();
-        }
-        render_scoped_photo(
-            &row,
-            options.sort(),
-            &context,
-            PhotoControls {
-                csrf: csrf.form_value(),
-                download: row.photo.account_view || covering.iter().any(|l| l.caps.download),
-                like: row.photo.account_view || covering.iter().any(|l| l.caps.like),
-                flag: row.photo.account_view || covering.iter().any(|l| l.caps.flag),
-            },
-        )?
-    };
+            .all(|l| matches!(l.target, yhotos_core::access::ShareTarget::Photo(_)))
+    {
+        row.chain.clear();
+    }
+    let html = render_scoped_photo(
+        &row,
+        options.sort(),
+        &context,
+        PhotoControls {
+            csrf: csrf.form_value(),
+            download: caps.download,
+            like: caps.like,
+            flag: caps.flag,
+        },
+    )?;
     let mut response = cached(
         html,
         &headers,
         &identity,
         &format!("album:{},photo:{}", row.photo.album_id, row.photo.id),
     )?;
-    if !links.0.is_empty() {
+    if caps.like || caps.flag {
         crate::auth::set_cookie(&mut response, csrf.cookie(false)?);
     }
     Ok(response)
@@ -352,3 +348,31 @@ pub(crate) fn not_found() -> Response {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) fn snapshot_html(mut html: String) -> String {
+    for (name, url) in [
+        ("lightbox", static_assets::lightbox_url()),
+        ("prefetch", static_assets::prefetch_url()),
+        ("transitions", static_assets::transitions_url()),
+        ("likes", static_assets::likes_url()),
+    ] {
+        if let Ok(url) = url {
+            html = html.replace(url, &format!("/static/{name}.fixture.js"));
+        }
+    }
+    // Payload values and XSS escaping have dedicated assertions. Keep markup
+    // snapshots readable while the responsive image data grows.
+    for id in ["gallery-data", "photo-data"] {
+        let marker = format!("id=\"{id}\">");
+        if let Some(start) = html.find(&marker).map(|n| n + marker.len())
+            && let Some(end) = html
+                .get(start..)
+                .and_then(|tail| tail.find("</script>"))
+                .map(|n| n + start)
+        {
+            html.replace_range(start..end, "[JSON island data]");
+        }
+    }
+    html
+}

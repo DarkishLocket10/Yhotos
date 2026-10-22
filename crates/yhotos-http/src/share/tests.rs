@@ -90,6 +90,9 @@ impl Client {
         } else {
             request = request.header(header::CONTENT_TYPE, "application/x-www-form-urlencoded");
         }
+        if path.starts_with("/api/v1/") && json {
+            request = request.header("x-requested-with", "yhotos");
+        }
         let mut request = request.body(Body::from(body)).unwrap();
         request
             .extensions_mut()
@@ -146,7 +149,10 @@ impl Client {
         self.send(
             app,
             Method::POST,
-            &format!("/api/v1/photos/{id}/{action}"),
+            &format!(
+                "/api/v1/photos/{}/{action}",
+                yhotos_core::ShortId::from_photo_id(id)
+            ),
             "{}".into(),
             true,
             false,
@@ -393,6 +399,14 @@ fn flags() -> LinkFlags {
 }
 async fn concealed(reply: &Reply) {
     assert_eq!(reply.status, StatusCode::NOT_FOUND, "{}", reply.text());
+    if reply
+        .headers
+        .get(header::CONTENT_TYPE)
+        .is_some_and(|v| v == "application/json")
+    {
+        assert_eq!(reply.body, b"{\"error\":\"not_found\"}");
+        return;
+    }
     let expected = crate::pages::not_found()
         .into_body()
         .collect()
@@ -596,7 +610,7 @@ async fn capabilities_and_link_attribution(pool: PgPool) {
         for action in ["like", "flag"] {
             let reply = client.action(&f.app, f.photo, action).await;
             if enabled {
-                assert_eq!(reply.status, StatusCode::NO_CONTENT, "{}", reply.text());
+                assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
             } else {
                 concealed(&reply).await;
             }
@@ -890,7 +904,7 @@ async fn admin_create_patch_stats_revoke_and_listener_isolation(pool: PgPool) {
     assert_eq!(client.get(&f.app, &f.original).await.status, StatusCode::OK);
     assert_eq!(
         client.action(&f.app, f.photo, "flag").await.status,
-        StatusCode::NO_CONTENT
+        StatusCode::OK
     );
     let stats = admin.get(&app, &format!("{base}/{id}/stats")).await;
     assert_eq!(stats.status, StatusCode::OK);
@@ -1083,7 +1097,15 @@ async fn album_page_snapshot_uses_shared_responsive_template(pool: PgPool) {
         .await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     assert_eq!(page.headers[header::CACHE_CONTROL], "private, no-store");
-    assert_eq!(page.text().matches("<picture>").count(), 3);
+    assert_eq!(
+        page.text()
+            .split("</section>")
+            .next()
+            .unwrap()
+            .matches("<picture>")
+            .count(),
+        3
+    );
     assert!(page.text().contains("image/jxl"));
     assert!(page.text().contains("image/avif"));
     assert!(page.text().contains("class=\"grid-row\""));
@@ -1127,7 +1149,7 @@ async fn album_page_snapshot_uses_shared_responsive_template(pool: PgPool) {
                 &format!("photo-{}", index + 1),
             );
     }
-    insta::assert_snapshot!("share_album", html);
+    insta::assert_snapshot!("share_album", crate::pages::snapshot_html(html));
 }
 
 #[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
