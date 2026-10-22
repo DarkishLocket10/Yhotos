@@ -386,9 +386,15 @@ fn flags() -> LinkFlags {
         flag: true,
     }
 }
-fn concealed(reply: &Reply) {
+async fn concealed(reply: &Reply) {
     assert_eq!(reply.status, StatusCode::NOT_FOUND, "{}", reply.text());
-    assert_eq!(reply.body, b"Not found");
+    let expected = crate::pages::not_found()
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    assert_eq!(reply.body, expected);
 }
 
 #[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
@@ -427,12 +433,12 @@ async fn unknown_expired_revoked_and_malformed_are_identical(pool: PgPool) {
         drop(c);
         f.invalidate();
         let reply = client.get(&f.app, &path).await;
-        concealed(&reply);
+        concealed(&reply).await;
         assert_eq!(reply.body, baseline.body);
         assert_eq!(reply.headers[header::CACHE_CONTROL], "private, no-store");
     }
-    concealed(&client.get(&f.app, "/s/invalid").await);
-    concealed(&client.get(&f.app, "/s/%FF").await);
+    concealed(&client.get(&f.app, "/s/invalid").await).await;
+    concealed(&client.get(&f.app, "/s/%FF").await).await;
 }
 
 #[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
@@ -450,7 +456,7 @@ async fn passphrase_lockout_cookie_scope_and_revocation(pool: PgPool) {
     let page = client.get(&f.app, &path).await;
     assert_eq!(page.status, StatusCode::OK);
     assert!(!page.text().contains(&f.image));
-    concealed(&client.get(&f.app, &f.image).await);
+    concealed(&client.get(&f.app, &f.image).await).await;
     // Form and JSON requests both remain CSRF protected.
     let missing = Client::default()
         .send(
@@ -537,7 +543,7 @@ async fn passphrase_lockout_cookie_scope_and_revocation(pool: PgPool) {
         loop {
             let reply = client.get(&f.app, &f.image).await;
             if reply.status == StatusCode::NOT_FOUND {
-                concealed(&reply);
+                concealed(&reply).await;
                 break;
             }
             tokio::task::yield_now().await;
@@ -545,7 +551,7 @@ async fn passphrase_lockout_cookie_scope_and_revocation(pool: PgPool) {
     })
     .await
     .unwrap();
-    concealed(&client.get(&f.app, &path).await);
+    concealed(&client.get(&f.app, &path).await).await;
 }
 
 #[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
@@ -562,15 +568,24 @@ async fn capabilities_and_link_attribution(pool: PgPool) {
         let mut client = Client::default();
         let page = client.get(&f.app, &path).await;
         assert_eq!(page.status, StatusCode::OK, "{}", page.text());
-        assert_eq!(page.text().contains("Download original"), enabled);
-        assert_eq!(page.text().contains("Like photo"), enabled);
-        assert_eq!(page.text().contains("Flag photo"), enabled);
+        assert!(page.text().contains("class=\"photo-grid\""));
+        let photo = client
+            .get(
+                &f.app,
+                &format!("/p/{}", yhotos_core::ShortId::from_photo_id(f.photo)),
+            )
+            .await;
+        assert_eq!(photo.status, StatusCode::OK, "{}", photo.text());
+        assert_eq!(photo.text().contains("Download original"), enabled);
+        assert_eq!(photo.text().contains("Download photo"), enabled);
+        assert_eq!(photo.text().contains("Like photo"), enabled);
+        assert_eq!(photo.text().contains("Flag photo"), enabled);
         for path in [&f.original, &format!("{}?download=1", f.image)] {
             let reply = client.get(&f.app, path).await;
             if enabled {
                 assert_eq!(reply.status, StatusCode::OK);
             } else {
-                concealed(&reply);
+                concealed(&reply).await;
             }
         }
         for action in ["like", "flag"] {
@@ -578,7 +593,7 @@ async fn capabilities_and_link_attribution(pool: PgPool) {
             if enabled {
                 assert_eq!(reply.status, StatusCode::NO_CONTENT, "{}", reply.text());
             } else {
-                concealed(&reply);
+                concealed(&reply).await;
             }
         }
         let likes = sqlx::query!("SELECT user_id FROM likes WHERE share_link_id=$1", row.id.0)
@@ -622,13 +637,13 @@ async fn scope_descendants_restricted_ancestors_photo_only_and_user_union(pool: 
         assert_eq!(client.get(&f.app, path).await.status, StatusCode::OK);
     }
     for path in [&other_image, &restricted_image] {
-        concealed(&client.get(&f.app, path).await);
+        concealed(&client.get(&f.app, path).await).await;
     }
-    concealed(&client.action(&f.app, other_photo, "flag").await);
+    concealed(&client.action(&f.app, other_photo, "flag").await).await;
     let (_, blocked) = f.link(ShareTarget::Album(restricted), None, flags()).await;
     let mut blocked_client = Client::default();
-    concealed(&blocked_client.get(&f.app, &blocked).await);
-    concealed(&blocked_client.get(&f.app, &restricted_image).await); // Restricted ancestor above target.
+    concealed(&blocked_client.get(&f.app, &blocked).await).await;
+    concealed(&blocked_client.get(&f.app, &restricted_image).await).await; // Restricted ancestor above target.
     // A public-listener account does not inherit its user's administrator bit.
     grants::grant_album(
         &mut f.pool.acquire().await.unwrap(),
@@ -648,7 +663,18 @@ async fn scope_descendants_restricted_ancestors_photo_only_and_user_union(pool: 
             "{path}"
         );
     }
-    concealed(&client.get(&f.app, &restricted_image).await);
+    concealed(&client.get(&f.app, &restricted_image).await).await;
+    // Browsing pages uses the same account/link union as file access.
+    assert_eq!(client.get(&f.app, "/a/shared").await.status, StatusCode::OK);
+    assert_eq!(client.get(&f.app, "/a/other").await.status, StatusCode::OK);
+    let account_photo = client
+        .get(
+            &f.app,
+            &format!("/p/{}", yhotos_core::ShortId::from_photo_id(other_photo)),
+        )
+        .await;
+    assert_eq!(account_photo.status, StatusCode::OK);
+    assert!(account_photo.text().contains("Download photo"));
     let public = f.album(None, "photo-target", Visibility::Public).await;
     let (photo, image, _) = Fixture::add_photo(&f.pool, &f.state, public, "Single photo").await;
     let (_, sibling, _) = Fixture::add_photo(&f.pool, &f.state, public, "Hidden sibling").await;
@@ -679,13 +705,14 @@ async fn scope_descendants_restricted_ancestors_photo_only_and_user_union(pool: 
         single_client.get(&f.app, &image).await.status,
         StatusCode::OK
     );
-    concealed(&single_client.get(&f.app, "/a/photo-target").await);
-    concealed(&single_client.get(&f.app, &sibling).await);
+    concealed(&single_client.get(&f.app, "/a/photo-target").await).await;
+    concealed(&single_client.get(&f.app, &sibling).await).await;
     concealed(
         &single_client
             .get(&f.app, &format!("{image}?download=1"))
             .await,
-    );
+    )
+    .await;
 }
 
 #[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
@@ -833,11 +860,11 @@ async fn admin_create_patch_stats_revoke_and_listener_isolation(pool: PgPool) {
     client.get(&f.app, path).await;
     assert_eq!(client.unlock(&f.app, path, "").await.status, StatusCode::OK);
     assert_eq!(client.get(&f.app, &f.image).await.status, StatusCode::OK);
-    concealed(&client.get(&f.app, &f.original).await);
+    concealed(&client.get(&f.app, &f.original).await).await;
     let updated=admin.send(&app,Method::PATCH,&format!("{base}/{id}"),serde_json::json!({"allow_download":true,"allow_like":true,"expires_at":null,"passphrase":null}).to_string(),true,true).await;
     assert_eq!(updated.status, StatusCode::NO_CONTENT, "{}", updated.text());
     // Changing the passphrase invalidates the old unlocked cookie.
-    concealed(&client.get(&f.app, &f.image).await);
+    concealed(&client.get(&f.app, &f.image).await).await;
     client.get(&f.app, path).await;
     assert_eq!(client.get(&f.app, &f.original).await.status, StatusCode::OK);
     assert_eq!(
@@ -859,14 +886,15 @@ async fn admin_create_patch_stats_revoke_and_listener_isolation(pool: PgPool) {
         )
         .await;
     assert_eq!(revoked.status, StatusCode::NO_CONTENT);
-    concealed(&client.get(&f.app, path).await);
-    concealed(&client.get(&f.app, &f.image).await);
+    concealed(&client.get(&f.app, path).await).await;
+    concealed(&client.get(&f.app, &f.image).await).await;
     // Public listener never exposes management, even with a valid admin cookie.
     concealed(
         &admin
             .send(&f.app, Method::POST, base, input.to_string(), true, false)
             .await,
-    );
+    )
+    .await;
     input["target_kind"] = serde_json::json!("image");
     assert_eq!(
         admin
@@ -900,15 +928,15 @@ async fn session_binding_multiple_links_and_idle_absolute_hard_expiry(pool: PgPo
     rebound.jar.insert(cookie_name(protected.id), first.clone());
     let page = rebound.get(&f.app, &protected_path).await;
     assert!(!page.text().contains(&image));
-    concealed(&rebound.get(&f.app, &image).await);
+    concealed(&rebound.get(&f.app, &image).await).await;
     rebound.jar.clear();
     rebound.jar.insert("__Host-ys".into(), first);
-    concealed(&rebound.get(&f.app, &f.image).await);
+    concealed(&rebound.get(&f.app, &f.image).await).await;
     let mut account = Client::default();
     account
         .jar
         .insert(cookie_name(row.id), f.account(false).await);
-    concealed(&account.get(&f.app, &f.image).await);
+    concealed(&account.get(&f.app, &f.image).await).await;
     client.get(&f.app, &protected_path).await;
     assert_eq!(
         client
@@ -950,7 +978,7 @@ async fn session_binding_multiple_links_and_idle_absolute_hard_expiry(pool: PgPo
         .unwrap();
         drop(c);
         f.invalidate();
-        concealed(&client.get(&f.app, &f.image).await);
+        concealed(&client.get(&f.app, &f.image).await).await;
     }
 }
 
@@ -986,4 +1014,306 @@ async fn passphrase_change_serializes_with_session_issuance(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(count, Some(0));
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn album_page_snapshot_uses_shared_responsive_template(pool: PgPool) {
+    let f = Fixture::new(pool).await;
+    let (second, second_image, _) =
+        Fixture::add_photo(&f.pool, &f.state, f.album, "Second photo").await;
+    let (third, third_image, _) =
+        Fixture::add_photo(&f.pool, &f.state, f.album, "Third photo").await;
+    let (_, hidden_image, _) = Fixture::add_photo(&f.pool, &f.state, f.album, "Hidden photo").await;
+    let mut c = f.pool.acquire().await.unwrap();
+    sqlx::query!(
+        "UPDATE photos SET visibility='restricted' WHERE album_id=$1 AND title='Hidden photo'",
+        f.album as _
+    )
+    .execute(&mut *c)
+    .await
+    .unwrap();
+    for photo in [f.photo, second, third] {
+        for format in ["avif", "jxl"] {
+            sqlx::query!("INSERT INTO derivatives(id,photo_id,variant,format,hdr,hash,width,height,bytes) SELECT $1,photo_id,variant,$2,hdr,hash,width,height,bytes FROM derivatives WHERE photo_id=$3 AND format='jpeg'",Uuid::now_v7(),format,photo as _).execute(&mut *c).await.unwrap();
+        }
+    }
+    drop(c);
+    let (_, path) = f
+        .link(
+            ShareTarget::Album(f.album),
+            None,
+            LinkFlags {
+                view: true,
+                ..LinkFlags::default()
+            },
+        )
+        .await;
+    let page = Client::default()
+        .get(&f.app, &format!("{path}?sort=manual"))
+        .await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    assert_eq!(page.headers[header::CACHE_CONTROL], "private, no-store");
+    assert_eq!(page.text().matches("<picture>").count(), 3);
+    assert!(page.text().contains("image/jxl"));
+    assert!(page.text().contains("image/avif"));
+    assert!(page.text().contains("class=\"grid-row\""));
+    assert!(!page.text().contains(&hidden_image));
+    assert!(!page.text().contains("Download"));
+    assert!(!page.text().contains("share-grid"));
+    let nonce = page
+        .text()
+        .split("nonce=\"")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap();
+    let mut html = page
+        .text()
+        .replace(nonce, "fixture-nonce")
+        .replace(
+            crate::static_assets::stylesheet_url().unwrap(),
+            "/static/app.fixture.css",
+        )
+        .replace(
+            crate::static_assets::script_url().unwrap(),
+            "/static/thumbhash.fixture.js",
+        );
+    for (index, (photo, image)) in [
+        (f.photo, &f.image),
+        (second, &second_image),
+        (third, &third_image),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        html = html
+            .replace(
+                image.split('/').nth(2).unwrap(),
+                &format!("{:064x}", index + 1),
+            )
+            .replace(
+                &yhotos_core::ShortId::from_photo_id(photo).to_string(),
+                &format!("photo-{}", index + 1),
+            );
+    }
+    insta::assert_snapshot!("share_album", html);
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn scoped_pages_sort_paginate_and_continue_into_child_albums(pool: PgPool) {
+    let f = Fixture::new(pool).await;
+    let child = f.album(Some(f.album), "child", Visibility::Public).await;
+    let (child_photo, child_image, _) =
+        Fixture::add_photo(&f.pool, &f.state, child, "Child photo").await;
+    let restricted = f
+        .album(Some(f.album), "hidden-child", Visibility::Restricted)
+        .await;
+    let (_, hidden_image, _) =
+        Fixture::add_photo(&f.pool, &f.state, restricted, "Hidden child").await;
+    let mut c = f.pool.acquire().await.unwrap();
+    for index in 0..62_i32 {
+        let id = PhotoId::new();
+        let short = yhotos_core::ShortId::from_photo_id(id).to_string();
+        let hash = blake3::hash(id.0.as_bytes()).to_hex().to_string();
+        let title = format!("Ordered {index:02}");
+        sqlx::query!("INSERT INTO photos(id,short_id,album_id,title,sort_order,original_hash,original_name,original_bytes,mime,kind,posted_at,taken_at) VALUES($1,$2,$3,$4,$5,$6,'photo.jpeg',0,'image/jpeg','image','2026-06-01'::timestamptz-$5::integer*interval '1 day','2026-01-01'::timestamptz+$5::integer*interval '1 day')",id as _,short,f.album as _,title,index,hash).execute(&mut *c).await.unwrap();
+    }
+    // A hidden photo sorts before every visible one. It must not consume a slot.
+    sqlx::query!(
+        "UPDATE photos SET title='Hidden',visibility='restricted',sort_order=-1 WHERE id=$1",
+        f.photo as _
+    )
+    .execute(&mut *c)
+    .await
+    .unwrap();
+    drop(c);
+    let (_, path) = f
+        .link(
+            ShareTarget::Album(f.album),
+            None,
+            LinkFlags {
+                view: true,
+                ..LinkFlags::default()
+            },
+        )
+        .await;
+    let mut client = Client::default();
+    for (sort, first, last) in [
+        ("taken", 61, 2),
+        ("posted", 0, 59),
+        ("name", 0, 59),
+        ("manual", 0, 59),
+        ("invalid", 61, 2),
+    ] {
+        let page = client
+            .get(&f.app, &format!("{path}?sort={sort}&per_page=1000"))
+            .await;
+        assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+        let grid = page
+            .text()
+            .split("class=\"photo-grid\"")
+            .nth(1)
+            .unwrap()
+            .split("</section>")
+            .next()
+            .unwrap();
+        assert_eq!(grid.matches("<picture>").count(), 60);
+        assert!(
+            grid.find(&format!("Ordered {first:02}")).unwrap()
+                < grid.find(&format!("Ordered {last:02}")).unwrap()
+        );
+        assert!(!grid.contains("alt=\"Hidden\""));
+        assert!(page.text().contains("62 photos"));
+        assert!(page.text().contains("/a/shared?page=2&#38;sort="));
+        assert!(!page.text().contains(&hidden_image));
+    }
+    let page = client
+        .get(&f.app, &format!("{path}?page=2&sort=manual"))
+        .await;
+    assert!(page.text().contains("Ordered 60"));
+    assert!(page.text().contains("Ordered 61"));
+    for query in ["?page=0", "?page=3", "?page=invalid"] {
+        let reply = client.get(&f.app, &format!("{path}{query}")).await;
+        concealed(&reply).await;
+        assert_eq!(reply.headers[header::CACHE_CONTROL], "private, no-store");
+    }
+    let second = client.get(&f.app, "/a/shared?page=2&sort=manual").await;
+    assert!(second.text().contains("Ordered 61"));
+    let child_page = client.get(&f.app, "/a/shared/child").await;
+    assert_eq!(child_page.status, StatusCode::OK, "{}", child_page.text());
+    assert!(child_page.text().contains(&child_image));
+    let detail = client
+        .get(
+            &f.app,
+            &format!("/p/{}", yhotos_core::ShortId::from_photo_id(child_photo)),
+        )
+        .await;
+    assert_eq!(detail.status, StatusCode::OK);
+    assert!(detail.text().contains("<picture>"));
+    assert!(!detail.text().contains("Download photo"));
+    concealed(&client.get(&f.app, "/a/shared/hidden-child").await).await;
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn photo_landing_uses_photo_template_and_hides_disabled_downloads(pool: PgPool) {
+    let f = Fixture::new(pool).await;
+    let public = f.album(None, "single", Visibility::Public).await;
+    let (photo, image, _) = Fixture::add_photo(&f.pool, &f.state, public, "Single photo").await;
+    for enabled in [false, true] {
+        let (_, path) = f
+            .link(
+                ShareTarget::Photo(photo),
+                None,
+                LinkFlags {
+                    view: true,
+                    download: enabled,
+                    like: enabled,
+                    flag: enabled,
+                },
+            )
+            .await;
+        let mut client = Client::default();
+        let page = client.get(&f.app, &path).await;
+        assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+        assert_eq!(page.headers[header::CACHE_CONTROL], "private, no-store");
+        assert!(page.text().contains("class=\"photo-page\""));
+        assert!(page.text().contains("<picture>"));
+        assert!(page.text().contains("sizes=\"100vw\""));
+        assert!(page.text().contains(&image));
+        assert!(page.text().contains("og:title"));
+        assert!(!page.text().contains("/a/single"));
+        assert_eq!(page.text().contains("Download photo"), enabled);
+        assert_eq!(page.text().contains("Like photo"), enabled);
+        assert_eq!(page.text().contains("Flag photo"), enabled);
+    }
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn page_controls_keep_each_links_capabilities_with_its_own_scope(pool: PgPool) {
+    let f = Fixture::new(pool).await;
+    let album = f.album(None, "independent", Visibility::Public).await;
+    let (photo, _, original) =
+        Fixture::add_photo(&f.pool, &f.state, album, "Restricted photo").await;
+    photos::set_visibility(
+        &mut f.pool.acquire().await.unwrap(),
+        &[photo],
+        Visibility::Restricted,
+    )
+    .await
+    .unwrap();
+    let (_, album_link) = f.link(ShareTarget::Album(album), None, flags()).await;
+    let (_, photo_link) = f
+        .link(
+            ShareTarget::Photo(photo),
+            None,
+            LinkFlags {
+                view: true,
+                ..LinkFlags::default()
+            },
+        )
+        .await;
+    let mut client = Client::default();
+    assert_eq!(client.get(&f.app, &album_link).await.status, StatusCode::OK);
+    assert_eq!(client.get(&f.app, &photo_link).await.status, StatusCode::OK);
+    client
+        .jar
+        .insert("__Host-ys".into(), f.account(false).await);
+    let path = format!("/p/{}", yhotos_core::ShortId::from_photo_id(photo));
+    let page = client.get(&f.app, &path).await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    for control in ["Download photo", "Like photo", "Flag photo"] {
+        assert!(!page.text().contains(control));
+    }
+    concealed(&client.get(&f.app, &original).await).await;
+    grants::grant_photo(
+        &mut f.pool.acquire().await.unwrap(),
+        photo,
+        Grant::User(f.creator),
+    )
+    .await
+    .unwrap();
+    f.invalidate();
+    let page = client.get(&f.app, &path).await;
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(page.text().contains("Download photo"));
+    assert_eq!(client.get(&f.app, &original).await.status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn share_short_circuits_and_fallbacks_are_always_private() {
+    let state = crate::tests::state(false, 1);
+    let app = crate::public_router(state);
+    let mut client = Client::default();
+    let missing = client.get(&app, "/s/unknown/nested").await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+    assert_eq!(missing.headers[header::CACHE_CONTROL], "private, no-store");
+    let limited = client.get(&app, "/s/unknown/nested").await;
+    assert_eq!(limited.status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(limited.headers[header::CACHE_CONTROL], "private, no-store");
+    let app = crate::public_router(crate::tests::state(false, 100));
+    let method = client
+        .send(
+            &app,
+            Method::OPTIONS,
+            "/s/unknown",
+            String::new(),
+            false,
+            false,
+        )
+        .await;
+    assert_eq!(method.status, StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(method.headers[header::CACHE_CONTROL], "private, no-store");
+    let csrf = client
+        .send(
+            &app,
+            Method::POST,
+            "/s/unknown/unlock",
+            String::new(),
+            false,
+            false,
+        )
+        .await;
+    assert_eq!(csrf.status, StatusCode::FORBIDDEN);
+    assert_eq!(csrf.headers[header::CACHE_CONTROL], "private, no-store");
 }

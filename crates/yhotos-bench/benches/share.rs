@@ -116,13 +116,24 @@ fn main() -> BenchResult<()> {
     let mut failure = None;
     for (name, path, cold) in [
         ("share/landing_warm_including_open_write", &path, false),
+        (
+            "share/landing_cold_with_scope_resolution_and_open_write",
+            &path,
+            true,
+        ),
         ("share/image_warm_first_byte", &image, false),
         ("share/image_cold_file_lookup_first_byte", &image, true),
     ] {
         criterion.bench_function(name, |b| {
             b.iter(|| {
                 if cold {
-                    state.files.invalidate_all();
+                    if path.starts_with("/s/") {
+                        if let Some(auth) = &state.auth {
+                            auth.invalidate(Uuid::nil());
+                        }
+                    } else {
+                        state.files.invalidate_all();
+                    }
                 }
                 if let Err(error) = runtime.block_on(first_byte(&app, path, &cookie)) {
                     failure = Some(error);

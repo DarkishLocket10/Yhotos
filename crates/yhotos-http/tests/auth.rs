@@ -535,6 +535,117 @@ async fn login_rotation_logout_cookie_and_audit(pool: PgPool) {
     assert!(actions.iter().any(|a| a == "session.revoke"));
 }
 #[sqlx::test(migrations = "../yhotos-db/migrations")]
+#[allow(clippy::too_many_lines)]
+async fn real_sessions_authorize_restricted_pages_by_group(pool: PgPool) {
+    use yhotos_core::{
+        Slug,
+        access::{Grant, Visibility},
+    };
+    use yhotos_db::{albums, grants, groups, photos};
+
+    let mut c = Client::new(pool, false).await;
+    let (user, name, password) = c.seed(false, false).await;
+    let mut conn = c.pool.acquire().await.unwrap();
+    let group = groups::create(&mut conn, "Gallery readers").await.unwrap();
+    groups::add_member(&mut conn, group.id, user).await.unwrap();
+    let album = albums::create(
+        &mut conn,
+        None,
+        &Slug::new("restricted-gallery").unwrap(),
+        "Restricted gallery",
+        Visibility::Restricted,
+    )
+    .await
+    .unwrap();
+    grants::grant_album(&mut conn, album.id, Grant::Group(group.id))
+        .await
+        .unwrap();
+    let mut photo_paths = Vec::new();
+    for index in 0..3 {
+        let title = format!("Group photograph {index}");
+        let photo = photos::create(
+            &mut conn,
+            &photos::NewPhoto {
+                album_id: album.id,
+                title: title.clone(),
+                original_hash: blake3::hash(title.as_bytes()).to_hex().to_string(),
+                original_name: "group.jpeg".into(),
+                original_bytes: 1,
+                mime: "image/jpeg".into(),
+                kind: photos::MediaKind::Image,
+            },
+        )
+        .await
+        .unwrap();
+        photos::update_metadata(
+            &mut conn,
+            photo.id,
+            &photos::PhotoMetadata {
+                title,
+                width: Some(1500),
+                height: Some(1000),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        // Both inherited visibility and explicit photo group grants use the
+        // verified principal, while the album restriction still narrows access.
+        if index == 2 {
+            photos::set_visibility(&mut conn, &[photo.id], Visibility::Restricted)
+                .await
+                .unwrap();
+            grants::grant_photo(&mut conn, photo.id, Grant::Group(group.id))
+                .await
+                .unwrap();
+        }
+        photo_paths.push(format!("/p/{}", photo.short_id));
+    }
+    drop(conn);
+    let album_path = "/a/restricted-gallery";
+    let missing = c.get("/a/missing-gallery").await;
+    assert_eq!(missing.status, StatusCode::NOT_FOUND);
+    for path in std::iter::once(album_path).chain(photo_paths.iter().map(String::as_str)) {
+        let denied = c.get(path).await;
+        assert_eq!(denied.status, StatusCode::NOT_FOUND);
+        assert_eq!(denied.body, missing.body);
+        assert_eq!(
+            denied.headers[header::CACHE_CONTROL],
+            missing.headers[header::CACHE_CONTROL]
+        );
+        assert_eq!(denied.headers[header::VARY], "Cookie");
+    }
+    assert!(!c.get("/").await.body.contains("Restricted gallery"));
+
+    location(&c.login(&name, &password, false).await, "/");
+    let allowed = c.get(album_path).await;
+    assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
+    assert_eq!(allowed.headers[header::CACHE_CONTROL], "private, no-store");
+    assert_eq!(allowed.headers[header::VARY], "Cookie");
+    assert_eq!(allowed.headers["cache-tag"], format!("album:{}", album.id));
+    assert!(allowed.body.contains("3 photos"));
+    assert_eq!(allowed.body.matches("<img ").count(), 3);
+    for (index, path) in photo_paths.iter().enumerate() {
+        assert!(allowed.body.contains(path));
+        let detail = c.get(path).await;
+        assert_eq!(detail.status, StatusCode::OK, "{}", detail.body);
+        assert!(detail.body.contains(&format!("Group photograph {index}")));
+        assert_eq!(detail.headers[header::CACHE_CONTROL], "private, no-store");
+    }
+    assert!(c.get("/").await.body.contains("Restricted gallery"));
+
+    // Login rotates the CSRF cookie; obtain the current form token before logout.
+    c.get("/u/security").await;
+    // Logging out must remove access even after the identity cache is warm.
+    location(&c.post("/logout", &[]).await, "/login");
+    for path in std::iter::once(album_path).chain(photo_paths.iter().map(String::as_str)) {
+        let denied = c.get(path).await;
+        assert_eq!(denied.status, StatusCode::NOT_FOUND);
+        assert_eq!(denied.body, missing.body);
+    }
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
 async fn real_sessions_authorize_files_by_group_and_logout_revokes_warm_access(pool: PgPool) {
     use yhotos_core::{
         Slug,

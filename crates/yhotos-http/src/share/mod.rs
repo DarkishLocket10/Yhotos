@@ -8,11 +8,12 @@ use crate::{
     AppState,
     auth::{self, Audience},
     error::HttpError,
-    middleware::{rate_limit::client_ip, session::SessionIdentity},
+    middleware::{rate_limit::client_ip, security_headers::Nonce, session::SessionIdentity},
+    pages::Options,
 };
 use axum::{
     Extension, Router,
-    extract::{Path, Request, State},
+    extract::{Path, Query, Request, State},
     http::{HeaderMap, StatusCode, header},
     response::Response,
     routing::{get, post},
@@ -92,24 +93,6 @@ fn grants(users: &[UserId], groups: &[GroupId]) -> Vec<Grant> {
         .collect()
 }
 impl Photo {
-    fn cache_bytes(&self) -> usize {
-        std::mem::size_of::<Self>()
-            + self.title.len()
-            + self.original_hash.len()
-            + self.image.as_ref().map_or(0, String::len)
-            + self
-                .albums
-                .iter()
-                .map(|a| {
-                    std::mem::size_of::<Level>()
-                        + a.visibility.len()
-                        + a.users.len() * std::mem::size_of::<UserId>()
-                        + a.groups.len() * std::mem::size_of::<GroupId>()
-                })
-                .sum::<usize>()
-            + self.users.len() * std::mem::size_of::<UserId>()
-            + self.groups.len() * std::mem::size_of::<GroupId>()
-    }
     pub(crate) fn may_view(&self, p: &Principal<'_>) -> bool {
         let levels: Vec<_> = self
             .albums
@@ -273,22 +256,21 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/s/photos/{id}/like", post(like))
         .route("/s/photos/{id}/flag", post(flag))
 }
-async fn snapshot(state: &AppState, token: String) -> Result<Arc<cache::Snapshot>, HttpError> {
+async fn snapshot(
+    state: &AppState,
+    token: String,
+    number: u32,
+    sort: yhotos_db::photos::PageSort,
+) -> Result<Arc<cache::Snapshot>, HttpError> {
     let token = Zeroizing::new(token);
     let hash = digest(&token, TokenKind::ShareLink).ok_or(HttpError::NotFound)?;
     drop(token);
     let s = auth::required(state)?
         .shares
-        .link(state, hash)
+        .page(state, hash, number, sort)
         .await?
         .ok_or(HttpError::NotFound)?;
-    if !active(&s.landing.link)
-        || (matches!(target(&s.landing.link), ShareTarget::Photo(_))
-            && !s
-                .photos
-                .iter()
-                .any(|p| p.may_view(&scoped(&s.landing.link).principal())))
-    {
+    if !active(&s.landing.link) {
         return Err(HttpError::NotFound);
     }
     Ok(s)
@@ -297,10 +279,14 @@ async fn landing(
     State(state): State<AppState>,
     path: Result<Path<String>, axum::extract::rejection::PathRejection>,
     Extension(links): Extension<Links>,
+    Extension(nonce): Extension<Nonce>,
+    Query(options): Query<Options>,
     request: Request,
 ) -> Result<Response, HttpError> {
     let Path(token) = path.map_err(|_| HttpError::NotFound)?;
-    let s = snapshot(&state, token).await?;
+    let number = options.number()?;
+    let sort = options.sort();
+    let s = snapshot(&state, token, number, sort).await?;
     let ip = client_ip(&request, state.config.trust_proxy)?;
     let visitor = auth::required(&state)?.shares.visitor(
         ip,
@@ -319,7 +305,14 @@ async fn landing(
     {
         return views::unlock(request.headers(), false);
     }
-    let mut response = views::page(&s, request.headers())?;
+    let mut response = views::page(
+        &s,
+        request.headers(),
+        &state,
+        &nonce.to_string(),
+        number,
+        sort,
+    )?;
     if !links.0.iter().any(|l| l.link_id == s.landing.link.id) {
         issue_session(
             &state,
@@ -404,6 +397,7 @@ impl UnlockState {
 async fn unlock(
     State(state): State<AppState>,
     path: Result<Path<String>, axum::extract::rejection::PathRejection>,
+    Extension(nonce): Extension<Nonce>,
     request: Request,
 ) -> Result<Response, HttpError> {
     use axum::extract::FromRequest;
@@ -496,7 +490,14 @@ async fn unlock(
     tx.commit().await?;
     drop(c);
     let s = s.ok_or(HttpError::NotFound)?;
-    let mut response = views::page(&s, &headers)?;
+    let mut response = views::page(
+        &s,
+        &headers,
+        &state,
+        &nonce.to_string(),
+        1,
+        yhotos_db::photos::PageSort::Taken,
+    )?;
     // Only the validated network information and coarse UA are needed here.
     let mut request = Request::new(axum::body::Body::empty());
     *request.headers_mut() = headers;

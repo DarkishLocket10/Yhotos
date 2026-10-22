@@ -209,68 +209,87 @@ pub async fn stats(conn: &mut PgConnection, id: ShareLinkId) -> Result<ShareLink
     Ok(sqlx::query_as!(ShareLinkStats,r#"SELECT count(*) AS "opens!", count(DISTINCT visitor_hash) AS "unique_visitors!", min(opened_at) AS first_open, max(opened_at) AS last_open, coalesce((SELECT jsonb_object_agg(country,opens) FROM (SELECT country,count(*) AS opens FROM share_link_opens WHERE share_link_id=$1 AND country IS NOT NULL GROUP BY country) c),'{}'::jsonb) AS "countries!" FROM share_link_opens WHERE share_link_id=$1"#, id as _).fetch_one(conn).await?)
 }
 
-/// A link and its scoped display data, loaded in one statement.
+/// A link and the same visibility-filtered page used by ordinary gallery routes.
 pub struct Landing {
     /// Current link metadata, containing no bearer.
     pub link: ShareLinkRow,
-    /// Untrusted stored display/access data; validated before rendering.
-    pub photos: serde_json::Value,
-    /// Target title; a missing or deleted target is concealed.
-    pub title: String,
+    /// Album or single-photo display data, validated by the shared page renderer.
+    pub page: LandingPage,
+    /// Serialized payload size used to bound the digest-only cache.
+    pub bytes: usize,
 }
 
-/// Fetches a live target and all candidate photos with complete access chains.
+/// A page obtained with the link principal, before template rendering.
+pub enum LandingPage {
+    /// Sixty direct photos and visible child albums under the target.
+    Album(crate::albums::AlbumPage),
+    /// Only the target photo; its containing album is not listable through this scope.
+    Photo(crate::photos::PhotoPage),
+}
+
+/// Fetches link metadata and its page in one checked statement, filtering before LIMIT.
 ///
 /// # Errors
-/// Returns a database statement or connection failure.
-pub async fn landing(c: &mut PgConnection, hash: &[u8; 32]) -> Result<Option<Landing>, DbError> {
-    let row = sqlx::query!(r#"WITH RECURSIVE chain AS (
- SELECT a.id,a.parent_id,a.visibility,a.deleted_at,ARRAY[a.id] AS visited
- FROM albums a JOIN share_links s ON s.target_kind='album' AND s.target_id=a.id WHERE s.token_hash=$1
- UNION ALL
- SELECT a.id,a.parent_id,a.visibility,a.deleted_at,c.visited || a.id
- FROM chain c JOIN albums a ON a.id=c.parent_id WHERE NOT a.id=ANY(c.visited)
-)
- SELECT s.id,s.created_at,s.updated_at,s.token_hash,
- s.target_kind::text as "target_kind!",s.target_id,s.passphrase_hash,s.expires_at,
- s.allow_view,s.allow_download,s.allow_like,s.allow_flag,s.revoked_at,s.created_by,
- share_target_photos(s.target_kind,s.target_id) as "photos!",
- CASE s.target_kind WHEN 'album' THEN (SELECT title FROM albums WHERE id=s.target_id AND deleted_at IS NULL)
- ELSE (SELECT title FROM photos WHERE id=s.target_id AND deleted_at IS NULL) END as title
- FROM share_links s WHERE s.token_hash=$1 AND s.revoked_at IS NULL
- AND (s.target_kind='photo' OR (
-  EXISTS(SELECT FROM chain WHERE parent_id IS NULL)
-  AND NOT EXISTS(SELECT FROM chain WHERE deleted_at IS NOT NULL OR (id<>s.target_id AND visibility='restricted'))
- ))"#, &hash[..]).fetch_optional(c).await?;
-    row.map(|r| {
-        let target_kind = match r.target_kind.as_str() {
+/// Rejects page zero and returns database or malformed stored metadata errors.
+pub async fn landing(
+    c: &mut PgConnection,
+    hash: &[u8; 32],
+    page: u32,
+    sort: crate::photos::PageSort,
+) -> Result<Option<Landing>, DbError> {
+    let offset = i64::from(page.checked_sub(1).ok_or(DbError::InvalidInput)?) * 60;
+    let row = crate::gallery_page_query!(r#"WITH RECURSIVE shared_link AS (
+        SELECT * FROM share_links WHERE token_hash=$10 AND revoked_at IS NULL
+          AND allow_view AND (expires_at IS NULL OR expires_at>clock_timestamp())
+      ), identity AS (
+        SELECT $1::uuid AS user_id, $2::uuid[] AS groups, $3::bool AS admin,
+          $4::uuid[] || CASE WHEN target_kind='album' THEN ARRAY[target_id] ELSE ARRAY[]::uuid[] END AS shared_albums,
+          $5::uuid[] || CASE WHEN target_kind='photo' THEN ARRAY[target_id] ELSE ARRAY[]::uuid[] END AS shared_photos
+        FROM shared_link
+      )"#; r#"SELECT s.id,s.created_at,s.updated_at,s.token_hash,
+        s.target_kind::text AS "target_kind!",s.target_id,s.passphrase_hash,s.expires_at,
+        s.allow_view,s.allow_download,s.allow_like,s.allow_flag,s.revoked_at,s.created_by,
+        CASE WHEN s.target_kind='album' THEN (SELECT payload FROM album_payload)
+          ELSE (SELECT payload FROM photo_payload) END AS payload
+        FROM shared_link s"#;
+        [None::<uuid::Uuid>, &[] as &[uuid::Uuid], false,
+         &[] as &[uuid::Uuid], &[] as &[uuid::Uuid], offset, sort.as_str(),
+         None::<String>, None::<String>, &hash[..]]
+    ).fetch_optional(c).await?;
+    let Some(row) = row else { return Ok(None) };
+    let link = ShareLinkRow {
+        id: ShareLinkId(row.id),
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        token_hash: row.token_hash,
+        target_kind: match row.target_kind.as_str() {
             "album" => TargetKind::Album,
             "photo" => TargetKind::Photo,
             _ => return Err(DbError::InvalidInput),
-        };
-        Ok(r.title.map(|title| Landing {
-            title,
-            photos: r.photos,
-            link: ShareLinkRow {
-                id: ShareLinkId(r.id),
-                created_at: r.created_at,
-                updated_at: r.updated_at,
-                token_hash: r.token_hash,
-                target_kind,
-                target_id: r.target_id,
-                passphrase_hash: r.passphrase_hash,
-                expires_at: r.expires_at,
-                allow_view: r.allow_view,
-                allow_download: r.allow_download,
-                allow_like: r.allow_like,
-                allow_flag: r.allow_flag,
-                revoked_at: r.revoked_at,
-                created_by: UserId(r.created_by),
-            },
-        }))
-    })
-    .transpose()
-    .map(Option::flatten)
+        },
+        target_id: row.target_id,
+        passphrase_hash: row.passphrase_hash,
+        expires_at: row.expires_at,
+        allow_view: row.allow_view,
+        allow_download: row.allow_download,
+        allow_like: row.allow_like,
+        allow_flag: row.allow_flag,
+        revoked_at: row.revoked_at,
+        created_by: UserId(row.created_by),
+    };
+    let Some(payload) = row.payload else {
+        return Ok(None);
+    };
+    let bytes = payload.to_string().len();
+    let page = match link.target_kind {
+        TargetKind::Album => {
+            LandingPage::Album(serde_json::from_value(payload).map_err(|_| DbError::InvalidInput)?)
+        }
+        TargetKind::Photo => {
+            LandingPage::Photo(serde_json::from_value(payload).map_err(|_| DbError::InvalidInput)?)
+        }
+    };
+    Ok(Some(Landing { link, page, bytes }))
 }
 
 /// Loads one photo with full access metadata, never authorizing by id alone.

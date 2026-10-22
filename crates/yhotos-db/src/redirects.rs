@@ -50,3 +50,45 @@ impl From<RedirectTarget> for yhotos_core::access::ShareTarget {
         }
     }
 }
+
+/// Constructs a relative destination only when the principal can view the stored target.
+/// Missing, deleted and restricted targets (including ancestors) resolve to no destination.
+///
+/// # Errors
+/// Returns database failures; invalid stored slugs or short ids fail closed.
+pub async fn destination(
+    conn: &mut PgConnection,
+    principal: &yhotos_core::access::Principal<'_>,
+    patterns: &[String],
+) -> Result<Option<String>, DbError> {
+    let bindings = crate::access_sql::visible_photos(principal);
+    let row = crate::visible_page_query!(
+        r#", target AS (
+      SELECT target_kind,target_id FROM legacy_redirects WHERE pattern=ANY($6)
+      ORDER BY array_position($6,pattern) LIMIT 1
+    ) SELECT CASE WHEN t.target_kind='photo' THEN
+      (SELECT '/p/' || p.short_id FROM visible_photos p WHERE p.id=t.target_id)
+      ELSE (SELECT '/a/' || a.path FROM visible_albums a WHERE a.id=t.target_id)
+      END AS destination FROM target t"#,
+        bindings,
+        patterns
+    )
+    .fetch_optional(conn)
+    .await?;
+    let target = row.and_then(|row| row.destination);
+    Ok(target.filter(|path| valid_destination(path)))
+}
+
+/// Accepts only canonical album and photo paths, excluding schemes, slashes and escapes.
+#[must_use]
+pub fn valid_destination(path: &str) -> bool {
+    if let Some(id) = path.strip_prefix("/p/") {
+        return id.parse::<yhotos_core::ShortId>().is_ok();
+    }
+    path.strip_prefix("/a/").is_some_and(|path| {
+        !path.is_empty()
+            && path
+                .split('/')
+                .all(|part| yhotos_core::Slug::new(part).is_ok())
+    })
+}

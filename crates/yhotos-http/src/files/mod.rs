@@ -81,6 +81,17 @@ struct Selector {
     format: String,
     hdr: bool,
 }
+
+/// Accepts image formats served by `/i/` and the storage key's 1–16 byte
+/// lowercase ASCII alphanumeric variant alphabet.
+pub(crate) fn valid_derivative_selector(variant: &str, format: &str) -> bool {
+    (1..=16).contains(&variant.len())
+        && variant
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        && matches!(format, "avif" | "jxl" | "jpeg")
+}
+
 impl Selector {
     fn parse(hash: &str, name: &str, area: Area) -> Result<Self, HttpError> {
         let hash = hash.parse().map_err(|_| HttpError::NotFound)?;
@@ -97,7 +108,7 @@ impl Selector {
                     .strip_suffix(".hdr")
                     .map_or((name, false), |s| (s, true));
                 let (variant, format) = name.split_once('.').ok_or(HttpError::NotFound)?;
-                if !matches!(format, "avif" | "jxl" | "jpeg") {
+                if !valid_derivative_selector(variant, format) {
                     return Err(HttpError::NotFound);
                 }
                 (variant, format, hdr)
@@ -110,15 +121,6 @@ impl Selector {
                 (codec, "mp4", false)
             }
         };
-        if area != Area::Originals
-            && (variant.is_empty()
-                || variant.len() > 16
-                || !variant
-                    .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()))
-        {
-            return Err(HttpError::NotFound);
-        }
         Ok(Self {
             hash,
             area,

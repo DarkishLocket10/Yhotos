@@ -3,6 +3,7 @@
 //! Checked PostgreSQL repositories. Callers must authenticate identities and
 //! evaluate `yhotos_core::access` before exposing any fetched content.
 
+pub mod access_sql;
 pub mod albums;
 pub mod audit;
 pub mod derivatives;

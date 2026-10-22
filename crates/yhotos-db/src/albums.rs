@@ -177,3 +177,131 @@ pub async fn restore(conn: &mut PgConnection, id: AlbumId) -> Result<u64, DbErro
 pub async fn list_tree(conn: &mut PgConnection) -> Result<Vec<AlbumRow>, DbError> {
     Ok(sqlx::query_as!(AlbumRow,r#"SELECT id as "id: _", created_at, updated_at, parent_id as "parent_id: _", slug as "slug: _", title, description, sort_order, cover_photo_id as "cover_photo_id: _", visibility as "visibility: _", manual_order, deleted_at FROM albums ORDER BY parent_id NULLS FIRST,sort_order,id"#).fetch_all(conn).await?)
 }
+
+/// A canonical root-to-leaf breadcrumb, validated again at the HTTP boundary.
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct Breadcrumb {
+    /// Album cache identity.
+    pub id: AlbumId,
+    /// Escaped display title.
+    pub title: String,
+    /// Slash-separated canonical slugs without the `/a/` prefix.
+    pub path: String,
+}
+
+/// Visible album summary, including a visible cover and a visibility-filtered count.
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct AlbumCard {
+    /// Album cache identity.
+    pub id: AlbumId,
+    /// Display title.
+    pub title: String,
+    /// Plain text description.
+    pub description: String,
+    /// Full root-to-leaf slug path.
+    pub path: String,
+    /// Count of visible direct photos.
+    pub count: u64,
+    /// A visible cover, preferring the explicitly selected photo when available.
+    pub cover: Option<crate::photos::PagePhoto>,
+}
+
+/// A complete visibility-filtered page, with pagination fixed at sixty photos.
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct AlbumPage {
+    /// Album identity and metadata.
+    pub album: AlbumCard,
+    /// Root-to-leaf breadcrumb chain.
+    pub chain: Vec<Breadcrumb>,
+    /// Direct child albums which the principal can view.
+    pub children: Vec<AlbumCard>,
+    /// At most sixty visible photos, in stable selected order.
+    pub photos: Vec<crate::photos::PagePhoto>,
+    /// Total visible photos before LIMIT.
+    pub total: u64,
+}
+
+/// Home summaries and covers in one checked SQL round trip.
+///
+/// # Errors
+/// Returns database errors or malformed stored metadata.
+pub async fn home(
+    conn: &mut PgConnection,
+    principal: &yhotos_core::access::Principal<'_>,
+) -> Result<Vec<AlbumCard>, DbError> {
+    home_for(conn, &crate::access_sql::visible_photos(principal)).await
+}
+
+/// Fetches a visibility-filtered page for the union of independently verified principals.
+///
+/// # Errors
+/// Returns invalid pagination, malformed metadata or a database failure.
+pub async fn home_for(
+    conn: &mut PgConnection,
+    bindings: &crate::access_sql::Bindings,
+) -> Result<Vec<AlbumCard>, DbError> {
+    let row = crate::visible_page_query!(r#",
+      summaries AS (
+        SELECT a.id,a.title,a.description,a.path,a.sort_order,
+          (SELECT count(*) FROM visible_photos p WHERE p.album_id=a.id) AS count,
+          (SELECT to_jsonb(p) || jsonb_build_object('thumbhash',encode(p.placeholder,'base64'),
+            'derivatives',coalesce((SELECT jsonb_agg(jsonb_build_object(
+             'variant',d.variant,'format',d.format,'hdr',d.hdr,'hash',d.hash,'w',d.width,'h',d.height)
+             ORDER BY d.width,d.format,d.hdr) FROM derivatives d WHERE d.photo_id=p.id),'[]'::jsonb))
+           FROM visible_photos p WHERE p.album_id=a.id OR p.id=a.cover_photo_id
+           ORDER BY (p.id=a.cover_photo_id) DESC NULLS LAST,p.sort_order,p.id LIMIT 1) AS cover
+        FROM visible_albums a WHERE a.parent_id IS NULL
+      ) SELECT coalesce(jsonb_agg(to_jsonb(s) ORDER BY sort_order,id),'[]'::jsonb) AS "payload!" FROM summaries s
+    "#, bindings).fetch_one(conn).await?;
+    serde_json::from_value(row.payload).map_err(|_| DbError::InvalidInput)
+}
+
+/// Resolves album, breadcrumbs, children, count and sixty-photo page in one round trip.
+/// SQL filters before LIMIT, so hidden photos never affect page boundaries.
+///
+/// # Errors
+/// Rejects page zero/overflow and returns database errors or malformed metadata.
+pub async fn page(
+    conn: &mut PgConnection,
+    principal: &yhotos_core::access::Principal<'_>,
+    path: &[Slug],
+    page: u32,
+    sort: crate::photos::PageSort,
+) -> Result<Option<AlbumPage>, DbError> {
+    page_for(
+        conn,
+        &crate::access_sql::visible_photos(principal),
+        path,
+        page,
+        sort,
+    )
+    .await
+}
+
+/// Fetches a visibility-filtered page for the union of independently verified principals.
+///
+/// # Errors
+/// Returns invalid pagination, malformed metadata or a database failure.
+pub async fn page_for(
+    conn: &mut PgConnection,
+    bindings: &crate::access_sql::Bindings,
+    path: &[Slug],
+    page: u32,
+    sort: crate::photos::PageSort,
+) -> Result<Option<AlbumPage>, DbError> {
+    let offset = page.checked_sub(1).ok_or(DbError::InvalidInput)?;
+    let offset = i64::from(offset) * 60;
+    let path = path.iter().map(Slug::as_str).collect::<Vec<_>>().join("/");
+    let row = crate::gallery_page_query!(
+        r#"SELECT payload AS "payload!" FROM album_payload"#,
+        bindings,
+        offset,
+        sort.as_str(),
+        Some(path),
+        None::<String>
+    )
+    .fetch_optional(conn)
+    .await?;
+    row.map(|r| serde_json::from_value(r.payload).map_err(|_| DbError::InvalidInput))
+        .transpose()
+}

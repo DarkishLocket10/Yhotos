@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO albums(id,slug,title,description) VALUES($1,'gallery','Fixture gallery','Photos from the garden')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "da9a6cefe106e50304770bf3ea11f47e81fc34a655059030f3cf98eac89131c3"
+}

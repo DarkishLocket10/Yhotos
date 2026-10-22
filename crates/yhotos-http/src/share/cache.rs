@@ -1,5 +1,4 @@
 //! Digest-only caches. Epoch keys prevent in-flight reads from undoing invalidation.
-use super::Photo;
 use crate::{AppState, auth, error::HttpError};
 use moka::future::Cache;
 use std::sync::{
@@ -12,10 +11,11 @@ use yhotos_db::share_links::{self, Landing, LinkSession};
 use zeroize::Zeroizing;
 
 type Key = (u64, [u8; 32]);
+type PageKey = (u64, [u8; 32], u32, yhotos_db::photos::PageSort);
 /// No URL bearer or plaintext passphrase is retained in this state.
 pub(crate) struct Shares {
     epoch: AtomicU64,
-    links: Cache<Key, Option<Arc<Snapshot>>>,
+    links: Cache<PageKey, Option<Arc<Snapshot>>>,
     sessions: Cache<Key, Option<Arc<LinkSession>>>,
     salt: Mutex<Salt>,
 }
@@ -25,7 +25,6 @@ struct Salt {
 }
 pub(crate) struct Snapshot {
     pub landing: Landing,
-    pub photos: Vec<Photo>,
 }
 impl Shares {
     pub(crate) fn new() -> Self {
@@ -33,13 +32,9 @@ impl Shares {
             epoch: AtomicU64::new(0),
             links: Cache::builder()
                 .max_capacity(32 * 1024 * 1024)
-                .weigher(|_: &Key, value: &Option<Arc<Snapshot>>| {
+                .weigher(|_: &PageKey, value: &Option<Arc<Snapshot>>| {
                     value.as_ref().map_or(64, |s| {
-                        let bytes = s
-                            .photos
-                            .iter()
-                            .fold(1024usize, |n, p| n.saturating_add(p.cache_bytes()));
-                        u32::try_from(bytes).unwrap_or(u32::MAX)
+                        u32::try_from(s.landing.bytes.saturating_add(1024)).unwrap_or(u32::MAX)
                     })
                 })
                 .time_to_live(std::time::Duration::from_secs(30))
@@ -73,6 +68,16 @@ impl Shares {
         state: &AppState,
         hash: [u8; 32],
     ) -> Result<Option<Arc<Snapshot>>, HttpError> {
+        self.page(state, hash, 1, yhotos_db::photos::PageSort::Taken)
+            .await
+    }
+    pub(crate) async fn page(
+        &self,
+        state: &AppState,
+        hash: [u8; 32],
+        page: u32,
+        sort: yhotos_db::photos::PageSort,
+    ) -> Result<Option<Arc<Snapshot>>, HttpError> {
         if !auth::required(state)?.caching() {
             self.invalidate();
         }
@@ -80,30 +85,28 @@ impl Shares {
             let version = self.epoch.load(Ordering::SeqCst);
             let snapshot = self
                 .links
-                .try_get_with((version, hash), async {
+                .try_get_with((version, hash, page, sort), async {
                     let mut c = auth::required(state)?
                         .db(auth::Audience(false))?
                         .pool()
                         .acquire()
                         .await?;
-                    let row = share_links::landing(&mut c, &hash).await?;
+                    let row = share_links::landing(&mut c, &hash, page, sort).await?;
                     row.filter(|landing| {
                         bool::from(landing.link.token_hash.as_slice().ct_eq(&hash))
                     })
-                    .map(|mut landing| {
-                        if landing.title.len() > 4096
-                            || landing
-                                .link
-                                .passphrase_hash
-                                .as_ref()
-                                .is_some_and(|h| yhotos_auth::PasswordHash::parse(h).is_err())
+                    .map(|landing| {
+                        if landing
+                            .link
+                            .passphrase_hash
+                            .as_ref()
+                            .is_some_and(|h| yhotos_auth::PasswordHash::parse(h).is_err())
                         {
                             return Err(HttpError::Internal(anyhow::anyhow!(
                                 "invalid stored share metadata"
                             )));
                         }
-                        let photos = super::decode_photos(std::mem::take(&mut landing.photos))?;
-                        Ok(Arc::new(Snapshot { landing, photos }))
+                        Ok(Arc::new(Snapshot { landing }))
                     })
                     .transpose()
                 })
