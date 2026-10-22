@@ -4,7 +4,7 @@ slug: db-schema
 model: gpt-6.1-sol
 effort: xhigh
 review_effort: xhigh
-depends_on: [001]
+depends_on: [001, 002]
 crates: [yhotos-db, yhotos-core]
 ---
 
@@ -23,7 +23,7 @@ crates: [yhotos-db, yhotos-core]
 
 ## Scope
 
-`crates/yhotos-db/` entirely, `crates/yhotos-core/` only to add `sqlx` feature support on ids if not already present from task 002 (coordinate: if 002 is merged, reuse; if not, add the `sqlx` feature gate yourself and keep it minimal). `deploy/dev/compose.yml` for a local Postgres with pgvector. `scripts/check.sh` to start that Postgres if `DATABASE_URL` is unset (document it).
+`crates/yhotos-db/` entirely; `crates/yhotos-core/` only to add the `sqlx` feature (a `sqlx::Type` impl behind `feature = "sqlx"`) on the id newtypes, `Slug`, `ShortId`, and `Visibility` that task 002 created. `deploy/dev/compose.yml` for a local Postgres with pgvector. `scripts/check.sh` to start that Postgres if `DATABASE_URL` is unset (document it). `.github/workflows/ci.yml`: change the `test` job's service image to `pgvector/pgvector:pg16` (pinned by digest) so CI has the extension. `crates/yhotos-bench/` for the `jobs` benchmark target. `Cargo.lock` and workspace `Cargo.toml` for dependencies.
 
 ## Design
 
@@ -33,7 +33,7 @@ crates: [yhotos-db, yhotos-core]
 - Check constraints: exactly one of `user_id`/`share_link_id` on `likes` and `flags`; `visibility` enums as Postgres enums; `album.slug` unique per `parent_id` (use a unique index on `(coalesce(parent_id, '00000000-0000-0000-0000-000000000000'::uuid), slug)`); `photos.short_id` unique; `share_links.token_hash` unique.
 - Every index listed in architecture section 4, plus a partial index on `jobs` for the claim query.
 - Triggers: `updated_at` maintenance via a single function.
-- Roles: a migration creates roles `yhotos_public`, `yhotos_admin`, `yhotos_worker` (NOLOGIN; the deployment creates login roles that inherit) and grants: public gets `SELECT` on everything except `user_mfa`, `sessions` (`SELECT` only via a security-definer function? keep it simple: public gets `SELECT` on `sessions` and `users`, nothing on `user_mfa`), `INSERT` on `events`, `likes`, `flags`, `share_link_opens`, `sessions`, `UPDATE` on `sessions.last_seen_at`, `users.password_hash`/`must_change_password` (for the forced change flow); worker gets everything except `users`, `user_mfa`, `settings`; admin gets all. Put the grant matrix in a comment at the top of that migration and make the integration test assert it by attempting forbidden statements as each role and expecting permission errors.
+- Roles: a migration creates roles `yhotos_public`, `yhotos_admin`, `yhotos_worker` (NOLOGIN; the deployment creates login roles that inherit) and grants: public gets `SELECT` on everything except `user_mfa` and `audit_log`; `INSERT` on `events`, `likes`, `flags`, `share_link_opens`, `sessions`, `audit_log`; `DELETE` on `sessions` and `likes` (own rows; row ownership is enforced by the application, the role boundary is the table); `UPDATE` on `sessions` (`last_seen_at`, `reauth_at`). Public has **no** direct write on `users` (threat model B3). The forced password change and user-initiated password change on the public listener go through a `SECURITY DEFINER` function `user_set_own_password(user_id uuid, new_hash text) returns void`, owned by the admin role, which updates `password_hash`, clears `must_change_password`, and bumps `updated_at`; public gets `EXECUTE` on it and nothing else touches `users`. Similarly `user_touch_login(user_id)` for `last_login_at`. Worker gets everything except `users`, `user_mfa`, `settings`, `audit_log`; admin gets all. Put the grant matrix in a comment at the top of that migration and make the integration test assert it by attempting forbidden statements as each role and expecting permission errors.
 
 ### Db handle
 ```rust
