@@ -66,21 +66,7 @@ fn codec(c: &mut Criterion) {
         b.iter(|| yhotos_codec::decode(black_box(&float), &float_id, &limits).unwrap());
     });
     #[cfg(feature = "raw")]
-    {
-        let canon = tempfile::Builder::new().suffix(".cr2").tempfile().unwrap();
-        std::fs::write(canon.path(), cr2_makernote()).unwrap();
-        c.bench_function("codec/identify_cr2_makernote", |b| {
-            b.iter(|| yhotos_codec::identify(black_box(canon.path()), &limits).unwrap());
-        });
-        // A bounded synthetic envelope around the owner's real JPEG measures the
-        // CR3 preview path without requiring the optional tower RAW collection.
-        let cr3 = tempfile::NamedTempFile::new().unwrap();
-        std::fs::write(cr3.path(), cr3_preview()).unwrap();
-        c.bench_function("codec/identify_cr3_preview", |b| {
-            b.iter(|| yhotos_codec::identify(black_box(cr3.path()), &limits).unwrap());
-        });
-        medium(c, cr3.path(), "cr3_preview");
-    }
+    raw_benchmarks(c);
     let large = root().join("large/24mp.jpg");
     if large.is_file() {
         medium(c, &large, "24mp");
@@ -90,31 +76,79 @@ fn codec(c: &mut Criterion) {
     medium(c, &input, "chart");
 }
 #[cfg(feature = "raw")]
-fn cr2_makernote() -> Vec<u8> {
-    fn ifd(bytes: &mut Vec<u8>, entries: &[(u16, u16, u32, u32)]) {
-        bytes.extend(u16::try_from(entries.len()).unwrap().to_le_bytes());
-        for &(tag, kind, count, value) in entries {
-            bytes.extend(tag.to_le_bytes());
-            bytes.extend(kind.to_le_bytes());
-            bytes.extend(count.to_le_bytes());
-            bytes.extend(value.to_le_bytes());
-        }
-        bytes.extend(0u32.to_le_bytes());
+fn raw_benchmarks(c: &mut Criterion) {
+    let limits = Limits::default();
+    for (name, make, header) in [
+        ("cr2_makernote", b"Canon\0".as_slice(), b"".as_slice()),
+        ("sony_makernote", b"SONY\0", b""),
+        (
+            "nikon_makernote",
+            b"NIKON CORPORATION\0",
+            b"Nikon\0\x02\0\0\0II*\0\x08\0\0\0",
+        ),
+    ] {
+        let file = tempfile::Builder::new().suffix(".cr2").tempfile().unwrap();
+        std::fs::write(file.path(), tiff_makernote(make, header)).unwrap();
+        c.bench_function(&format!("codec/identify_{name}"), |b| {
+            b.iter(|| yhotos_codec::identify(black_box(file.path()), &limits).unwrap());
+        });
     }
+    let preview = tempfile::Builder::new().suffix(".dng").tempfile().unwrap();
+    let jpeg = std::fs::read(root().join("images/photo.jpg")).unwrap();
     let mut bytes = b"II*\0\x08\0\0\0".to_vec();
-    ifd(
+    classic_ifd(
         &mut bytes,
         &[
             (256, 4, 1, 1024),
             (257, 4, 1, 768),
-            (271, 2, 6, 128),
-            (37500, 7, 18, 256),
+            (50706, 1, 4, 0),
+            (513, 4, 1, 128),
+            (514, 4, 1, u32::try_from(jpeg.len()).unwrap()),
         ],
     );
     bytes.resize(128, 0);
-    bytes.extend(b"Canon\0");
+    bytes.extend(jpeg);
+    std::fs::write(preview.path(), bytes).unwrap();
+    c.bench_function("codec/identify_tiff_preview", |b| {
+        b.iter(|| yhotos_codec::identify(black_box(preview.path()), &limits).unwrap());
+    });
+    // A synthetic envelope around the owner's real JPEG measures the CR3 path
+    // without requiring the optional tower RAW collection.
+    let cr3 = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(cr3.path(), cr3_preview()).unwrap();
+    c.bench_function("codec/identify_cr3_preview", |b| {
+        b.iter(|| yhotos_codec::identify(black_box(cr3.path()), &limits).unwrap());
+    });
+    medium(c, cr3.path(), "cr3_preview");
+}
+#[cfg(feature = "raw")]
+fn classic_ifd(bytes: &mut Vec<u8>, entries: &[(u16, u16, u32, u32)]) {
+    bytes.extend(u16::try_from(entries.len()).unwrap().to_le_bytes());
+    for &(tag, kind, count, value) in entries {
+        bytes.extend(tag.to_le_bytes());
+        bytes.extend(kind.to_le_bytes());
+        bytes.extend(count.to_le_bytes());
+        bytes.extend(value.to_le_bytes());
+    }
+    bytes.extend(0u32.to_le_bytes());
+}
+#[cfg(feature = "raw")]
+fn tiff_makernote(make: &[u8], header: &[u8]) -> Vec<u8> {
+    let mut bytes = b"II*\0\x08\0\0\0".to_vec();
+    classic_ifd(
+        &mut bytes,
+        &[
+            (256, 4, 1, 1024),
+            (257, 4, 1, 768),
+            (271, 2, u32::try_from(make.len()).unwrap(), 128),
+            (37500, 7, u32::try_from(header.len()).unwrap() + 18, 256),
+        ],
+    );
+    bytes.resize(128, 0);
+    bytes.extend(make);
     bytes.resize(256, 0);
-    ifd(&mut bytes, &[(0x0081, 4, 1, 512)]);
+    bytes.extend(header);
+    classic_ifd(&mut bytes, &[(0x0081, 4, 1, 512)]);
     bytes.resize(512, 0);
     bytes.extend([0xff, 0xd8, 0xff, 0xc3, 0, 11, 14, 3, 0, 4, 0, 1, 1, 0x11, 0]);
     bytes

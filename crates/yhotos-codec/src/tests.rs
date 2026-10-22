@@ -864,12 +864,18 @@ fn raw_selects_largest_preview_and_preserves_adobe_rgb_round_trip() {
     for previews in [vec![small.clone(), large.clone()], vec![large, small]] {
         preview_dng(&input, 1024, 768, &previews);
         let before = raw::PIXEL_DECODES.get();
+        let buffered = raw::PREVIEW_BUFFER_BYTES.get();
         let id = identify(&input, &Limits::default()).unwrap();
         assert_eq!(raw::PIXEL_DECODES.get(), before);
+        assert_eq!(raw::PREVIEW_BUFFER_BYTES.get(), buffered);
         assert_eq!((id.width, id.height), (1024, 768));
         assert!(id.has_icc);
         assert!(id.icc_desc.as_deref().unwrap().contains("Adobe"));
         let working = decode(&input, &id, &Limits::default()).unwrap();
+        assert_eq!(
+            raw::PREVIEW_BUFFER_BYTES.get() - buffered,
+            previews.iter().map(Vec::len).max().unwrap()
+        );
         let reference = load("chart-adobergb.jpg");
         assert_eq!(working.dimensions().unwrap(), (384, 256));
         assert_eq!(working.profile, reference.profile);
@@ -1333,6 +1339,324 @@ fn canon_makernote_entries_and_slice_extents_share_tiff_validation() {
         .set_len((256 << 20) + 4096)
         .unwrap();
     rejected_tiff(&path, &CodecError::Limits);
+}
+
+// Build only metadata; no camera model or sensor decoder is needed to exercise
+// the pre-rawler trust boundary. Each note is also tested with EXIF indirection.
+#[cfg(feature = "raw")]
+fn makernote_tiff(make: &str, little: bool, exif: bool, note: &[u8]) -> Vec<u8> {
+    let maker_entry = (37500, 7, note.len() as u64, 512);
+    let mut root = vec![
+        (256, 4, 1, 1024),
+        (257, 4, 1, 768),
+        (271, 2, make.len() as u64 + 1, 256),
+        (50706, 1, 4, 0),
+    ];
+    root.push(if exif {
+        (34665, 4, 1, 128)
+    } else {
+        maker_entry
+    });
+    let mut bytes = tiff_entries(&root, false, little);
+    if exif {
+        bytes.resize(128, 0);
+        bytes.extend(&tiff_entries(&[maker_entry], false, little)[8..]);
+    }
+    bytes.resize(256, 0);
+    bytes.extend(make.as_bytes());
+    bytes.push(0);
+    bytes.resize(512, 0);
+    bytes.extend(note);
+    bytes
+}
+
+#[cfg(feature = "raw")]
+fn makernote_layouts(little: bool) -> Vec<(&'static str, Vec<u8>, bool, u64)> {
+    let mut nikon = b"Nikon\0\x02\0\0\0".to_vec();
+    // Deliberately differ from the containing TIFF's byte order.
+    nikon.extend(&tiff_entries(&[], false, !little)[..8]);
+    vec![
+        ("Canon", vec![], little, 0),
+        ("SONY", vec![], little, 0),
+        ("Panasonic", b"Panasonic\0\0\0".to_vec(), little, 0),
+        ("NIKON CORPORATION", nikon, !little, 522),
+        (
+            "OLYMPUS IMAGING CORP.",
+            b"OLYMPUS\0II\x03\0".to_vec(),
+            little,
+            0,
+        ),
+        (
+            "OLYMPUS OPTICAL CO.,LTD",
+            b"OLYMP\0\x01\0".to_vec(),
+            little,
+            0,
+        ),
+        ("FUJIFILM", b"FUJIFILM\x0c\0\0\0".to_vec(), true, 512),
+    ]
+}
+
+#[cfg(feature = "raw")]
+#[test]
+fn all_supported_makernote_layouts_validate_byte_order_and_offset_base() {
+    for little in [false, true] {
+        for exif in [false, true] {
+            for (make, mut note, endian, base) in makernote_layouts(little) {
+                let pointer = 640 - base;
+                note.extend(&tiff_entries(&[(65000, 4, 2, pointer)], false, endian)[8..]);
+                note.resize(128, 0);
+                for n in [17u32, 23] {
+                    note.extend(if endian {
+                        n.to_le_bytes()
+                    } else {
+                        n.to_be_bytes()
+                    });
+                }
+                let bytes = makernote_tiff(make, little, exif, &note);
+                let mut tiff = tiff::Tiff::from_file(
+                    std::io::Cursor::new(&bytes),
+                    bytes.len() as u64,
+                    &Limits::default(),
+                )
+                .unwrap();
+                let indices = tiff.makernotes(make).unwrap();
+                assert_eq!(indices.len(), 1, "{make}");
+                assert_eq!(
+                    tiff.numbers(indices[0], 65000, 2).unwrap(),
+                    [17, 23],
+                    "{make}"
+                );
+                let tmp = tempfile::Builder::new().suffix(".dng").tempfile().unwrap();
+                std::fs::write(tmp.path(), bytes).unwrap();
+                assert!(identify(tmp.path(), &Limits::default()).is_ok(), "{make}");
+            }
+        }
+    }
+}
+
+#[cfg(feature = "raw")]
+#[test]
+fn makernote_counts_payloads_and_truncated_notes_are_rejected_before_rawler() {
+    let tmp = tempfile::Builder::new().suffix(".dng").tempfile().unwrap();
+    for little in [false, true] {
+        for (make, header, endian, base) in makernote_layouts(little) {
+            let mut oversized = header.clone();
+            oversized.extend(if endian {
+                u16::MAX.to_le_bytes()
+            } else {
+                u16::MAX.to_be_bytes()
+            });
+            oversized.extend([0; 16]);
+            std::fs::write(tmp.path(), makernote_tiff(make, little, true, &oversized)).unwrap();
+            rejected_tiff(tmp.path(), &CodecError::Limits);
+            for (entries, error) in [
+                (
+                    vec![(65000, 12, u64::from(u32::MAX), 0)],
+                    CodecError::Limits,
+                ),
+                (
+                    vec![(65000, 7, 64, u64::from(u32::MAX))],
+                    CodecError::Decode,
+                ),
+                (vec![(65000, 0, 1, 0)], CodecError::Decode),
+                // The root/EXIF entries and the note share the 4096-entry cap.
+                (
+                    (0..4091).map(|tag| (tag, 1, 1, 0)).collect(),
+                    CodecError::Limits,
+                ),
+            ] {
+                let mut note = header.clone();
+                note.extend(&tiff_entries(&entries, false, endian)[8..]);
+                std::fs::write(tmp.path(), makernote_tiff(make, little, true, &note)).unwrap();
+                rejected_tiff(tmp.path(), &error);
+            }
+            let mut note = header.clone();
+            note.extend(&tiff_entries(&[(65000, 4, 1, 17)], false, endian)[8..]);
+            // Bytes still exist in the file after the declared MakerNote end;
+            // they must not make a truncated note's IFD table valid.
+            let mut bytes = makernote_tiff(make, little, false, &note[..note.len() - 1]);
+            bytes.extend([0; 64]);
+            std::fs::write(tmp.path(), bytes).unwrap();
+            rejected_tiff(tmp.path(), &CodecError::Decode);
+            for len in 0..header.len() {
+                let mut bytes = makernote_tiff(make, little, true, &header[..len]);
+                bytes.extend([0; 64]);
+                std::fs::write(tmp.path(), bytes).unwrap();
+                assert!(
+                    raw::identify(tmp.path(), &Limits::default()).is_err(),
+                    "{make}/{len}"
+                );
+                assert!(raw::metadata(tmp.path()).is_err(), "{make}/{len}");
+            }
+            // Declared overlapping values count independently against the same
+            // aggregate allocation budget, even inside an embedded TIFF.
+            let mut note = header;
+            note.extend(
+                &tiff_entries(
+                    &[
+                        (65000, 7, 128 << 20, 640 - base),
+                        (65001, 7, 128 << 20, 640 - base),
+                    ],
+                    false,
+                    endian,
+                )[8..],
+            );
+            std::fs::write(tmp.path(), makernote_tiff(make, little, true, &note)).unwrap();
+            tmp.as_file().set_len((128 << 20) + 640).unwrap();
+            rejected_tiff(tmp.path(), &CodecError::Limits);
+        }
+    }
+}
+
+#[cfg(feature = "raw")]
+#[test]
+fn olympus_child_directories_and_fujifilm_rawler_view_are_also_bounded() {
+    let tmp = tempfile::Builder::new().suffix(".dng").tempfile().unwrap();
+    for little in [false, true] {
+        for (tag, kind, count, pointer) in [
+            (0x2010, 7, 1, 128),
+            (0x2040, 7, 1, 128),
+            (0x3000, 4, 1, 640),
+            (0x3000, 7, 18, 640),
+        ] {
+            let mut note = b"OLYMPUS\0II\x03\0".to_vec();
+            note.extend(&tiff_entries(&[(tag, kind, count, pointer)], false, little)[8..]);
+            note.resize(128, 0);
+            note.extend(&tiff_entries(&[(65000, 12, u64::from(u32::MAX), 0)], false, little)[8..]);
+            std::fs::write(tmp.path(), makernote_tiff("OLYMPUS", little, true, &note)).unwrap();
+            rejected_tiff(tmp.path(), &CodecError::Limits);
+        }
+    }
+    // Identification honors Fujifilm's little endian even in a big endian
+    // outer TIFF. rawler's inherited-endian interpretation must pass its own
+    // budget checks before either metadata or demosaic can enter that helper.
+    let mut note = b"FUJIFILM\x0c\0\0\0".to_vec();
+    note.extend(&tiff_entries(&[(65000, 4, 1, 17)], false, true)[8..]);
+    let mut bytes = makernote_tiff("FUJIFILM", false, true, &note);
+    let mut dng = tiff::Tiff::from_file(
+        std::io::Cursor::new(&bytes),
+        bytes.len() as u64,
+        &Limits::default(),
+    )
+    .unwrap();
+    assert_eq!(dng.rawler_fujifilm_makernotes(), Ok(()));
+    // Change the DNGVersion tag to CFAPattern to exercise generic RAW dispatch.
+    bytes[46..48].copy_from_slice(&33422u16.to_be_bytes());
+    let mut tiff = tiff::Tiff::from_file(
+        std::io::Cursor::new(&bytes),
+        bytes.len() as u64,
+        &Limits::default(),
+    )
+    .unwrap();
+    assert_eq!(tiff.rawler_fujifilm_makernotes(), Err(CodecError::Decode));
+    std::fs::write(tmp.path(), bytes).unwrap();
+    let id = identify(tmp.path(), &Limits::default()).unwrap();
+    let before = raw::PIXEL_DECODES.get();
+    assert_eq!(
+        decode(tmp.path(), &id, &Limits::default()).err(),
+        Some(CodecError::Decode)
+    );
+    assert_eq!(metadata(tmp.path()).err(), Some(CodecError::Decode));
+    assert_eq!(raw::PIXEL_DECODES.get(), before);
+}
+
+#[cfg(feature = "raw")]
+#[test]
+fn unrecognized_makernote_headers_are_unsupported() {
+    let tmp = tempfile::Builder::new().suffix(".dng").tempfile().unwrap();
+    for make in [
+        "NIKON CORPORATION",
+        "Panasonic",
+        "OLYMPUS",
+        "FUJIFILM",
+        "PENTAX",
+    ] {
+        let note = [0; 32];
+        std::fs::write(tmp.path(), makernote_tiff(make, true, true, &note)).unwrap();
+        rejected_tiff(tmp.path(), &CodecError::Unsupported);
+    }
+    // rawler accepts other vendor signatures through its generic parser. Those
+    // layouts have no validated offset model here, so they cannot enter it.
+    std::fs::write(
+        tmp.path(),
+        makernote_tiff("SONY", true, true, b"SONY DSC \0\0\0\0\0\0\0\0\0"),
+    )
+    .unwrap();
+    rejected_tiff(tmp.path(), &CodecError::Unsupported);
+}
+
+#[cfg(feature = "raw")]
+#[test]
+fn sparse_tiff_preview_identification_never_buffers_the_declared_payload() {
+    let tmp = tempfile::Builder::new().suffix(".dng").tempfile().unwrap();
+    let jpeg = std::fs::read(fixture("tiny-1x1.jpg")).unwrap();
+    let len = (512 << 20) + 1;
+    for strips in [false, true] {
+        let mut entries = vec![(256, 4, 1, 1), (257, 4, 1, 1), (50706, 1, 4, 0)];
+        if strips {
+            entries.extend([
+                (254, 4, 1, 1),
+                (259, 4, 1, 7),
+                (262, 4, 1, 2),
+                (273, 4, 1, 512),
+                (279, 4, 1, len),
+            ]);
+            // Keep a non-reduced sensor IFD for the reported RAW dimensions.
+            entries.push((330, 4, 1, 256));
+        } else {
+            entries.extend([(513, 4, 1, 512), (514, 4, 1, len)]);
+        }
+        let mut bytes = tiff_entries(&entries, false, true);
+        if strips {
+            bytes.resize(256, 0);
+            bytes.extend(&tiff_entries(&[(256, 4, 1, 1), (257, 4, 1, 1)], false, true)[8..]);
+        }
+        bytes.resize(512, 0);
+        bytes.extend(&jpeg);
+        std::fs::write(tmp.path(), bytes).unwrap();
+        tmp.as_file().set_len(512 + len).unwrap();
+        let start = Instant::now();
+        let before = raw::PREVIEW_BUFFER_BYTES.get();
+        let id = identify(tmp.path(), &Limits::default()).unwrap();
+        assert_eq!((id.width, id.height), (1, 1));
+        assert_eq!(raw::PREVIEW_BUFFER_BYTES.get(), before);
+        assert_eq!(
+            decode(tmp.path(), &id, &Limits::default()).err(),
+            Some(CodecError::Limits)
+        );
+        assert_eq!(raw::PREVIEW_BUFFER_BYTES.get(), before);
+        assert!(start.elapsed().as_secs_f32() < 2.0);
+    }
+}
+
+#[cfg(feature = "raw")]
+#[test]
+fn preview_header_reads_stop_at_sos_and_never_scan_beyond_64_kib() {
+    let jpeg = std::fs::read(fixture("chart-adobergb.jpg")).unwrap();
+    let mut reader = std::io::Cursor::new(&jpeg);
+    let header = headers::jpeg_header(&mut reader).unwrap();
+    assert_eq!(reader.position() as usize, header.len());
+    assert_eq!(header, jpeg[..header.len()]);
+    assert!(header.len() < jpeg.len());
+    assert!(
+        native::Image::jpeg_profile(&header, &Limits::default())
+            .unwrap()
+            .is_some()
+    );
+    // Two large APP segments move SOF outside the bounded prefix. A tiny valid
+    // JPEG follows them, so reading past the cap would incorrectly succeed.
+    let mut late = vec![0xff, 0xd8];
+    for _ in 0..2 {
+        late.extend([0xff, 0xe1, 0x80, 0]);
+        late.resize(late.len() + 32766, 0);
+    }
+    late.extend(&jpeg[2..]);
+    let file = tempfile::NamedTempFile::new().unwrap();
+    preview_dng(file.path(), 1024, 768, &[late]);
+    assert!(raw::identify(file.path(), &Limits::default()).is_err());
+    let bounded = raw::PREVIEW_BUFFER_BYTES.get();
+    assert!(raw::decode(file.path(), &Limits::default()).is_err());
+    assert_eq!(raw::PREVIEW_BUFFER_BYTES.get(), bounded);
 }
 
 fn bmff_box(kind: &[u8], payload: &[u8]) -> Vec<u8> {

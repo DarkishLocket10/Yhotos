@@ -52,9 +52,9 @@ fuzz_target!(|data: &[u8]| {
         return;
     }
     check(file.path(), &limits);
-    // Mutate a Canon MakerNote behind valid TIFF dimensions and Make, so its
-    // entry parser and independent sensor offsets cannot hide behind bad magic.
-    let nested = canon_makernote(data);
+    // Mutate vendor MakerNotes behind valid TIFF dimensions and Make, so the
+    // shared entry, extent and payload budgets cannot hide behind bad magic.
+    let nested = makernote(data);
     if nested.len() <= limits.max_bytes as usize && std::fs::write(file.path(), nested).is_ok() {
         check(file.path(), &limits);
     }
@@ -104,14 +104,23 @@ fn cr3(moov: &[u8]) -> Vec<u8> {
     bytes
 }
 
-fn canon_makernote(data: &[u8]) -> Vec<u8> {
+fn makernote(data: &[u8]) -> Vec<u8> {
+    let (make, header): (&[u8], &[u8]) = match data.first().copied().unwrap_or(0) % 7 {
+        1 => (b"SONY\0", b""),
+        2 => (b"NIKON CORPORATION\0", b"Nikon\0\x02\0\0\0II*\0\x08\0\0\0"),
+        3 => (b"Panasonic\0", b"Panasonic\0\0\0"),
+        4 => (b"OLYMPUS\0", b"OLYMPUS\0II\x03\0"),
+        5 => (b"OLYMPUS\0", b"OLYMP\0\x01\0"),
+        6 => (b"FUJIFILM\0", b"FUJIFILM\x0c\0\0\0"),
+        _ => (b"Canon\0", b""),
+    };
     let mut bytes = b"II*\0\x10\0\0\0CR\x02\0\x10\0\0\0".to_vec();
     bytes.extend(4u16.to_le_bytes());
     for (tag, kind, count, value) in [
         (256u16, 4u16, 1u32, 1u32),
         (257, 4, 1, 1),
-        (271, 2, 6, 96),
-        (37500, 7, data.len() as u32, 128),
+        (271, 2, make.len() as u32, 96),
+        (37500, 7, (header.len() + data.len()) as u32, 128),
     ] {
         bytes.extend(tag.to_le_bytes());
         bytes.extend(kind.to_le_bytes());
@@ -120,8 +129,9 @@ fn canon_makernote(data: &[u8]) -> Vec<u8> {
     }
     bytes.extend(0u32.to_le_bytes());
     bytes.resize(96, 0);
-    bytes.extend(b"Canon\0");
+    bytes.extend(make);
     bytes.resize(128, 0);
+    bytes.extend(header);
     bytes.extend(data);
     bytes
 }

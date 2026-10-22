@@ -253,8 +253,70 @@ fn jpeg_gain_headers(
     Err(CodecError::Decode)
 }
 
-// Read only JPEG marker headers, stopping at SOF without entering entropy data.
+// Retain metadata through SOS for native header access, never entropy data.
 #[cfg(feature = "raw")]
+pub(crate) fn jpeg_header<R: Read>(mut reader: R) -> Result<Vec<u8>, CodecError> {
+    let mut magic = [0; 2];
+    reader
+        .read_exact(&mut magic)
+        .map_err(|_| CodecError::Decode)?;
+    if magic != [0xff, 0xd8] {
+        return Err(CodecError::BadMagic);
+    }
+    let mut bytes = magic.to_vec();
+    loop {
+        if bytes.len() + 2 > 64 << 10 {
+            return Err(CodecError::Limits);
+        }
+        let mut marker = [0; 2];
+        reader
+            .read_exact(&mut marker)
+            .map_err(|_| CodecError::Decode)?;
+        if marker[0] != 0xff {
+            return Err(CodecError::Decode);
+        }
+        bytes.extend(marker);
+        while marker[1] == 0xff {
+            if bytes.len() >= 64 << 10 {
+                return Err(CodecError::Limits);
+            }
+            reader
+                .read_exact(&mut marker[1..])
+                .map_err(|_| CodecError::Decode)?;
+            bytes.push(marker[1]);
+        }
+        if marker[1] == 0xd9 {
+            return Ok(bytes);
+        }
+        if marker[1] == 1 || (0xd0..=0xd7).contains(&marker[1]) {
+            continue;
+        }
+        let mut size = [0; 2];
+        reader
+            .read_exact(&mut size)
+            .map_err(|_| CodecError::Decode)?;
+        let len = usize::from(
+            u16::from_be_bytes(size)
+                .checked_sub(2)
+                .ok_or(CodecError::Decode)?,
+        );
+        if bytes.len() + 2 + len > 64 << 10 {
+            return Err(CodecError::Limits);
+        }
+        bytes.extend(size);
+        let start = bytes.len();
+        bytes.resize(start + len, 0);
+        reader
+            .read_exact(bytes.get_mut(start..).ok_or(CodecError::Decode)?)
+            .map_err(|_| CodecError::Decode)?;
+        if marker[1] == 0xda {
+            return Ok(bytes);
+        } // Stop before entropy data.
+    }
+}
+
+#[cfg(feature = "raw")]
+// Read only JPEG marker headers, stopping at SOF without entering entropy data.
 pub(crate) fn jpeg_dimensions(bytes: &[u8], limits: &Limits) -> Result<(u32, u32), CodecError> {
     let (w, h, _) = jpeg_frame(bytes, limits, &mut (16 << 20))?;
     Ok((w, h))

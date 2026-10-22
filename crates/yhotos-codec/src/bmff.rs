@@ -265,7 +265,7 @@ struct Walker {
     #[cfg(feature = "raw")]
     limits: Limits,
     #[cfg(feature = "raw")]
-    preview: Option<(u64, u64, u64)>, // offset, encoded length, pixel count
+    preview: Option<crate::raw::Preview>,
     #[cfg(feature = "raw")]
     jpeg_budget: u64,
     #[cfg(feature = "raw")]
@@ -359,7 +359,7 @@ impl Walker {
             .seek(SeekFrom::Start(start))
             .map_err(|_| CodecError::Io)?;
         let (w, h, _) = crate::headers::jpeg_frame(
-            (&mut self.file).take(len),
+            (&mut self.file).take(len.min(64 << 10)),
             &self.limits,
             &mut self.jpeg_budget,
         )?;
@@ -367,8 +367,17 @@ impl Walker {
             return Err(CodecError::Mismatch);
         }
         let pixels = u64::from(w) * u64::from(h);
-        if self.preview.is_none_or(|(_, _, old)| pixels > old) {
-            self.preview = Some((start, len, pixels));
+        if self
+            .preview
+            .as_ref()
+            .is_none_or(|p| pixels > u64::from(p.width) * u64::from(p.height))
+        {
+            self.preview = Some(crate::raw::Preview {
+                offset: start,
+                len,
+                width: w,
+                height: h,
+            });
         }
         Ok(())
     }
@@ -490,7 +499,10 @@ impl Walker {
     }
 }
 #[cfg(feature = "raw")]
-pub(crate) fn preview(path: &Path, limits: &Limits) -> Result<Option<Vec<u8>>, CodecError> {
+pub(crate) fn preview(
+    path: &Path,
+    limits: &Limits,
+) -> Result<Option<crate::raw::Preview>, CodecError> {
     let file = File::open(path).map_err(|_| CodecError::Io)?;
     let len = file.metadata().map_err(|_| CodecError::Io)?.len();
     if len > limits.max_bytes {
@@ -511,17 +523,5 @@ pub(crate) fn preview(path: &Path, limits: &Limits) -> Result<Option<Vec<u8>>, C
     if walker.seen != [true; 3] {
         return Err(CodecError::Decode);
     }
-    let Some((offset, len, _)) = walker.preview else {
-        return Ok(None);
-    };
-    let mut bytes = vec![0; usize::try_from(len).map_err(|_| CodecError::Limits)?];
-    walker
-        .file
-        .seek(SeekFrom::Start(offset))
-        .map_err(|_| CodecError::Io)?;
-    walker
-        .file
-        .read_exact(&mut bytes)
-        .map_err(|_| CodecError::Decode)?;
-    Ok(Some(bytes))
+    Ok(walker.preview)
 }

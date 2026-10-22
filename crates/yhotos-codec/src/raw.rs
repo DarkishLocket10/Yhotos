@@ -12,11 +12,18 @@
 //! - Sony ARW: common TIFF/sensor checks plus ARW1's eight extra coded rows.
 //! - DNG (any make): common TIFF/SubIFD checks, lossless JPEG and JPEG XL
 //!   (Compression=52546) frame dimensions before sensor decoding.
+//! - Canon/Sony/Panasonic/Nikon/Olympus/Fujifilm `MakerNotes`: vendor header,
+//!   byte order, offset base, note table extent and shared TIFF budgets.
+//!   Unsupported make/header layouts never enter rawler.
 //! - Other TIFF-based makes use the common checks, with no make-specific probe;
 //!   other proprietary containers return Unsupported, never a dummy decode.
 use crate::{CodecError, Identity, Kind, Limits, Metadata, RawMake, Working, native};
 use rawler::{decoders::RawDecodeParams, rawsource::RawSource};
-use std::path::Path;
+use std::{
+    fs::File,
+    io::{BufReader, Read, Seek, SeekFrom},
+    path::Path,
+};
 pub(crate) fn candidate(path: &Path, kind: &Kind) -> bool {
     matches!(kind, Kind::Raw(_))
         || path.extension().and_then(|s| s.to_str()).is_some_and(|s| {
@@ -26,26 +33,103 @@ pub(crate) fn candidate(path: &Path, kind: &Kind) -> bool {
         })
 }
 // rawler 0.8's decode_dummy and preview APIs can decode pixels. Never call
-// them to probe headers. Keep encoded JPEGs so their ICC survives import.
+// them to probe headers. Keep file ranges so no encoded preview is allocated
+// until decode; bounded JPEG headers supply ICC/orientation/metadata separately.
+pub(crate) struct Preview {
+    pub(crate) offset: u64,
+    pub(crate) len: u64,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+}
+impl Preview {
+    fn file(&self, path: &Path) -> Result<File, CodecError> {
+        let mut file = File::open(path).map_err(|_| CodecError::Io)?;
+        let len = file.metadata().map_err(|_| CodecError::Io)?.len();
+        if self
+            .offset
+            .checked_add(self.len)
+            .is_none_or(|end| end > len)
+        {
+            return Err(CodecError::Decode);
+        }
+        file.seek(SeekFrom::Start(self.offset))
+            .map_err(|_| CodecError::Io)?;
+        Ok(file)
+    }
+    fn header(&self, path: &Path) -> Result<Vec<u8>, CodecError> {
+        // Cap the underlying file reader too, including buffered read-ahead.
+        crate::headers::jpeg_header(BufReader::with_capacity(
+            4096,
+            self.file(path)?.take(self.len.min(64 << 10)),
+        ))
+    }
+    fn buffer(&self, path: &Path, limits: &Limits) -> Result<Vec<u8>, CodecError> {
+        if self.len > limits.max_bytes.min(256 << 20) {
+            return Err(CodecError::Limits);
+        }
+        let mut file = self.file(path)?;
+        let mut bytes = vec![0; usize::try_from(self.len).map_err(|_| CodecError::Limits)?];
+        #[cfg(test)]
+        PREVIEW_BUFFER_BYTES.set(PREVIEW_BUFFER_BYTES.get() + bytes.len());
+        file.read_exact(&mut bytes)
+            .map_err(|_| CodecError::Decode)?;
+        Ok(bytes)
+    }
+}
 struct Probe {
     width: u32,
     height: u32,
     orientation: u8,
     make: String,
-    preview: Option<Vec<u8>>,
+    preview: Option<Preview>,
+    profile: Option<Vec<u8>>,
     cr3: bool,
 }
 impl Probe {
-    fn preview(&mut self, bytes: Vec<u8>, limits: &Limits) -> Result<(), CodecError> {
-        let (w, h) = crate::headers::jpeg_dimensions(&bytes, limits)?;
+    fn previews(
+        &mut self,
+        tiff: &mut crate::tiff::Tiff,
+        i: usize,
+        jpeg_strips: bool,
+        limits: &Limits,
+        budget: &mut u64,
+    ) -> Result<(), CodecError> {
+        if let Some((offset, len)) = tiff.number(i, 513)?.zip(tiff.number(i, 514)?) {
+            self.preview(tiff, offset, len, limits, budget)?;
+        }
+        if jpeg_strips {
+            let offsets = tiff.numbers(i, 273, 64)?;
+            let lengths = tiff.numbers(i, 279, 64)?;
+            if let ([offset], [len]) = (offsets.as_slice(), lengths.as_slice()) {
+                self.preview(tiff, *offset, *len, limits, budget)?;
+            }
+        }
+        // RW2 stores its JPEG directly in tag 46.
+        if let Some((offset, len)) = tiff.blob_range(i, 46)? {
+            self.preview(tiff, offset, len, limits, budget)?;
+        }
+        Ok(())
+    }
+    fn preview(
+        &mut self,
+        tiff: &mut crate::tiff::Tiff,
+        offset: u64,
+        len: u64,
+        limits: &Limits,
+        budget: &mut u64,
+    ) -> Result<(), CodecError> {
+        let (w, h, _) = tiff.preview_frame(offset, len, limits, budget)?;
         let old = self
             .preview
-            .as_deref()
-            .map(|b| crate::headers::jpeg_dimensions(b, limits))
-            .transpose()?
-            .map_or(0, |(w, h)| u64::from(w) * u64::from(h));
+            .as_ref()
+            .map_or(0, |p| u64::from(p.width) * u64::from(p.height));
         if u64::from(w) * u64::from(h) > old {
-            self.preview = Some(bytes);
+            self.preview = Some(Preview {
+                offset,
+                len,
+                width: w,
+                height: h,
+            });
         }
         Ok(())
     }
@@ -62,9 +146,11 @@ fn probe(path: &Path, limits: &Limits) -> Result<Probe, CodecError> {
         orientation: 1,
         make: String::new(),
         preview: None,
+        profile: None,
         cr3: false,
     };
     let mut sensor_budget = 16u64 << 20;
+    let mut preview_budget = 16u64 << 20;
     let mut sensor_count = 0usize;
     for i in 0..tiff.count() {
         if probe.make.is_empty()
@@ -106,9 +192,6 @@ fn probe(path: &Path, limits: &Limits) -> Result<Probe, CodecError> {
                 probe.height = h;
             }
         }
-        if let Some((offset, len)) = tiff.number(i, 513)?.zip(tiff.number(i, 514)?) {
-            probe.preview(tiff.data(offset, len, limits)?, limits)?;
-        }
         let compression = tiff.number(i, 259)?.unwrap_or(1);
         let color = tiff.number(i, 262)?.is_some_and(|n| n == 2 || n == 6);
         // Sensor strips/tiles are independent codestreams. In particular CR2
@@ -139,20 +222,23 @@ fn probe(path: &Path, limits: &Limits) -> Result<Probe, CodecError> {
             &mut sensor_budget,
             &mut sensor_count,
         )?;
-        if matches!(compression, 6 | 7) && (reduced || color) {
-            let offsets = tiff.numbers(i, 273, 64)?;
-            let lengths = tiff.numbers(i, 279, 64)?;
-            if let ([offset], [len]) = (offsets.as_slice(), lengths.as_slice()) {
-                probe.preview(tiff.data(*offset, *len, limits)?, limits)?;
-            }
-        }
-        // RW2 stores its JPEG directly in tag 46.
-        if let Some(bytes) = tiff.blob(i, 46, limits.max_bytes)? {
-            probe.preview(bytes, limits)?;
-        }
+        probe.previews(
+            &mut tiff,
+            i,
+            matches!(compression, 6 | 7) && (reduced || color),
+            limits,
+            &mut preview_budget,
+        )?;
     }
+    let notes = tiff.makernotes(&probe.make)?;
     if (tiff.flavor == crate::tiff::Flavor::Canon || probe.make == "Canon") && !tiff.has(0, 50706) {
-        check_canon_makernotes(&mut tiff, limits, &mut sensor_budget, &mut sensor_count)?;
+        check_canon_makernotes(
+            &mut tiff,
+            notes,
+            limits,
+            &mut sensor_budget,
+            &mut sensor_count,
+        )?;
     }
     limits.check(probe.width, probe.height, 1)?;
     Ok(probe)
@@ -187,6 +273,9 @@ fn check_sensor(
     sensor_budget: &mut u64,
     sensor_count: &mut usize,
 ) -> Result<(), CodecError> {
+    let preview = matches!(compression, 6 | 7)
+        && (tiff.number(i, 254)?.unwrap_or(0) & 1 != 0
+            || tiff.number(i, 262)?.is_some_and(|n| n == 2 || n == 6));
     if matches!(compression, 6 | 7 | 34892 | 52546) || tiff.has(i, 0xc5d8) {
         for (offset_tag, length_tag) in [(273, 279), (324, 325)] {
             let offsets = tiff.numbers(i, offset_tag, 4096)?;
@@ -195,6 +284,17 @@ fn check_sensor(
                 return Err(CodecError::Decode);
             }
             for (n, offset) in offsets.iter().enumerate() {
+                if preview && offset_tag == 273 {
+                    *sensor_count += 1;
+                    if *sensor_count > 4096 {
+                        return Err(CodecError::Limits);
+                    }
+                    let len = *lengths.get(n).ok_or(CodecError::Decode)?;
+                    let (w, h, components) =
+                        tiff.preview_frame(*offset, len, limits, sensor_budget)?;
+                    limits.check(w.checked_mul(components).ok_or(CodecError::Limits)?, h, 1)?;
+                    continue;
+                }
                 if compression == 52546 {
                     *sensor_count += 1;
                     if *sensor_count > 4096 {
@@ -244,28 +344,33 @@ fn check_sensor_frame(
 }
 fn probe_cr3(path: &Path, limits: &Limits) -> Result<Probe, CodecError> {
     // No rawler entry point is allowed for this container, including metadata.
-    // The walker validates every candidate JPEG before allocating its buffer.
-    let bytes = crate::bmff::preview(path, limits)?.ok_or(CodecError::Unsupported)?;
-    let (width, height) = crate::headers::jpeg_dimensions(&bytes, limits)?;
-    let orientation = native::Image::jpeg_orientation(&bytes, limits)?;
+    // The walker validates every candidate JPEG, retaining only its file range.
+    let preview = crate::bmff::preview(path, limits)?.ok_or(CodecError::Unsupported)?;
+    let bytes = preview.header(path)?;
+    let (orientation, profile) = native::Image::jpeg_info(&bytes, limits)?;
     Ok(Probe {
-        width,
-        height,
+        width: preview.width,
+        height: preview.height,
         orientation,
         make: "Canon".to_owned(),
-        preview: Some(bytes),
+        preview: Some(preview),
+        profile,
         cr3: true,
     })
 }
 
 pub(crate) fn identify(path: &Path, limits: &Limits) -> Result<Identity, CodecError> {
     let probe = probe(path, limits)?;
-    let profile = probe
-        .preview
-        .as_deref()
-        .map(|bytes| native::Image::jpeg_profile(bytes, limits))
-        .transpose()?
-        .flatten();
+    let profile = if probe.cr3 {
+        probe.profile
+    } else {
+        probe
+            .preview
+            .as_ref()
+            .map(|preview| native::Image::jpeg_profile(&preview.header(path)?, limits))
+            .transpose()?
+            .flatten()
+    };
     Ok(Identity {
         kind: Kind::Raw(RawMake(probe.make)),
         width: probe.width,
@@ -281,11 +386,14 @@ pub(crate) fn identify(path: &Path, limits: &Limits) -> Result<Identity, CodecEr
 }
 #[cfg(test)]
 std::thread_local! { pub(crate) static PIXEL_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+#[cfg(test)]
+std::thread_local! { pub(crate) static PREVIEW_BUFFER_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 pub(crate) fn decode(path: &Path, limits: &Limits) -> Result<Working, CodecError> {
     let probe = probe(path, limits)?;
-    #[cfg(test)]
-    PIXEL_DECODES.set(PIXEL_DECODES.get() + 1);
-    if let Some(bytes) = probe.preview {
+    if let Some(preview) = probe.preview {
+        let bytes = preview.buffer(path, limits)?;
+        #[cfg(test)]
+        PIXEL_DECODES.set(PIXEL_DECODES.get() + 1);
         // Materialize while the encoded buffer is alive. The exact JPEG, including
         // its ICC, enters the same import path as a standalone profiled JPEG.
         return native::Image::jpeg_decode(&bytes, limits, probe.orientation);
@@ -293,8 +401,10 @@ pub(crate) fn decode(path: &Path, limits: &Limits) -> Result<Working, CodecError
     if probe.cr3 {
         return Err(CodecError::Unsupported);
     }
-    let source = RawSource::new(path).map_err(|_| CodecError::Io)?;
+    let source = rawler_source(path, &probe.make, limits)?;
     let decoder = rawler::get_decoder(&source).map_err(|_| CodecError::Decode)?;
+    #[cfg(test)]
+    PIXEL_DECODES.set(PIXEL_DECODES.get() + 1);
     let raw = decoder
         .raw_image(&source, &RawDecodeParams::default(), false)
         .map_err(|_| CodecError::Decode)?;
@@ -319,13 +429,13 @@ pub(crate) fn metadata(path: &Path) -> Result<Metadata, CodecError> {
     let limits = Limits::default();
     let probe = probe(path, &limits)?;
     if probe.cr3 {
-        let bytes = probe.preview.ok_or(CodecError::Unsupported)?;
+        let bytes = probe.preview.ok_or(CodecError::Unsupported)?.header(path)?;
         let mut md = native::Image::jpeg_metadata(&bytes, &limits)?;
         md.make = Some(probe.make);
         return Ok(md);
     }
     // TIFF sensor headers must pass the same checks even for metadata calls.
-    let source = RawSource::new(path).map_err(|_| CodecError::Io)?;
+    let source = rawler_source(path, &probe.make, &limits)?;
     let decoder = rawler::get_decoder(&source).map_err(|_| CodecError::Decode)?;
     let md = decoder
         .raw_metadata(&source, &RawDecodeParams::default())
@@ -379,13 +489,21 @@ pub(crate) fn metadata(path: &Path) -> Result<Metadata, CodecError> {
     })
 }
 
+fn rawler_source(path: &Path, make: &str, limits: &Limits) -> Result<RawSource, CodecError> {
+    if make == "FUJIFILM" {
+        crate::tiff::Tiff::open(path, limits)?.rawler_fujifilm_makernotes()?;
+    }
+    RawSource::new(path).map_err(|_| CodecError::Io)
+}
+
 fn check_canon_makernotes(
     tiff: &mut crate::tiff::Tiff,
+    notes: Vec<usize>,
     limits: &Limits,
     sensor_budget: &mut u64,
     sensor_count: &mut usize,
 ) -> Result<(), CodecError> {
-    for i in tiff.canon_makernotes()? {
+    for i in notes {
         if let Some(offset) = tiff.number(i, 0x0081)? {
             check_sensor_frame(tiff, offset, None, limits, sensor_budget, sensor_count)?;
         }

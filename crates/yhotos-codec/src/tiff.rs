@@ -14,6 +14,13 @@ struct Entry {
     count: u64,
     position: u64,
     value: u64,
+    layout: Layout,
+}
+#[derive(Clone, Copy)]
+struct Layout {
+    little: bool,
+    big: bool,
+    base: u64,
 }
 impl Entry {
     fn size(&self) -> Result<u64, CodecError> {
@@ -119,32 +126,59 @@ impl<F: Read + Seek> Tiff<F> {
         }
         Ok(t)
     }
-    // Shared by normal TIFF and Canon MakerNote IFDs, with one allocation budget.
+    // Shared by normal TIFF and all MakerNote IFDs, with one allocation budget.
     fn directory(&mut self, offset: u64) -> Result<(usize, u64), CodecError> {
+        self.directory_at(
+            offset,
+            Layout {
+                little: self.little,
+                big: self.big,
+                base: 0,
+            },
+            self.len,
+        )
+    }
+    fn directory_at(
+        &mut self,
+        offset: u64,
+        layout: Layout,
+        end: u64,
+    ) -> Result<(usize, u64), CodecError> {
         if self.ifds.len() == 64 {
             return Err(CodecError::Limits);
         }
-        let (count_size, entry_size, pointer_size) = if self.big { (8, 20, 8) } else { (2, 12, 4) };
+        let (count_size, entry_size, pointer_size) =
+            if layout.big { (8, 20, 8) } else { (2, 12, 4) };
+        if offset.checked_add(count_size).is_none_or(|n| n > end) {
+            return Err(CodecError::Decode);
+        }
         let bytes = self.read(offset, count_size)?;
-        let count = self.num(&bytes, 0, count_size)?;
+        let num = |bytes: &[u8], start, size| Self::integer(bytes, start, size, layout.little);
+        let count = num(&bytes, 0, count_size)?;
         self.entry_budget = self
             .entry_budget
             .checked_sub(count)
             .ok_or(CodecError::Limits)?;
         let entries_start = offset.checked_add(count_size).ok_or(CodecError::Decode)?;
         let entries_bytes = count * entry_size;
+        if entries_start
+            .checked_add(entries_bytes + pointer_size)
+            .is_none_or(|n| n > end)
+        {
+            return Err(CodecError::Decode);
+        }
         let bytes = self.read(entries_start, entries_bytes + pointer_size)?;
         let mut entries = Vec::new();
         for i in 0..count {
             let start = i * entry_size;
-            let value_start = start + if self.big { 12 } else { 8 };
+            let value_start = start + if layout.big { 12 } else { 8 };
             let entry = Entry {
-                tag: u16::try_from(self.num(&bytes, start, 2)?).map_err(|_| CodecError::Decode)?,
-                kind: u16::try_from(self.num(&bytes, start + 2, 2)?)
-                    .map_err(|_| CodecError::Decode)?,
-                count: self.num(&bytes, start + 4, if self.big { 8 } else { 4 })?,
+                tag: u16::try_from(num(&bytes, start, 2)?).map_err(|_| CodecError::Decode)?,
+                kind: u16::try_from(num(&bytes, start + 2, 2)?).map_err(|_| CodecError::Decode)?,
+                count: num(&bytes, start + 4, if layout.big { 8 } else { 4 })?,
                 position: entries_start + value_start,
-                value: self.num(&bytes, value_start, pointer_size)?,
+                value: num(&bytes, value_start, pointer_size)?,
+                layout,
             };
             let (_, len) = self.range(&entry, entry.size()?)?;
             self.payload_budget = self
@@ -163,28 +197,164 @@ impl<F: Read + Seek> Tiff<F> {
         }
         let index = self.ifds.len();
         self.ifds.push(entries);
-        Ok((index, self.num(&bytes, entries_bytes, pointer_size)?))
+        Ok((index, num(&bytes, entries_bytes, pointer_size)?))
     }
     #[cfg(feature = "raw")]
-    pub(crate) fn canon_makernotes(&mut self) -> Result<Vec<usize>, CodecError> {
+    pub(crate) fn makernotes(&mut self, make: &str) -> Result<Vec<usize>, CodecError> {
         let mut indices = Vec::new();
         for i in 0..self.count() {
             let Some(entry) = self.entry(i, 37500) else {
                 continue;
             };
-            // rawler's CR2 decoder parses a classic IFD at the blob's absolute
-            // file offset, using the enclosing TIFF byte order and base zero.
-            if self.big {
+            if self.big || entry.kind != 7 {
                 return Err(CodecError::Unsupported);
             }
             let (offset, len) = self.range(&entry, entry.size()?)?;
             if len <= 4 {
                 return Err(CodecError::Decode);
             }
-            // rawler does not follow MakerNote next-IFD or sub-IFD links.
-            indices.push(self.directory(offset)?.0);
+            let end = offset.checked_add(len).ok_or(CodecError::Decode)?;
+            let header = if make == "Canon" {
+                Vec::new()
+            } else {
+                self.read(offset, len.min(18))?
+            };
+            let mut layout = Layout {
+                little: self.little,
+                big: false,
+                base: 0,
+            };
+            let skip = match make {
+                "Canon" => 0,
+                "SONY" | "Sony" => {
+                    // The supported ARW layout is a plain IFD. Do not let
+                    // rawler's generic parser reinterpret an unaudited header.
+                    if header.starts_with(b"SONY")
+                        || header.starts_with(b"II")
+                        || header.starts_with(b"MM")
+                    {
+                        return Err(CodecError::Unsupported);
+                    }
+                    if len < 10 {
+                        return Err(CodecError::Decode);
+                    }
+                    0
+                }
+                "Panasonic" if header.starts_with(b"Panasonic\0\0\0") => 12,
+                "NIKON" | "Nikon" | "NIKON CORPORATION"
+                    if header.starts_with(b"Nikon\0\x02\0\0\0") =>
+                {
+                    layout.little = match header.get(10..12) {
+                        Some(b"II") => true,
+                        Some(b"MM") => false,
+                        _ => return Err(CodecError::Unsupported),
+                    };
+                    // rawler 0.8 starts at exactly eight bytes after this TIFF
+                    // header. Reject other offsets instead of validating a
+                    // different directory from the one it will parse.
+                    if Self::integer(&header, 12, 2, layout.little)? != 42
+                        || Self::integer(&header, 14, 4, layout.little)? != 8
+                    {
+                        return Err(CodecError::Unsupported);
+                    }
+                    layout.base = offset + 10;
+                    18
+                }
+                m if m.starts_with("OLYMPUS") && header.starts_with(b"OLYMPUS\0") => 12,
+                m if m.starts_with("OLYMPUS") && header.starts_with(b"OLYMP\0") => 8,
+                "FUJIFILM" if header.starts_with(b"FUJIFILM\x0c\0\0\0") => {
+                    layout.little = true;
+                    layout.base = offset;
+                    12
+                }
+                _ => return Err(CodecError::Unsupported),
+            };
+            // Bound the directory table by the declared note, even if trailing
+            // file bytes could otherwise satisfy a truncated table read. Value
+            // offsets retain their vendor base and are checked against EOF.
+            let index = self.directory_at(offset + skip, layout, end)?.0;
+            indices.push(index);
+            if make.starts_with("OLYMPUS") {
+                self.olympus_directories(index, offset, skip, layout, end)?;
+            }
         }
         Ok(indices)
+    }
+    #[cfg(feature = "raw")]
+    fn olympus_directories(
+        &mut self,
+        index: usize,
+        offset: u64,
+        skip: u64,
+        layout: Layout,
+        end: u64,
+    ) -> Result<(), CodecError> {
+        // These are the additional directories rawler's ORF constructor
+        // parses. Equipment/ImageProcessing offsets are note-relative;
+        // 0x3000 is an absolute sub-IFD in its root parser.
+        for tag in [0x2010, 0x2040, 0x3000] {
+            if tag == 0x2040 && skip != 12 {
+                continue;
+            }
+            let pointers = if tag == 0x3000 {
+                let Some(e) = self.entry(index, tag) else {
+                    continue;
+                };
+                match e.kind {
+                    4 => self.numbers(index, tag, 64)?,
+                    // rawler treats the *location* of an undefined value as
+                    // the sub-IFD, even when that value is inline or empty.
+                    7 => vec![self.range(&e, 1)?.0],
+                    _ => return Err(CodecError::Unsupported),
+                }
+            } else if let Some(e) = self.entry(index, tag) {
+                // ORF reads four raw bytes even for UNDEFINED
+                // count=1, rather than using the parsed value type.
+                let (at, _) = self.range(&e, e.size()?)?;
+                let bytes = self.read(at, 4)?;
+                self.payload_budget = self
+                    .payload_budget
+                    .checked_sub(4)
+                    .ok_or(CodecError::Limits)?;
+                vec![Self::integer(&bytes, 0, 4, layout.little)?]
+            } else {
+                Vec::new()
+            };
+            for pointer in pointers.into_iter().filter(|p| *p != 0) {
+                let base = if tag == 0x3000 { 0 } else { offset };
+                let at = base.checked_add(pointer).ok_or(CodecError::Decode)?;
+                self.directory_at(at, Layout { base, ..layout }, end)?;
+            }
+        }
+        Ok(())
+    }
+    #[cfg(feature = "raw")]
+    pub(crate) fn rawler_fujifilm_makernotes(&mut self) -> Result<(), CodecError> {
+        // DNG dispatch does not enter the generic RAF MakerNote helper.
+        if self.has(0, 50706) {
+            return Ok(());
+        }
+        // The supported note format is little-endian/note-relative. rawler
+        // 0.8's generic RAF helper instead inherits the outer byte order and
+        // absolute offsets. Before using it, also budget the exact view it
+        // will read; identify/embedded-preview decode need only the normal view.
+        let count = self.count();
+        self.makernotes("FUJIFILM")?;
+        for i in 0..count {
+            if let Some(e) = self.entry(i, 37500) {
+                let (offset, len) = self.range(&e, e.size()?)?;
+                self.directory_at(
+                    offset + 12,
+                    Layout {
+                        little: self.little,
+                        big: false,
+                        base: 0,
+                    },
+                    offset + len,
+                )?;
+            }
+        }
+        Ok(())
     }
     fn links(&mut self, index: usize) -> Result<Vec<u64>, CodecError> {
         // Follow standard SubIFD, EXIF, GPS and interoperability links, as
@@ -204,12 +374,15 @@ impl<F: Read + Seek> Tiff<F> {
         Ok(links)
     }
     fn num(&self, bytes: &[u8], start: u64, size: u64) -> Result<u64, CodecError> {
+        Self::integer(bytes, start, size, self.little)
+    }
+    fn integer(bytes: &[u8], start: u64, size: u64, little: bool) -> Result<u64, CodecError> {
         let start = usize::try_from(start).map_err(|_| CodecError::Decode)?;
         let size = usize::try_from(size).map_err(|_| CodecError::Decode)?;
         let b = bytes
             .get(start..start.checked_add(size).ok_or(CodecError::Decode)?)
             .ok_or(CodecError::Decode)?;
-        Ok(if self.little {
+        Ok(if little {
             b.iter().rev().fold(0, |v, b| (v << 8) | u64::from(*b))
         } else {
             b.iter().fold(0, |v, b| (v << 8) | u64::from(*b))
@@ -239,10 +412,13 @@ impl<F: Read + Seek> Tiff<F> {
         let count = u32::try_from(e.count).map_err(|_| CodecError::Limits)?;
         let size = u32::try_from(size).map_err(|_| CodecError::Limits)?;
         let bytes = u64::from(count.checked_mul(size).ok_or(CodecError::Limits)?);
-        let start = if bytes <= if self.big { 8 } else { 4 } {
+        let start = if bytes <= if e.layout.big { 8 } else { 4 } {
             e.position
         } else {
-            e.value
+            e.layout
+                .base
+                .checked_add(e.value)
+                .ok_or(CodecError::Decode)?
         };
         if start.checked_add(bytes).is_none_or(|end| end > self.len) {
             return Err(CodecError::Decode);
@@ -277,7 +453,7 @@ impl<F: Read + Seek> Tiff<F> {
         let (offset, len) = self.range(&e, size)?;
         let bytes = self.read(offset, len)?;
         (0..e.count)
-            .map(|i| self.num(&bytes, i * size, size))
+            .map(|i| Self::integer(&bytes, i * size, size, e.layout.little))
             .collect()
     }
     pub(crate) fn number(&mut self, index: usize, tag: u16) -> Result<Option<u64>, CodecError> {
@@ -297,11 +473,15 @@ impl<F: Read + Seek> Tiff<F> {
             16 | 18 => 8,
             _ => return Err(CodecError::Decode),
         };
-        let inline = if self.big { 8 } else { 4 };
+        let inline = if e.layout.big { 8 } else { 4 };
         if size <= inline {
             // Scalar integers are already in the directory entry. In big endian
             // TIFF, short values occupy its most significant bytes; ignore padding.
-            let shift = if self.little { 0 } else { (inline - size) * 8 };
+            let shift = if e.layout.little {
+                0
+            } else {
+                (inline - size) * 8
+            };
             let mask = if size == 8 {
                 u64::MAX
             } else {
@@ -309,8 +489,9 @@ impl<F: Read + Seek> Tiff<F> {
             };
             return Ok(Some((e.value >> shift) & mask));
         }
-        let bytes = self.read(e.value, size)?;
-        Ok(Some(self.num(&bytes, 0, size)?))
+        let (offset, _) = self.range(&e, size)?;
+        let bytes = self.read(offset, size)?;
+        Ok(Some(Self::integer(&bytes, 0, size, e.layout.little)?))
     }
     #[cfg(feature = "raw")]
     pub(crate) fn blob(
@@ -319,15 +500,23 @@ impl<F: Read + Seek> Tiff<F> {
         tag: u16,
         cap: u64,
     ) -> Result<Option<Vec<u8>>, CodecError> {
+        self.blob_range(index, tag)?
+            .map(|(offset, len)| self.read(offset, len.min(cap)))
+            .transpose()
+    }
+    #[cfg(feature = "raw")]
+    pub(crate) fn blob_range(
+        &self,
+        index: usize,
+        tag: u16,
+    ) -> Result<Option<(u64, u64)>, CodecError> {
         let Some(e) = self.entry(index, tag) else {
             return Ok(None);
         };
         if !matches!(e.kind, 1 | 2 | 7) {
             return Err(CodecError::Decode);
         }
-        let (offset, len) = self.range(&e, 1)?;
-        // Strings can be truncated without allocating their full declared size.
-        Ok(Some(self.read(offset, len.min(cap))?))
+        Ok(Some(self.range(&e, 1)?))
     }
     pub(crate) fn dimensions(&mut self, index: usize) -> Result<Option<(u32, u32)>, CodecError> {
         let pair = self.number(index, 256)?.zip(self.number(index, 257)?);
@@ -353,6 +542,28 @@ impl<F: Read + Seek> Tiff<F> {
     }
     // Only the marker prefix is needed to check a sensor codestream. CR2 can
     // omit StripByteCounts, in which case the bounded prefix ends at EOF.
+    #[cfg(feature = "raw")]
+    pub(crate) fn preview_frame(
+        &mut self,
+        offset: u64,
+        len: u64,
+        limits: &Limits,
+        budget: &mut u64,
+    ) -> Result<(u32, u32, u32), CodecError> {
+        if offset.checked_add(len).is_none_or(|end| end > self.len) {
+            return Err(CodecError::Decode);
+        }
+        self.file
+            .seek(SeekFrom::Start(offset))
+            .map_err(|_| CodecError::Io)?;
+        // Buffer small marker reads while bounding the underlying reader,
+        // including its read-ahead, to the first 64 KiB of this candidate.
+        crate::headers::jpeg_frame(
+            std::io::BufReader::with_capacity(4096, (&mut self.file).take(len.min(64 << 10))),
+            limits,
+            budget,
+        )
+    }
     #[cfg(feature = "raw")]
     pub(crate) fn sensor_frame(
         &mut self,

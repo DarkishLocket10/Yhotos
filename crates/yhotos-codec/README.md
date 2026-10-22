@@ -69,6 +69,13 @@ RAW identification never calls rawler's `decode_dummy`, `full_image`, or
 TIFF-based RAW uses metadata-only dimension probes. Every embedded JPEG
 candidate is checked against its own SOF dimensions, and the largest is decoded
 from its encoded bytes by the color-managed libvips path, retaining its ICC.
+Each candidate retains only its file offset, length and SOF dimensions; the
+marker reader is bounded to the first 64 KiB. ICC/orientation/metadata use only
+the JPEG headers through SOS under that same cap. Only decode buffers the
+selected JPEG, after enforcing `min(max_bytes, 256 MiB)` (CR3 retains its tighter
+64 MiB record cap). A sparse TIFF with 1x1 dimensions and a declared 512 MiB
+preview identifies without buffering that payload, then rejects decode before
+allocation. Selection-order tests prove only the winning JPEG is buffered.
 TIFF JPEGInterchangeFormat previews and JPEG strips (including DNG SubIFDs),
 and RW2 JPEG blobs are enumerated. Without a JPEG, rawler
 performs the camera-default 16-bit demosaic after the sensor headers pass limits.
@@ -81,8 +88,19 @@ and component-expanded allocation width before rawler can decode, independently
 of TIFF dimensions or the presence of a preview. TIFF tile geometry, Panasonic
 sensor tags and DNG JPEG XL headers are checked
 as well. Sensor marker scans share a 16 MiB budget and at most 4096 segments.
-Canon CR2/old TIFF MakerNote IFDs use the same entry and payload validation and
-aggregate budgets as ordinary TIFF directories. Cr2OldOffset (0x0081) and slice
+MakerNote IFDs use the same entry and payload validation and aggregate budgets
+as ordinary TIFF directories, before every rawler entry point. Supported layouts:
+Canon and Sony plain IFDs; Panasonic after its 12-byte header; Nikon after its
+10-byte prefix and embedded TIFF header (byte order and offsets from that TIFF
+header); Olympus OLYMPUS/OLYMP prefixes (including the equipment, image-processing
+and 0x3000 directories rawler follows); Fujifilm's 12-byte prefix (little endian,
+note-relative offsets). Other make/header layouts return `Unsupported`. Directory
+tables must fit inside the declared note; referenced entry payloads must fit in
+the file using the vendor's offset base. Sony and Nikon count, oversized payload,
+aggregate allocation and truncated-note regressions exercise identify, decode
+and metadata. Before using rawler's generic Fujifilm helper, its inherited-endian,
+absolute-offset view is checked too; DNG dispatch does not use that helper.
+Canon Cr2OldOffset (0x0081) and slice
 offset/length tables (0x00c5/0x00c6) have their referenced JPEG SOFs checked,
 including component-expanded widths and in-file extents, before any rawler
 entry point. `src/raw.rs` lists the validated decoder inputs by camera make.

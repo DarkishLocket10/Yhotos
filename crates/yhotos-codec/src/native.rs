@@ -133,11 +133,16 @@ impl Image {
         Ok(Self::jpeg(bytes, limits)?.blob("icc-profile-data"))
     }
     #[cfg(feature = "raw")]
-    pub(crate) fn jpeg_orientation(bytes: &[u8], limits: &crate::Limits) -> Result<u8, CodecError> {
-        u8::try_from(Self::jpeg(bytes, limits)?.orientation())
+    pub(crate) fn jpeg_info(
+        bytes: &[u8],
+        limits: &crate::Limits,
+    ) -> Result<(u8, Option<Vec<u8>>), CodecError> {
+        let image = Self::jpeg(bytes, limits)?;
+        let orientation = u8::try_from(image.orientation())
             .ok()
             .filter(|n| (1..=8).contains(n))
-            .ok_or(CodecError::Decode)
+            .ok_or(CodecError::Decode)?;
+        Ok((orientation, image.blob("icc-profile-data")))
     }
     #[cfg(feature = "raw")]
     pub(crate) fn jpeg_metadata(
