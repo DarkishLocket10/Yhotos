@@ -67,6 +67,9 @@ pub fn cross_origin_resource(path: &str) -> bool {
 
 pub(crate) async fn secure(mut request: Request, next: Next) -> Response {
     let cross_origin = cross_origin_resource(request.uri().path());
+    let path = request.uri().path();
+    let auth_page =
+        path.starts_with("/login") || path.starts_with("/u/") || path.starts_with("/admin/");
     let nonce = Nonce::generate();
     let policy = nonce.as_ref().ok().and_then(|value| value.policy().ok());
     let mut response = match nonce {
@@ -100,7 +103,7 @@ pub(crate) async fn secure(mut request: Request, next: Next) -> Response {
         header::REFERRER_POLICY,
         HeaderValue::from_static("strict-origin-when-cross-origin"),
     );
-    headers.insert("permissions-policy", HeaderValue::from_static("accelerometer=(), ambient-light-sensor=(), autoplay=(), battery=(), bluetooth=(), browsing-topics=(), camera=(), clipboard-read=(), clipboard-write=(), display-capture=(), encrypted-media=(), fullscreen=(), gamepad=(), geolocation=(), gyroscope=(), hid=(), idle-detection=(), local-fonts=(), magnetometer=(), microphone=(), midi=(), otp-credentials=(), payment=(), picture-in-picture=(), publickey-credentials-create=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), speaker-selection=(), storage-access=(), usb=(), web-share=(), window-management=(), xr-spatial-tracking=()"));
+    headers.insert("permissions-policy", HeaderValue::from_static("accelerometer=(), ambient-light-sensor=(), autoplay=(), battery=(), bluetooth=(), browsing-topics=(), camera=(), clipboard-read=(), clipboard-write=(), display-capture=(), encrypted-media=(), fullscreen=(), gamepad=(), geolocation=(), gyroscope=(), hid=(), idle-detection=(), local-fonts=(), magnetometer=(), microphone=(), midi=(), otp-credentials=(), payment=(), picture-in-picture=(), publickey-credentials-create=(self), publickey-credentials-get=(self), screen-wake-lock=(), serial=(), speaker-selection=(), storage-access=(), usb=(), web-share=(), window-management=(), xr-spatial-tracking=()"));
     headers.insert(
         "cross-origin-opener-policy",
         HeaderValue::from_static("same-origin"),
@@ -113,5 +116,14 @@ pub(crate) async fn secure(mut request: Request, next: Next) -> Response {
             "same-origin"
         }),
     );
+    if auth_page {
+        response.headers_mut().insert(
+            header::REFERRER_POLICY,
+            HeaderValue::from_static("no-referrer"),
+        );
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
     response
 }

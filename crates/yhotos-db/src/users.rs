@@ -123,3 +123,34 @@ pub async fn touch_login(conn: &mut PgConnection, id: UserId) -> Result<u64, DbE
         .await?
         .rows_affected())
 }
+
+/// Creates the initial administrative account; only an administrative connection may call this.
+///
+/// # Errors
+/// Rejects an invalid username or a database connection, permission or uniqueness failure.
+pub async fn create_admin(
+    conn: &mut PgConnection,
+    username: &str,
+    password_hash: &secrecy::SecretString,
+) -> Result<(), DbError> {
+    if username.is_empty() || username.len() > 80 || username.chars().any(char::is_control) {
+        return Err(DbError::InvalidInput);
+    }
+    sqlx::query!("INSERT INTO users(id,username,password_hash,must_change_password,is_admin) VALUES($1,$2,$3,true,true)",UserId::new() as _,username,secrecy::ExposeSecret::expose_secret(password_hash)).execute(conn).await?;
+    Ok(())
+}
+
+/// Serializes credential changes and login finalization for the same account.
+/// Call before re-reading credentials, and retain the transaction until commit.
+///
+/// # Errors
+/// Returns a database connection or lock timeout failure.
+pub async fn lock_auth(conn: &mut PgConnection, id: UserId) -> Result<(), DbError> {
+    sqlx::query!(
+        "SELECT pg_advisory_xact_lock(hashtextextended($1::uuid::text,0))",
+        id as _
+    )
+    .execute(conn)
+    .await?;
+    Ok(())
+}

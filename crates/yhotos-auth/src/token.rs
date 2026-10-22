@@ -10,6 +10,8 @@ use crate::AuthError;
 /// Purpose binding prevents a token accepted in one flow from authorizing another.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenKind {
+    /// Password-authenticated, server-side MFA login challenge.
+    PendingLogin,
     /// Browser session.
     Session,
     /// A narrowly scoped share capability.
@@ -23,6 +25,7 @@ pub enum TokenKind {
 impl TokenKind {
     const fn prefix(self) -> &'static str {
         match self {
+            Self::PendingLogin => "yp",
             Self::Session => "ys",
             Self::ShareLink => "yl",
             Self::Csrf => "yc",
@@ -32,6 +35,7 @@ impl TokenKind {
 
     const fn context(self) -> &'static str {
         match self {
+            Self::PendingLogin => "yhotos token v1 pending_login",
             Self::Session => "yhotos token v1 session",
             Self::ShareLink => "yhotos token v1 share_link",
             Self::Csrf => "yhotos token v1 csrf",
@@ -81,6 +85,7 @@ impl Token {
             return Err(AuthError::Token);
         }
         let kind = match s.get(..3) {
+            Some("yp_") => TokenKind::PendingLogin,
             Some("ys_") => TokenKind::Session,
             Some("yl_") => TokenKind::ShareLink,
             Some("yc_") => TokenKind::Csrf,
@@ -140,7 +145,8 @@ mod tests {
 
     use super::*;
 
-    const KINDS: [TokenKind; 4] = [
+    const KINDS: [TokenKind; 5] = [
+        TokenKind::PendingLogin,
         TokenKind::Session,
         TokenKind::ShareLink,
         TokenKind::Csrf,
@@ -203,7 +209,7 @@ mod tests {
 
     proptest! {
         #[test]
-        fn roundtrip(bytes in any::<[u8; 32]>(), index in 0_usize..4) {
+        fn roundtrip(bytes in any::<[u8; 32]>(), index in 0_usize..5) {
             let kind = KINDS[index];
             let token = Token(bytes);
             let (decoded_kind, decoded) = Token::decode(&token.encode(kind)).unwrap();

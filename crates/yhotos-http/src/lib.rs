@@ -2,6 +2,7 @@
 
 //! Isolated public and admin routers, compiled templates and request controls.
 
+pub mod auth;
 pub mod error;
 pub mod middleware;
 mod static_assets;
@@ -21,11 +22,13 @@ use std::time::Duration;
 use tower_http::{limit::RequestBodyLimitLayer, timeout::TimeoutLayer, trace::TraceLayer};
 use yhotos_config::Config;
 
-/// Shared validated startup configuration; no mutable per-request state.
-#[derive(Clone, Copy)]
+/// Shared startup configuration, database services and bounded authentication cache.
+#[derive(Clone)]
 pub struct AppState {
     /// Leaked once at startup so every handler borrows the same configuration.
     pub config: &'static Config,
+    /// Shared authentication services; absent only for isolated skeleton tests.
+    pub auth: Option<std::sync::Arc<auth::Auth>>,
 }
 
 /// Builds only public routes, even when the admin feature is enabled.
@@ -41,6 +44,7 @@ use yhotos_http::admin_router;
 )]
 pub fn public_router(state: AppState) -> Router {
     let router = Router::new()
+        .merge(auth::routes(auth::Audience(false)))
         .route("/", get(home))
         .route("/healthz", get(health))
         .route("/static/{*path}", get(static_assets::serve));
@@ -72,20 +76,31 @@ pub fn public_router(state: AppState) -> Router {
                 "late"
             }),
         );
-    stack(router, state)
+    stack(router, state, auth::Audience(false))
 }
 
 /// Compiles only with `admin`, and must be served on the separate admin socket.
 #[cfg(feature = "admin")]
 pub fn admin_router(state: AppState) -> Router {
-    stack(Router::new().route("/admin/healthz", get(health)), state)
+    stack(
+        Router::new()
+            .merge(auth::routes(auth::Audience(true)))
+            .route("/admin/healthz", get(health))
+            .route("/admin/", get(health))
+            .route("/admin/setup-mfa", get(auth::security::setup))
+            .route("/static/{*path}", get(static_assets::serve)),
+        state,
+        auth::Audience(true),
+    )
 }
 
-fn stack(router: Router<AppState>, state: AppState) -> Router {
+fn stack(router: Router<AppState>, state: AppState, audience: auth::Audience) -> Router {
     let limits = RateLimiter::new(state.config.rate_limits, state.config.trust_proxy);
     router
         .fallback(|| async { HttpError::NotFound })
-        .layer(from_fn(middleware::csrf::protect))
+        .layer(from_fn_with_state(state.clone(), middleware::session::load))
+        .layer(from_fn_with_state(state.clone(), middleware::csrf::protect))
+        .layer(Extension(audience))
         .layer(from_fn_with_state(limits, middleware::rate_limit::limit))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,

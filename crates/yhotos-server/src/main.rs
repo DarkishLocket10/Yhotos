@@ -25,6 +25,10 @@ async fn main() -> std::process::ExitCode {
     }
 }
 async fn run() -> Result<()> {
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
+    if !args.is_empty() {
+        return create_admin(&args).await;
+    }
     let config = Box::leak(Box::new(Config::from_env()?));
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     match config.log_format {
@@ -51,7 +55,37 @@ async fn run() -> Result<()> {
     )
     .await
     .context("could not bind admin listener")?;
-    let state = AppState { config };
+    let public_db = std::sync::Arc::new(
+        yhotos_db::Db::connect(
+            &config.database_url,
+            yhotos_db::Role::Public,
+            16,
+            database_tls()?,
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("could not connect public database"))?,
+    );
+    let state = AppState {
+        config,
+        auth: Some(yhotos_http::auth::Auth::new(config, public_db)?),
+    };
+    #[cfg(feature = "admin")]
+    let admin_state = {
+        let db = std::sync::Arc::new(
+            yhotos_db::Db::connect(
+                &config.database_url,
+                yhotos_db::Role::Admin,
+                8,
+                database_tls()?,
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("could not connect admin database"))?,
+        );
+        AppState {
+            config,
+            auth: Some(yhotos_http::auth::Auth::new(config, db)?),
+        }
+    };
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let public = axum::serve(
         public,
@@ -61,7 +95,7 @@ async fn run() -> Result<()> {
     #[cfg(feature = "admin")]
     let admin = axum::serve(
         admin,
-        yhotos_http::admin_router(state).into_make_service_with_connect_info::<SocketAddr>(),
+        yhotos_http::admin_router(admin_state).into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(wait_for_shutdown(shutdown_rx));
     let servers = async {
@@ -107,5 +141,51 @@ async fn shutdown_signal() -> Result<()> {
     tokio::signal::ctrl_c()
         .await
         .context("could not receive interrupt")?;
+    Ok(())
+}
+
+fn database_tls() -> Result<yhotos_db::DatabaseTls> {
+    match std::env::var("YHOTOS_DATABASE_TLS").as_deref() {
+        Err(std::env::VarError::NotPresent) | Ok("require") => Ok(yhotos_db::DatabaseTls::Require),
+        Ok("disable") => Ok(yhotos_db::DatabaseTls::Disable),
+        _ => {
+            anyhow::bail!("YHOTOS_DATABASE_TLS must be require or disable (local development only)")
+        }
+    }
+}
+async fn create_admin(args: &[String]) -> Result<()> {
+    use secrecy::{ExposeSecret, SecretString};
+    use std::io::Write;
+    let [command, flag, username] = args else {
+        anyhow::bail!("usage: yhotos-server create-admin --username NAME");
+    };
+    if command != "create-admin"
+        || flag != "--username"
+        || username.is_empty()
+        || username.len() > 80
+        || username.chars().any(char::is_control)
+    {
+        anyhow::bail!("usage: yhotos-server create-admin --username NAME");
+    }
+    let url = SecretString::from(
+        std::env::var("YHOTOS_DATABASE_URL")
+            .map_err(|_| anyhow::anyhow!("YHOTOS_DATABASE_URL required"))?,
+    );
+    let db = yhotos_db::Db::connect(&url, yhotos_db::Role::Admin, 1, database_tls()?)
+        .await
+        .map_err(|_| anyhow::anyhow!("could not connect administrative database"))?;
+    let password = yhotos_auth::generate_temp_password();
+    yhotos_auth::check_password_policy(&password, username)?;
+    let hash = yhotos_auth::hash_password(&password)?;
+    let mut c = db
+        .pool()
+        .acquire()
+        .await
+        .map_err(|_| anyhow::anyhow!("could not connect administrative database"))?;
+    yhotos_db::users::create_admin(&mut c, username, &SecretString::from(hash.as_str()))
+        .await
+        .map_err(|_| anyhow::anyhow!("could not create administrative account"))?;
+    // This explicit CLI is the only intentional credential output. Never trace it.
+    writeln!(std::io::stdout(), "{}", password.expose_secret())?;
     Ok(())
 }

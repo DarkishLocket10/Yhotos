@@ -5,7 +5,7 @@ use crate::error::HttpError;
 use axum::{
     Form,
     body::{Body, to_bytes},
-    extract::{FromRequest, Request},
+    extract::{FromRequest, Request, State},
     http::{HeaderValue, Method, header},
     middleware::Next,
     response::{IntoResponse, Response},
@@ -79,15 +79,16 @@ fn canonical_token(value: &str) -> bool {
             .decode_slice(value, &mut bytes)
             .is_ok_and(|len| len == 32)
 }
-pub(crate) async fn protect(request: Request, next: Next) -> Response {
+pub(crate) async fn protect(
+    State(state): State<crate::AppState>,
+    request: Request,
+    next: Next,
+) -> Response {
     let state_changing = matches!(
         *request.method(),
         Method::POST | Method::PUT | Method::PATCH | Method::DELETE
     );
-    if !state_changing
-        || request.uri().path().starts_with("/api/")
-        || request.uri().path().starts_with("/admin/api/")
-    {
+    if !state_changing {
         return next.run(request).await;
     }
     let content_type = request
@@ -95,20 +96,48 @@ pub(crate) async fn protect(request: Request, next: Next) -> Response {
         .get(header::CONTENT_TYPE)
         .and_then(|h| h.to_str().ok())
         .unwrap_or("");
+    if content_type.split(';').next() == Some("application/json")
+        || request.uri().path().starts_with("/api/")
+        || request.uri().path().starts_with("/admin/api/")
+    {
+        let expected = state.config.public_base_url.origin().ascii_serialization();
+        let origin = request
+            .headers()
+            .get(header::ORIGIN)
+            .and_then(|v| v.to_str().ok());
+        let site = request
+            .headers()
+            .get("sec-fetch-site")
+            .and_then(|v| v.to_str().ok());
+        let token = request
+            .headers()
+            .get("x-csrf-token")
+            .and_then(|v| v.to_str().ok());
+        let valid = site == Some("same-origin")
+            && origin == Some(expected.as_str())
+            && token.zip(cookie_token(&request)).is_some_and(|(t, c)| {
+                canonical_token(t) && bool::from(t.as_bytes().ct_eq(c.as_bytes()))
+            });
+        return if valid {
+            next.run(request).await
+        } else {
+            HttpError::Csrf.into_response()
+        };
+    }
     // No multipart forms exist yet: reject unsupported forms rather than skip
     // validation. JSON API authorization is supplied with those future routes.
     if content_type.split(';').next() != Some("application/x-www-form-urlencoded") {
-        return HttpError::BadRequest.into_response();
+        return HttpError::Csrf.into_response();
     }
     let Some(cookie) = cookie_token(&request)
         .filter(|s| canonical_token(s))
         .map(str::to_owned)
     else {
-        return HttpError::BadRequest.into_response();
+        return HttpError::Csrf.into_response();
     };
     let (parts, body) = request.into_parts();
     let Ok(bytes) = to_bytes(body, 1024 * 1024).await else {
-        return HttpError::BadRequest.into_response();
+        return HttpError::Csrf.into_response();
     };
     let mut copy = Request::new(Body::from(bytes.clone()));
     *copy.method_mut() = Method::POST;
@@ -117,12 +146,12 @@ pub(crate) async fn protect(request: Request, next: Next) -> Response {
         HeaderValue::from_static("application/x-www-form-urlencoded"),
     );
     let Ok(Form(token)) = Form::<FormToken>::from_request(copy, &()).await else {
-        return HttpError::BadRequest.into_response();
+        return HttpError::Csrf.into_response();
     };
     if !canonical_token(&token.token)
         || !bool::from(cookie.as_bytes().ct_eq(token.token.as_bytes()))
     {
-        return HttpError::BadRequest.into_response();
+        return HttpError::Csrf.into_response();
     }
     next.run(Request::from_parts(parts, Body::from(bytes)))
         .await

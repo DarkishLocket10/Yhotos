@@ -9,6 +9,7 @@ use axum::{
 use base64::{Engine, engine::general_purpose::STANDARD};
 use figment::Figment;
 use http_body_util::BodyExt;
+use secrecy::ExposeSecret;
 use std::net::SocketAddr;
 use tower::ServiceExt;
 
@@ -30,6 +31,7 @@ fn state(trust_proxy: bool, cheap: u32) -> AppState {
         .merge(("rate_limits.cheap_per_min", cheap));
     AppState {
         config: Box::leak(Box::new(Config::from_figment(f).unwrap())),
+        auth: None,
     }
 }
 fn request(path: &str, ip: &str) -> Request<Body> {
@@ -71,10 +73,10 @@ fn security(headers: &HeaderMap, cross_origin: bool) {
         "max-age=63072000; includeSubDomains; preload"
     );
     assert_eq!(headers[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
-    assert_eq!(
-        headers[header::REFERRER_POLICY],
-        "strict-origin-when-cross-origin"
-    );
+    assert!(matches!(
+        headers[header::REFERRER_POLICY].to_str().unwrap(),
+        "strict-origin-when-cross-origin" | "no-referrer"
+    ));
     assert!(
         headers["permissions-policy"]
             .to_str()
@@ -347,7 +349,7 @@ async fn proxy_trust_uses_only_cloudflare_and_rejects_invalid_values() {
 async fn admin_never_leaks_onto_public_listener() {
     let state = state(false, 600);
     assert_eq!(
-        public_router(state)
+        public_router(state.clone())
             .oneshot(request("/admin/healthz", "127.0.0.1:1"))
             .await
             .unwrap()
@@ -360,9 +362,8 @@ async fn admin_never_leaks_onto_public_listener() {
             .oneshot(request("/admin/healthz", "127.0.0.1:1"))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        security(response.headers(), false);
-        assert_eq!(body(response).await, "ok");
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(response.headers()[header::LOCATION], "/admin/login");
     }
 }
 #[tokio::test(start_paused = true)]
@@ -412,18 +413,18 @@ async fn csrf_tokens_are_generated_validated_and_body_is_replayed() {
     );
     for (cookie_header, value, expected) in [
         (Some(cookie_pair.to_owned()), token, StatusCode::OK),
-        (None, token, StatusCode::BAD_REQUEST),
+        (None, token, StatusCode::FORBIDDEN),
         (
             Some(cookie_pair.to_owned()),
             other.form_value(),
-            StatusCode::BAD_REQUEST,
+            StatusCode::FORBIDDEN,
         ),
         (
             Some(format!("{cookie_pair}; {cookie_pair}")),
             token,
-            StatusCode::BAD_REQUEST,
+            StatusCode::FORBIDDEN,
         ),
-        (Some(cookie_pair.to_owned()), "bad", StatusCode::BAD_REQUEST),
+        (Some(cookie_pair.to_owned()), "bad", StatusCode::FORBIDDEN),
     ] {
         let mut req = request("/__test/form", "127.0.0.1:1");
         *req.method_mut() = axum::http::Method::POST;
@@ -440,4 +441,48 @@ async fn csrf_tokens_are_generated_validated_and_body_is_replayed() {
         assert_eq!(response.status(), expected);
         security(response.headers(), false);
     }
+}
+
+#[tokio::test]
+async fn auth_posts_share_a_bucket_and_get_forms_use_the_cheap_bucket() {
+    let state = state(false, 600);
+    let config = Box::leak(Box::new(Config {
+        rate_limits: yhotos_config::RateLimits {
+            auth_per_min: 1,
+            ..state.config.rate_limits
+        },
+        ..Config::from_figment(
+            figment::Figment::new()
+                .merge(("database_url", state.config.database_url.expose_secret()))
+                .merge((
+                    "data_dir",
+                    std::env::current_dir().unwrap().to_string_lossy().as_ref(),
+                ))
+                .merge(("public_base_url", "https://example.test"))
+                .merge(("session_key", state.config.session_key.expose_secret()))
+                .merge(("admin_listen", "127.0.0.1:8081")),
+        )
+        .unwrap()
+    }));
+    let app = public_router(AppState { config, auth: None });
+    for path in ["/login", "/login/mfa", "/u/security"] {
+        let response = app
+            .clone()
+            .oneshot(request(path, "127.0.0.1:1"))
+            .await
+            .unwrap();
+        assert_ne!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+    let mut first = request("/login/mfa", "127.0.0.1:1");
+    *first.method_mut() = axum::http::Method::POST;
+    assert_eq!(
+        app.clone().oneshot(first).await.unwrap().status(),
+        StatusCode::FORBIDDEN
+    );
+    let mut second = request("/u/security/passkey/start", "127.0.0.1:1");
+    *second.method_mut() = axum::http::Method::POST;
+    assert_eq!(
+        app.oneshot(second).await.unwrap().status(),
+        StatusCode::TOO_MANY_REQUESTS
+    );
 }

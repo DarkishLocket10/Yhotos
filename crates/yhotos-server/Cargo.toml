@@ -22,6 +22,10 @@ tracing-subscriber.workspace = true
 anyhow.workspace = true
 mimalloc.workspace = true
 
+yhotos-auth = { path = "../yhotos-auth" }
+yhotos-db = { path = "../yhotos-db" }
+secrecy.workspace = true
+
 [dev-dependencies]
 tempfile.workspace = true
 uuid.workspace = true

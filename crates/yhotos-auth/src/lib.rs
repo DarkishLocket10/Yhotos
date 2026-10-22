@@ -27,6 +27,9 @@ pub use token::{Token, TokenHash, TokenKind};
 /// Authentication failures contain no credentials or dependency details.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum AuthError {
+    /// Reserved MFA methods are deliberately unavailable.
+    #[error("unsupported authentication method")]
+    Unsupported,
     /// A password falls outside the supported length.
     #[error("invalid password length")]
     PasswordLength,

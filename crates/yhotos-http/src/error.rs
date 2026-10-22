@@ -9,6 +9,21 @@ use axum::{
 /// Public errors conceal authorization state and infrastructure details.
 #[derive(Debug, thiserror::Error)]
 pub enum HttpError {
+    /// Reserved MFA methods are not enabled.
+    #[error("unsupported authentication method")]
+    Unsupported,
+    /// Double-submit or same-origin validation failed.
+    #[error("request rejected")]
+    Csrf,
+    /// The temporary password must be changed first.
+    #[error("password change required")]
+    PasswordChangeRequired,
+    /// Factor removal needs a fresh password check.
+    #[error("reauthentication required")]
+    ReauthRequired,
+    /// Invalid authentication input.
+    #[error("sign in failed")]
+    Authentication,
     /// An unknown or concealed resource.
     #[error("not found")]
     NotFound,
@@ -28,6 +43,21 @@ pub enum HttpError {
 impl IntoResponse for HttpError {
     fn into_response(self) -> Response {
         let mut response = match self {
+            Self::Unsupported => (
+                StatusCode::NOT_IMPLEMENTED,
+                "Authentication method unavailable",
+            )
+                .into_response(),
+            Self::Csrf => (StatusCode::FORBIDDEN, "Request rejected").into_response(),
+            Self::Authentication => (StatusCode::BAD_REQUEST, "Sign in failed").into_response(),
+            Self::PasswordChangeRequired => (
+                StatusCode::FORBIDDEN,
+                axum::Json(serde_json::json!({"error":"password_change_required"})),
+            )
+                .into_response(),
+            Self::ReauthRequired => {
+                (StatusCode::FORBIDDEN, "Verify your password first").into_response()
+            }
             Self::NotFound | Self::Forbidden => {
                 (StatusCode::NOT_FOUND, "Not found").into_response()
             }
@@ -55,5 +85,31 @@ impl IntoResponse for HttpError {
             header::HeaderValue::from_static("no-store"),
         );
         response
+    }
+}
+
+impl From<yhotos_db::DbError> for HttpError {
+    fn from(_: yhotos_db::DbError) -> Self {
+        Self::Internal(anyhow::anyhow!("database operation failed"))
+    }
+}
+impl From<yhotos_auth::AuthError> for HttpError {
+    fn from(error: yhotos_auth::AuthError) -> Self {
+        if error == yhotos_auth::AuthError::Unsupported {
+            Self::Unsupported
+        } else {
+            Self::Authentication
+        }
+    }
+}
+impl From<serde_json::Error> for HttpError {
+    fn from(_: serde_json::Error) -> Self {
+        Self::BadRequest
+    }
+}
+
+impl From<yhotos_db::PoolError> for HttpError {
+    fn from(_: yhotos_db::PoolError) -> Self {
+        Self::Internal(anyhow::anyhow!("database operation failed"))
     }
 }

@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT user_mfa_add($1,$2,$3,$4,$5,$6,$7,$8)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_mfa_add",
+        "type_info": "Void",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Bytea",
+        "Bytea",
+        "Bytea",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "501b825f462acaa3f574f6cead272f20ae4e5b55aaa881cc295aeea9f2a73f19"
+}

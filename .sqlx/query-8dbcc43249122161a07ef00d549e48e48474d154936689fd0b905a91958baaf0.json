@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE sessions SET last_seen_at=clock_timestamp() WHERE id=$1 AND last_seen_at<=clock_timestamp()-interval '5 minutes'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8dbcc43249122161a07ef00d549e48e48474d154936689fd0b905a91958baaf0"
+}

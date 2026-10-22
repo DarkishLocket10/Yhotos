@@ -30,8 +30,9 @@ fn command(dir: &std::path::Path, public: SocketAddr, admin: SocketAddr) -> Comm
         .env("YHOTOS_ADMIN_LISTEN", admin.to_string())
         .env(
             "YHOTOS_DATABASE_URL",
-            format!("postgres://{}@localhost/test", uuid::Uuid::now_v7()),
+            std::env::var("DATABASE_URL").unwrap(),
         )
+        .env("YHOTOS_DATABASE_TLS", "disable")
         .env("YHOTOS_DATA_DIR", dir)
         .env("YHOTOS_PUBLIC_BASE_URL", "https://example.test")
         .env(
@@ -93,8 +94,8 @@ fn actual_listeners_are_separate_and_environment_nesting_works() {
     {
         ready(&mut server, admin);
         let response = get(admin, "/admin/healthz");
-        assert!(response.starts_with("HTTP/1.1 200"));
-        assert!(response.ends_with("ok"));
+        assert!(response.starts_with("HTTP/1.1 303"));
+        assert!(response.contains("location: /admin/login"));
         assert!(
             TcpStream::connect_timeout(
                 &SocketAddr::new("127.0.0.1".parse().unwrap(), admin.port()),
@@ -163,4 +164,47 @@ fn sigterm_and_sigint_exit_cleanly() {
         }
         assert!(TcpStream::connect_timeout(&public, Duration::from_millis(50)).is_err());
     }
+}
+
+#[tokio::test]
+async fn create_admin_prints_one_policy_compliant_temporary_password() {
+    use secrecy::{ExposeSecret, SecretString};
+    let url = std::env::var("DATABASE_URL").unwrap();
+    let username = uuid::Uuid::now_v7().to_string();
+    let output = Command::new(env!("CARGO_BIN_EXE_yhotos-server"))
+        .env_clear()
+        .env("YHOTOS_DATABASE_URL", &url)
+        .env("YHOTOS_DATABASE_TLS", "disable")
+        .args(["create-admin", "--username", &username])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(output.stderr, [] as [u8; 0]);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(stdout.lines().count(), 1);
+    let password = SecretString::from(stdout.trim());
+    assert_eq!(password.expose_secret().len(), 20);
+    yhotos_auth::check_password_policy(&password, &username).unwrap();
+    let db = yhotos_db::Db::connect(
+        &url.into(),
+        yhotos_db::Role::Admin,
+        1,
+        yhotos_db::DatabaseTls::Disable,
+    )
+    .await
+    .unwrap();
+    let mut c = db.pool().acquire().await.unwrap();
+    let user = yhotos_db::users::get_by_username(&mut c, &username)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(user.is_admin);
+    assert!(user.must_change_password);
+    assert!(
+        yhotos_auth::verify_password(
+            &password,
+            &yhotos_auth::PasswordHash::parse(&user.password_hash).unwrap()
+        )
+        .unwrap()
+    );
 }

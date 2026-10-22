@@ -41,7 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         log_format: LogFormat::Json,
     }));
     let _runtime_guard = runtime.enter();
-    let app = public_router(AppState { config });
+    let app = public_router(AppState { config, auth: None });
     criterion.bench_function("http/healthz/known_ip", |b| {
         b.iter(|| {
             let mut request = Request::new(Body::empty());

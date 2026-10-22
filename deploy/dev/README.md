@@ -49,3 +49,9 @@ claims return `false` without altering a replacement worker's claim.
 
 Stop the database with `docker compose -f deploy/dev/compose.yml down`. The named
 volume preserves it; remove the volume before regenerating an existing password.
+
+`start.sh` verifies a TCP login after the health check. If a container/volume
+from an earlier worktree has a different password, it recreates this Compose
+project's container **and volume**, discarding its disposable development data.
+Other connection errors fail without deleting data. Never use this bootstrap
+with production data.

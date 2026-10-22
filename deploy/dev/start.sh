@@ -18,5 +18,17 @@ if [[ ! "$_yhotos_dev_port" =~ ^[0-9]{1,5}$ ]] || ((10#$_yhotos_dev_port < 1 || 
     return 1 2>/dev/null || exit 1
 fi
 POSTGRES_PASSWORD="$_yhotos_dev_password" POSTGRES_PORT="$_yhotos_dev_port" docker compose --project-directory "$_yhotos_dev_dir" -f "$_yhotos_dev_dir/compose.yml" up -d --wait
+# pg_isready does not check credentials. A volume left by a different worktree
+# can be healthy while retaining its old password. Only this disposable dev
+# project's volume is eligible for recreation, and only on an auth failure.
+if ! _yhotos_dev_error="$(POSTGRES_PASSWORD="$_yhotos_dev_password" docker compose --project-directory "$_yhotos_dev_dir" -f "$_yhotos_dev_dir/compose.yml" exec -T -e PGPASSWORD="$_yhotos_dev_password" postgres sh -c 'psql -h "$(hostname -i)" -U yhotos -d yhotos_test -c "SELECT 1"' 2>&1)"; then
+    if [[ "$_yhotos_dev_error" != *'password authentication failed'* ]]; then
+        printf 'Dev database connection check failed.\n' >&2
+        return 1 2>/dev/null || exit 1
+    fi
+    printf 'Dev database credentials changed; recreating the disposable container and volume.\n' >&2
+    POSTGRES_PASSWORD="$_yhotos_dev_password" docker compose --project-directory "$_yhotos_dev_dir" -f "$_yhotos_dev_dir/compose.yml" down --volumes
+    POSTGRES_PASSWORD="$_yhotos_dev_password" POSTGRES_PORT="$_yhotos_dev_port" docker compose --project-directory "$_yhotos_dev_dir" -f "$_yhotos_dev_dir/compose.yml" up -d --wait
+fi
 export DATABASE_URL="postgres://yhotos:${_yhotos_dev_password}@127.0.0.1:${_yhotos_dev_port}/yhotos_test?sslmode=disable"
-unset _yhotos_dev_password _yhotos_dev_env _yhotos_dev_port _yhotos_dev_dir
+unset _yhotos_dev_password _yhotos_dev_env _yhotos_dev_port _yhotos_dev_dir _yhotos_dev_error
