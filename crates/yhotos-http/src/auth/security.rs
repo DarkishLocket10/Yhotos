@@ -24,7 +24,7 @@ pub(crate) async fn logout(
 ) -> Result<Response, HttpError> {
     let auth = required(&state)?;
     if let Some(Extension(c)) = current {
-        let mut tx = auth.db.pool().begin().await?;
+        let mut tx = auth.db(a)?.pool().begin().await?;
         let hash = sessions::revoke(&mut tx, c.0.session.user_id, c.0.session.id).await?;
         audit::write(
             &mut tx,
@@ -64,7 +64,7 @@ pub(crate) async fn password(
     Form(input): Form<PasswordChange>,
 ) -> Result<Response, HttpError> {
     let auth = required(&state)?;
-    let mut tx = auth.db.pool().begin().await?;
+    let mut tx = auth.db(a)?.pool().begin().await?;
     users::lock_auth(&mut tx, current.0.session.user_id).await?;
     let user = users::get_by_id(&mut tx, current.0.session.user_id)
         .await?
@@ -126,6 +126,7 @@ pub(crate) async fn password(
         &current.0.session.ip_hash,
         ua(&headers),
         None,
+        current.0.session.mfa_at,
         None,
     )
     .await?;
@@ -142,7 +143,7 @@ pub(crate) async fn index(
     Extension(nonce): Extension<crate::middleware::security_headers::Nonce>,
 ) -> Result<Response, HttpError> {
     let auth = required(&state)?;
-    let mut c = auth.db.pool().acquire().await?;
+    let mut c = auth.db(a)?.pool().acquire().await?;
     let sessions = sessions::list(&mut c, current.0.session.user_id).await?;
     let methods = mfa::list(&mut c, current.0.session.user_id).await?;
     views::security(a, &sessions, &methods, current.0.session.id, nonce)
@@ -166,7 +167,7 @@ pub(crate) async fn reauth(
     Form(input): Form<Reauth>,
 ) -> Result<Response, HttpError> {
     let auth = required(&state)?;
-    let mut c = auth.db.pool().acquire().await?;
+    let mut c = auth.db(a)?.pool().acquire().await?;
     let user = users::get_by_id(&mut c, current.0.session.user_id)
         .await?
         .ok_or(HttpError::NotFound)?;
@@ -184,7 +185,7 @@ pub(crate) async fn revoke(
     Path(id): Path<Uuid>,
 ) -> Result<Response, HttpError> {
     let auth = required(&state)?;
-    let mut tx = auth.db.pool().begin().await?;
+    let mut tx = auth.db(a)?.pool().begin().await?;
     let hash = sessions::revoke(&mut tx, current.0.session.user_id, id)
         .await?
         .ok_or(HttpError::NotFound)?;
@@ -223,7 +224,7 @@ pub(crate) async fn totp_form(
     current: Current,
 ) -> Result<Response, HttpError> {
     let auth = required(&state)?;
-    let mut c = auth.db.pool().acquire().await?;
+    let mut c = auth.db(a)?.pool().acquire().await?;
     let user = users::get_by_id(&mut c, current.0.session.user_id)
         .await?
         .ok_or(HttpError::NotFound)?;
@@ -257,7 +258,7 @@ pub(crate) async fn totp_finish(
     Form(input): Form<Code>,
 ) -> Result<Response, HttpError> {
     let auth = required(&state)?;
-    let mut tx = auth.db.pool().begin().await?;
+    let mut tx = auth.db(a)?.pool().begin().await?;
     users::lock_auth(&mut tx, current.0.session.user_id).await?;
     let value = sessions::ceremony_take(
         &mut tx,
@@ -290,9 +291,9 @@ pub(crate) async fn totp_finish(
             &json!({"kind":"totp"}),
         )
         .await?;
-        let cookie = rotate(&mut tx, a, &state, &current).await?;
+        let cookie = rotate(&mut tx, a, &state, &current, true).await?;
         tx.commit().await?;
-        auth.invalidate(&current.0.session.token_hash);
+        auth.invalidate_all();
         let mut response = redirect(a.security());
         set_cookie(&mut response, cookie);
         Ok(response)
@@ -307,7 +308,7 @@ pub(crate) async fn passkey_start(
     current: Current,
 ) -> Result<Response, HttpError> {
     let auth = required(&state)?;
-    let mut c = auth.db.pool().acquire().await?;
+    let mut c = auth.db(a)?.pool().acquire().await?;
     let user = users::get_by_id(&mut c, current.0.session.user_id)
         .await?
         .ok_or(HttpError::NotFound)?;
@@ -317,7 +318,7 @@ pub(crate) async fn passkey_start(
         .filter_map(|m| m.credential_id.clone().map(Into::into))
         .collect::<Vec<_>>();
     let (challenge, ceremony) =
-        auth.passkeys
+        auth.passkeys(a)?
             .start_registration(user.id.0, &user.username, &excluded, a.0)?;
     sessions::ceremony_put(
         &mut c,
@@ -336,7 +337,7 @@ pub(crate) async fn passkey_finish(
     Json(input): Json<RegisterPublicKeyCredential>,
 ) -> Result<Response, HttpError> {
     let auth = required(&state)?;
-    let mut c = auth.db.pool().acquire().await?;
+    let mut c = auth.db(a)?.pool().acquire().await?;
     // Autocommit consumption ensures even an invalid signature cannot reuse state.
     let value = sessions::ceremony_take(
         &mut c,
@@ -347,7 +348,7 @@ pub(crate) async fn passkey_finish(
     .await?
     .ok_or(HttpError::BadRequest)?;
     let ceremony: RegistrationState = serde_json::from_value(value)?;
-    let key: Passkey = auth.passkeys.finish_registration(ceremony, &input)?;
+    let key: Passkey = auth.passkeys(a)?.finish_registration(ceremony, &input)?;
     let method = mfa::Method {
         id: Uuid::now_v7(),
         kind: "passkey".into(),
@@ -359,7 +360,7 @@ pub(crate) async fn passkey_finish(
         last_used_step: None,
     };
     drop(c);
-    let mut tx = auth.db.pool().begin().await?;
+    let mut tx = auth.db(a)?.pool().begin().await?;
     users::lock_auth(&mut tx, current.0.session.user_id).await?;
     mfa::add(&mut tx, current.0.session.user_id, &method).await?;
     audit::write(
@@ -370,9 +371,9 @@ pub(crate) async fn passkey_finish(
         &json!({"kind":"passkey"}),
     )
     .await?;
-    let cookie = rotate(&mut tx, a, &state, &current).await?;
+    let cookie = rotate(&mut tx, a, &state, &current, true).await?;
     tx.commit().await?;
-    auth.invalidate(&current.0.session.token_hash);
+    auth.invalidate_all();
     let mut response = Json(json!({"next":a.security()})).into_response();
     set_cookie(&mut response, cookie);
     Ok(response)
@@ -384,7 +385,7 @@ pub(crate) async fn remove(
     Path(id): Path<Uuid>,
 ) -> Result<Response, HttpError> {
     let auth = required(&state)?;
-    let mut tx = auth.db.pool().begin().await?;
+    let mut tx = auth.db(a)?.pool().begin().await?;
     users::lock_auth(&mut tx, current.0.session.user_id).await?;
     if !mfa::remove(&mut tx, current.0.session.user_id, id, current.0.session.id).await? {
         return Err(HttpError::ReauthRequired);
@@ -397,7 +398,7 @@ pub(crate) async fn remove(
         &json!({"outcome":"removed"}),
     )
     .await?;
-    let cookie = rotate(&mut tx, a, &state, &current).await?;
+    let cookie = rotate(&mut tx, a, &state, &current, false).await?;
     tx.commit().await?;
     auth.invalidate(&current.0.session.token_hash);
     let mut response = redirect(a.security());
@@ -412,6 +413,7 @@ async fn rotate(
     a: Audience,
     state: &AppState,
     current: &Current,
+    enrolled: bool,
 ) -> Result<HeaderValue, HttpError> {
     let old = &current.0.session;
     let Some(_) = sessions::revoke(c, old.user_id, old.id).await? else {
@@ -422,6 +424,19 @@ async fn rotate(
     session.id = Uuid::now_v7();
     session.last_seen_at = time::OffsetDateTime::now_utc();
     session.token_hash = token.hash(TokenKind::Session).as_bytes().to_vec();
+    if enrolled {
+        session.mfa_at = Some(time::OffsetDateTime::now_utc());
+        for id in sessions::revoke_setup(c, old.user_id).await? {
+            audit::write(
+                c,
+                Some(old.user_id),
+                "session.revoke",
+                Some(id),
+                &json!({"outcome":"mfa_enrollment"}),
+            )
+            .await?;
+        }
+    }
     sessions::create(c, &session).await?;
     audit::write(
         c,

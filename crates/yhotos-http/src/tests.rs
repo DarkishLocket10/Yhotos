@@ -17,7 +17,7 @@ fn state(trust_proxy: bool, cheap: u32) -> AppState {
     let dir = tempfile::tempdir().unwrap();
     let f = Figment::new()
         .merge((
-            "database_url",
+            "database_url_public",
             format!("postgres://{}@localhost/test", uuid::Uuid::now_v7()),
         ))
         .merge((
@@ -27,6 +27,8 @@ fn state(trust_proxy: bool, cheap: u32) -> AppState {
         .merge(("data_dir", dir.path().to_string_lossy().as_ref()))
         .merge(("public_base_url", "https://example.test"))
         .merge(("admin_listen", "127.0.0.1:8081"))
+        .merge(("admin_base_url", "https://admin.example.test:8443"))
+        .merge(("database_url_admin", "postgres://127.0.0.1/test"))
         .merge(("trust_proxy", trust_proxy))
         .merge(("rate_limits.cheap_per_min", cheap));
     AppState {
@@ -453,14 +455,19 @@ async fn auth_posts_share_a_bucket_and_get_forms_use_the_cheap_bucket() {
         },
         ..Config::from_figment(
             figment::Figment::new()
-                .merge(("database_url", state.config.database_url.expose_secret()))
+                .merge((
+                    "database_url_public",
+                    state.config.database_url_public.expose_secret(),
+                ))
                 .merge((
                     "data_dir",
                     std::env::current_dir().unwrap().to_string_lossy().as_ref(),
                 ))
                 .merge(("public_base_url", "https://example.test"))
                 .merge(("session_key", state.config.session_key.expose_secret()))
-                .merge(("admin_listen", "127.0.0.1:8081")),
+                .merge(("admin_listen", "127.0.0.1:8081"))
+                .merge(("admin_base_url", "https://admin.example.test:8443"))
+                .merge(("database_url_admin", "postgres://127.0.0.1/test")),
         )
         .unwrap()
     }));

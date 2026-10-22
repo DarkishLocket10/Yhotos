@@ -29,9 +29,14 @@ fn command(dir: &std::path::Path, public: SocketAddr, admin: SocketAddr) -> Comm
         .env("YHOTOS_PUBLIC_LISTEN", public.to_string())
         .env("YHOTOS_ADMIN_LISTEN", admin.to_string())
         .env(
-            "YHOTOS_DATABASE_URL",
+            "YHOTOS_DATABASE_URL_PUBLIC",
             std::env::var("DATABASE_URL").unwrap(),
         )
+        .env(
+            "YHOTOS_DATABASE_URL_ADMIN",
+            std::env::var("DATABASE_URL").unwrap(),
+        )
+        .env("YHOTOS_ADMIN_BASE_URL", "https://admin.example.test:8443")
         .env("YHOTOS_DATABASE_TLS", "disable")
         .env("YHOTOS_DATA_DIR", dir)
         .env("YHOTOS_PUBLIC_BASE_URL", "https://example.test")
@@ -112,7 +117,7 @@ fn invalid_configuration_prints_every_problem_once() {
     let dir = tempfile::tempdir().unwrap();
     let mut command = command(dir.path(), address("127.0.0.1"), address("127.0.0.1"));
     command
-        .env_remove("YHOTOS_DATABASE_URL")
+        .env_remove("YHOTOS_DATABASE_URL_PUBLIC")
         .env("YHOTOS_PUBLIC_BASE_URL", "http://example.test")
         .env(
             "YHOTOS_SESSION_KEY",
@@ -124,7 +129,7 @@ fn invalid_configuration_prints_every_problem_once() {
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).unwrap();
     for field in [
-        "database_url:",
+        "database_url_public:",
         "public_base_url:",
         "session_key:",
         "admin_listen:",
@@ -173,7 +178,7 @@ async fn create_admin_prints_one_policy_compliant_temporary_password() {
     let username = uuid::Uuid::now_v7().to_string();
     let output = Command::new(env!("CARGO_BIN_EXE_yhotos-server"))
         .env_clear()
-        .env("YHOTOS_DATABASE_URL", &url)
+        .env("YHOTOS_DATABASE_URL_ADMIN", &url)
         .env("YHOTOS_DATABASE_TLS", "disable")
         .args(["create-admin", "--username", &username])
         .output()
@@ -207,4 +212,91 @@ async fn create_admin_prints_one_policy_compliant_temporary_password() {
         )
         .unwrap()
     );
+}
+
+#[tokio::test]
+async fn startup_uses_separate_restricted_login_roles() {
+    use secrecy::SecretString;
+    use sqlx::ConnectOptions;
+    let url = std::env::var("DATABASE_URL").unwrap();
+    let db = yhotos_db::Db::connect(
+        &SecretString::from(url),
+        yhotos_db::Role::Admin,
+        1,
+        yhotos_db::DatabaseTls::Disable,
+    )
+    .await
+    .unwrap();
+    let mut connection = db.pool().acquire().await.unwrap();
+    // Serialize this test's cluster-wide login names; never change deployed roles.
+    sqlx::query!("SELECT pg_advisory_lock(9009)")
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+    sqlx::query!("DROP ROLE IF EXISTS yhotos_009_start_public, yhotos_009_start_admin")
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+    sqlx::query!("CREATE ROLE yhotos_009_start_public LOGIN IN ROLE yhotos_public")
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+    sqlx::query!("CREATE ROLE yhotos_009_start_admin LOGIN IN ROLE yhotos_admin")
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+    // Reuse only the disposable migration login's generated password verifier.
+    // No password appears in SQL, fixtures, diagnostics or process output.
+    sqlx::query!("UPDATE pg_authid SET rolpassword=(SELECT rolpassword FROM pg_authid WHERE rolname=current_user) WHERE rolname IN ('yhotos_009_start_public','yhotos_009_start_admin')")
+        .execute(&mut *connection).await.unwrap();
+    let login_url = |name| {
+        db.pool()
+            .connect_options()
+            .as_ref()
+            .clone()
+            .username(name)
+            .to_url_lossy()
+            .to_string()
+    };
+    let public_url = login_url("yhotos_009_start_public");
+    let admin_url = login_url("yhotos_009_start_admin");
+    // The exact original failure: admin-only credentials cannot SET ROLE public.
+    assert!(
+        yhotos_db::Db::connect(
+            &SecretString::from(admin_url.clone()),
+            yhotos_db::Role::Public,
+            1,
+            yhotos_db::DatabaseTls::Disable
+        )
+        .await
+        .is_err()
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let public = address("127.0.0.1");
+    let admin = address("127.0.0.2");
+    let mut cmd = command(dir.path(), public, admin);
+    cmd.env("YHOTOS_DATABASE_URL_PUBLIC", public_url);
+    #[cfg(feature = "admin")]
+    cmd.env("YHOTOS_DATABASE_URL_ADMIN", admin_url);
+    #[cfg(not(feature = "admin"))]
+    cmd.env_remove("YHOTOS_DATABASE_URL_ADMIN");
+    let mut server = Server {
+        child: cmd.spawn().unwrap(),
+    };
+    ready(&mut server, public);
+    assert!(get(public, "/login").starts_with("HTTP/1.1 200"));
+    #[cfg(feature = "admin")]
+    {
+        ready(&mut server, admin);
+        assert!(get(admin, "/admin/login").starts_with("HTTP/1.1 200"));
+    }
+    drop(server);
+    sqlx::query!("DROP ROLE yhotos_009_start_public, yhotos_009_start_admin")
+        .execute(&mut *connection)
+        .await
+        .unwrap();
+    sqlx::query!("SELECT pg_advisory_unlock(9009)")
+        .fetch_one(&mut *connection)
+        .await
+        .unwrap();
 }

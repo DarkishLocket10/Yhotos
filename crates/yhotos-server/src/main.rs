@@ -57,7 +57,7 @@ async fn run() -> Result<()> {
     .context("could not bind admin listener")?;
     let public_db = std::sync::Arc::new(
         yhotos_db::Db::connect(
-            &config.database_url,
+            &config.database_url_public,
             yhotos_db::Role::Public,
             16,
             database_tls()?,
@@ -65,37 +65,39 @@ async fn run() -> Result<()> {
         .await
         .map_err(|_| anyhow::anyhow!("could not connect public database"))?,
     );
+    #[cfg(feature = "admin")]
+    let admin_db = Some(std::sync::Arc::new(
+        yhotos_db::Db::connect(
+            config
+                .database_url_admin
+                .as_ref()
+                .context("admin database configuration missing")?,
+            yhotos_db::Role::Admin,
+            8,
+            database_tls()?,
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("could not connect admin database"))?,
+    ));
+    #[cfg(not(feature = "admin"))]
+    let admin_db = None;
+    // Both routers share one cache and cryptographic service. Each handler
+    // selects only its listener's separately authenticated database pool.
+    let auth = yhotos_http::auth::Auth::new(config, public_db, admin_db).await?;
     let state = AppState {
         config,
-        auth: Some(yhotos_http::auth::Auth::new(config, public_db)?),
-    };
-    #[cfg(feature = "admin")]
-    let admin_state = {
-        let db = std::sync::Arc::new(
-            yhotos_db::Db::connect(
-                &config.database_url,
-                yhotos_db::Role::Admin,
-                8,
-                database_tls()?,
-            )
-            .await
-            .map_err(|_| anyhow::anyhow!("could not connect admin database"))?,
-        );
-        AppState {
-            config,
-            auth: Some(yhotos_http::auth::Auth::new(config, db)?),
-        }
+        auth: Some(auth),
     };
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let public = axum::serve(
         public,
-        public_router(state).into_make_service_with_connect_info::<SocketAddr>(),
+        public_router(state.clone()).into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(wait_for_shutdown(shutdown_rx.clone()));
     #[cfg(feature = "admin")]
     let admin = axum::serve(
         admin,
-        yhotos_http::admin_router(admin_state).into_make_service_with_connect_info::<SocketAddr>(),
+        yhotos_http::admin_router(state).into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(wait_for_shutdown(shutdown_rx));
     let servers = async {
@@ -168,8 +170,8 @@ async fn create_admin(args: &[String]) -> Result<()> {
         anyhow::bail!("usage: yhotos-server create-admin --username NAME");
     }
     let url = SecretString::from(
-        std::env::var("YHOTOS_DATABASE_URL")
-            .map_err(|_| anyhow::anyhow!("YHOTOS_DATABASE_URL required"))?,
+        std::env::var("YHOTOS_DATABASE_URL_ADMIN")
+            .map_err(|_| anyhow::anyhow!("YHOTOS_DATABASE_URL_ADMIN required"))?,
     );
     let db = yhotos_db::Db::connect(&url, yhotos_db::Role::Admin, 1, database_tls()?)
         .await

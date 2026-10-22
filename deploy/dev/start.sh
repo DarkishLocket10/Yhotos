@@ -2,6 +2,8 @@
 # Source this script to export DATABASE_URL, or execute it to start Postgres.
 set -euo pipefail
 _yhotos_dev_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+_yhotos_dev_hash="$(printf '%s' "$(cd -- "$_yhotos_dev_dir/../.." && pwd -P)" | sha256sum)"
+export COMPOSE_PROJECT_NAME="yhotos-${_yhotos_dev_hash:0:12}"
 if [[ ! -f "$_yhotos_dev_dir/.env" ]]; then
     (umask 077; printf 'POSTGRES_PASSWORD=%s\n' "$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" > "$_yhotos_dev_dir/.env")
 fi
@@ -18,17 +20,16 @@ if [[ ! "$_yhotos_dev_port" =~ ^[0-9]{1,5}$ ]] || ((10#$_yhotos_dev_port < 1 || 
     return 1 2>/dev/null || exit 1
 fi
 POSTGRES_PASSWORD="$_yhotos_dev_password" POSTGRES_PORT="$_yhotos_dev_port" docker compose --project-directory "$_yhotos_dev_dir" -f "$_yhotos_dev_dir/compose.yml" up -d --wait
-# pg_isready does not check credentials. A volume left by a different worktree
-# can be healthy while retaining its old password. Only this disposable dev
-# project's volume is eligible for recreation, and only on an auth failure.
+# pg_isready does not check credentials. Never discard an existing volume when
+# its password differs; print an explicit, worktree-scoped reset command instead.
 if ! _yhotos_dev_error="$(POSTGRES_PASSWORD="$_yhotos_dev_password" docker compose --project-directory "$_yhotos_dev_dir" -f "$_yhotos_dev_dir/compose.yml" exec -T -e PGPASSWORD="$_yhotos_dev_password" postgres sh -c 'psql -h "$(hostname -i)" -U yhotos -d yhotos_test -c "SELECT 1"' 2>&1)"; then
     if [[ "$_yhotos_dev_error" != *'password authentication failed'* ]]; then
         printf 'Dev database connection check failed.\n' >&2
         return 1 2>/dev/null || exit 1
     fi
-    printf 'Dev database credentials changed; recreating the disposable container and volume.\n' >&2
-    POSTGRES_PASSWORD="$_yhotos_dev_password" docker compose --project-directory "$_yhotos_dev_dir" -f "$_yhotos_dev_dir/compose.yml" down --volumes
-    POSTGRES_PASSWORD="$_yhotos_dev_password" POSTGRES_PORT="$_yhotos_dev_port" docker compose --project-directory "$_yhotos_dev_dir" -f "$_yhotos_dev_dir/compose.yml" up -d --wait
+    printf 'Dev database credential mismatch. Data was preserved. To explicitly delete this worktree database, run:\n' >&2
+    printf 'docker compose --project-name %q --env-file %q -f %q down --volumes\n' "$COMPOSE_PROJECT_NAME" "$_yhotos_dev_dir/.env" "$_yhotos_dev_dir/compose.yml" >&2
+    return 1 2>/dev/null || exit 1
 fi
 export DATABASE_URL="postgres://yhotos:${_yhotos_dev_password}@127.0.0.1:${_yhotos_dev_port}/yhotos_test?sslmode=disable"
-unset _yhotos_dev_password _yhotos_dev_env _yhotos_dev_port _yhotos_dev_dir _yhotos_dev_error
+unset _yhotos_dev_password _yhotos_dev_env _yhotos_dev_port _yhotos_dev_dir _yhotos_dev_error _yhotos_dev_hash

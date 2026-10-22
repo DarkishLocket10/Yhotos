@@ -3731,6 +3731,7 @@ dependencies = [
  "base64 0.23.1",
  "mimalloc",
  "secrecy",
+ "sqlx",
  "tempfile",
  "tokio",
  "tracing",

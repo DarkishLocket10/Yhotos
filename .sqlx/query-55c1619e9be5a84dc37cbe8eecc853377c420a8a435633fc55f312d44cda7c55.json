@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id,user_id as \"user_id: _\",admin,created_at,last_seen_at,expires_at,reauth_at,ip_hash,ua_class,token_hash FROM sessions WHERE user_id=$1 ORDER BY created_at DESC",
+  "query": "SELECT id,user_id as \"user_id: _\",admin,created_at,last_seen_at,expires_at,reauth_at,mfa_at,ip_hash,ua_class,token_hash FROM sessions WHERE user_id=$1 ORDER BY created_at DESC",
   "describe": {
     "columns": [
       {
@@ -82,6 +82,17 @@
       },
       {
         "ordinal": 7,
+        "name": "mfa_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "mfa_at"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
         "name": "ip_hash",
         "type_info": "Bytea",
         "origin": {
@@ -92,7 +103,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "ua_class",
         "type_info": "Text",
         "origin": {
@@ -103,7 +114,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "token_hash",
         "type_info": "Bytea",
         "origin": {
@@ -127,10 +138,11 @@
       false,
       false,
       true,
+      true,
       false,
       false,
       false
     ]
   },
-  "hash": "365030d4baa8500de1097307133878122994c470651c88e54b40e43e980a109a"
+  "hash": "55c1619e9be5a84dc37cbe8eecc853377c420a8a435633fc55f312d44cda7c55"
 }

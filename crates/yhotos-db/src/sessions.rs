@@ -22,6 +22,8 @@ pub struct Session {
     pub expires_at: OffsetDateTime,
     /// Last password verification.
     pub reauth_at: Option<OffsetDateTime>,
+    /// Set only after this session completes MFA or enrollment.
+    pub mfa_at: Option<OffsetDateTime>,
     /// Keyed network fingerprint.
     pub ip_hash: Vec<u8>,
     /// Coarse browser category.
@@ -34,14 +36,14 @@ pub struct Session {
 /// # Errors
 /// Returns a database connection, statement or constraint failure.
 pub async fn get(c: &mut PgConnection, hash: &[u8]) -> Result<Option<Session>, DbError> {
-    Ok(sqlx::query_as!(Session,r#"SELECT id,user_id as "user_id: _",admin,created_at,last_seen_at,expires_at,reauth_at,ip_hash,ua_class,token_hash FROM sessions WHERE token_hash=$1"#, hash).fetch_optional(c).await?)
+    Ok(sqlx::query_as!(Session,r#"SELECT id,user_id as "user_id: _",admin,created_at,last_seen_at,expires_at,reauth_at,mfa_at,ip_hash,ua_class,token_hash FROM sessions WHERE token_hash=$1"#, hash).fetch_optional(c).await?)
 }
 /// Inserts a freshly generated bearer digest with explicit audience and lifetime.
 ///
 /// # Errors
 /// Returns a database connection, statement or constraint failure.
 pub async fn create(c: &mut PgConnection, s: &Session) -> Result<(), DbError> {
-    sqlx::query!("INSERT INTO sessions(id,user_id,token_hash,admin,created_at,last_seen_at,expires_at,reauth_at,ip_hash,ua_class) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)",s.id,s.user_id as _,s.token_hash,s.admin,s.created_at,s.last_seen_at,s.expires_at,s.reauth_at,s.ip_hash,s.ua_class).execute(c).await?;
+    sqlx::query!("INSERT INTO sessions(id,user_id,token_hash,admin,created_at,last_seen_at,expires_at,reauth_at,mfa_at,ip_hash,ua_class) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)",s.id,s.user_id as _,s.token_hash,s.admin,s.created_at,s.last_seen_at,s.expires_at,s.reauth_at,s.mfa_at,s.ip_hash,s.ua_class).execute(c).await?;
     Ok(())
 }
 /// Lists the account's sessions without exposing bearer tokens.
@@ -49,7 +51,7 @@ pub async fn create(c: &mut PgConnection, s: &Session) -> Result<(), DbError> {
 /// # Errors
 /// Returns a database connection, statement or constraint failure.
 pub async fn list(c: &mut PgConnection, user: UserId) -> Result<Vec<Session>, DbError> {
-    Ok(sqlx::query_as!(Session,r#"SELECT id,user_id as "user_id: _",admin,created_at,last_seen_at,expires_at,reauth_at,ip_hash,ua_class,token_hash FROM sessions WHERE user_id=$1 ORDER BY created_at DESC"#,user as _).fetch_all(c).await?)
+    Ok(sqlx::query_as!(Session,r#"SELECT id,user_id as "user_id: _",admin,created_at,last_seen_at,expires_at,reauth_at,mfa_at,ip_hash,ua_class,token_hash FROM sessions WHERE user_id=$1 ORDER BY created_at DESC"#,user as _).fetch_all(c).await?)
 }
 /// Deletes only a session owned by the authenticated account, returning its cache key.
 ///
@@ -287,7 +289,7 @@ pub struct Loaded {
     pub is_admin: bool,
     /// Disabled accounts cannot authenticate.
     pub disabled: bool,
-    /// Enabled MFA count for the admin guard.
+    /// Whether the account still has an enabled MFA method.
     pub has_mfa: bool,
     /// Current groups from the database.
     pub groups: Vec<GroupId>,
@@ -305,7 +307,7 @@ pub async fn load(c: &mut PgConnection, hash: &[u8]) -> Result<Option<Loaded>, D
  AND created_at>clock_timestamp()-CASE WHEN (SELECT is_admin FROM users WHERE id=sessions.user_id) THEN interval '7 days' ELSE interval '90 days' END
  RETURNING last_seen_at
 )
-SELECT s.id,s.user_id,s.admin,s.created_at,COALESCE((SELECT last_seen_at FROM touched),s.last_seen_at) as "last_seen_at!",s.expires_at,s.reauth_at,s.ip_hash,s.ua_class,s.token_hash,
+SELECT s.id,s.user_id,s.admin,s.created_at,COALESCE((SELECT last_seen_at FROM touched),s.last_seen_at) as "last_seen_at!",s.expires_at,s.reauth_at,s.mfa_at,s.ip_hash,s.ua_class,s.token_hash,
 u.must_change_password,u.is_admin,(u.disabled_at IS NOT NULL) as "disabled!",
 EXISTS(SELECT FROM user_mfa_list(u.id) WHERE kind IN ('totp','passkey')) as "has_mfa!",
 ARRAY(SELECT group_id FROM user_groups WHERE user_id=u.id) as "groups!"
@@ -319,6 +321,7 @@ FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1"#,hash).fet
             last_seen_at: r.last_seen_at,
             expires_at: r.expires_at,
             reauth_at: r.reauth_at,
+            mfa_at: r.mfa_at,
             ip_hash: r.ip_hash,
             ua_class: r.ua_class,
             token_hash: r.token_hash,
@@ -329,4 +332,63 @@ FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1"#,hash).fet
         has_mfa: r.has_mfa,
         groups: r.groups.into_iter().map(GroupId).collect(),
     }))
+}
+
+/// Revokes password-only sessions when enrollment establishes MFA on another bearer.
+/// Caller holds the account authentication lock and rotates the enrolling session.
+///
+/// # Errors
+/// Returns a database statement or connection failure.
+pub async fn revoke_setup(c: &mut PgConnection, user: UserId) -> Result<Vec<Uuid>, DbError> {
+    Ok(sqlx::query_scalar!(
+        "DELETE FROM sessions WHERE user_id=$1 AND mfa_at IS NULL RETURNING id",
+        user as _
+    )
+    .fetch_all(c)
+    .await?)
+}
+
+/// A validated cache eviction received from PostgreSQL, never bearer material.
+pub enum Invalidation {
+    /// One session changed or was deleted.
+    Session(Uuid),
+    /// Account authentication or privilege changed.
+    User(UserId),
+}
+/// Dedicated LISTEN connection, independent of request pool capacity.
+pub struct Invalidations(sqlx::postgres::PgListener);
+impl Invalidations {
+    /// Subscribes before requests can warm caches, using this pool's restricted login.
+    ///
+    /// # Errors
+    /// Returns database connectivity or subscription errors.
+    pub async fn connect(db: &crate::Db) -> Result<Self, DbError> {
+        // A separate one-connection pool keeps LISTEN from occupying request slots.
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(db.pool().connect_options().as_ref().clone())
+            .await?;
+        let mut listener = sqlx::postgres::PgListener::connect_with(&pool).await?;
+        listener.eager_reconnect(false);
+        listener.listen("session_invalidate").await?;
+        Ok(Self(listener))
+    }
+    /// Receives one bounded, validated row id. Disconnects and malformed messages
+    /// return an error so callers discard caches before resubscribing.
+    ///
+    /// # Errors
+    /// Returns a connection error or invalid notification payload.
+    pub async fn recv(&mut self) -> Result<Invalidation, DbError> {
+        let notification = self.0.try_recv().await?.ok_or(DbError::InvalidInput)?;
+        let (kind, id) = notification
+            .payload()
+            .split_once(':')
+            .ok_or(DbError::InvalidInput)?;
+        let id = Uuid::parse_str(id).map_err(|_| DbError::InvalidInput)?;
+        match kind {
+            "session" => Ok(Invalidation::Session(id)),
+            "user" => Ok(Invalidation::User(UserId(id))),
+            _ => Err(DbError::InvalidInput),
+        }
+    }
 }

@@ -31,6 +31,7 @@ struct Client {
     db: Arc<Db>,
     jar: BTreeMap<String, String>,
     network: SocketAddr,
+    origin: String,
 }
 struct Reply {
     status: StatusCode,
@@ -50,21 +51,31 @@ impl Client {
         let config = Box::leak(Box::new(
             yhotos_config::Config::from_figment(
                 figment::Figment::new()
-                    .merge(("database_url", url.expose_secret()))
+                    .merge(("database_url_public", url.expose_secret()))
                     .merge((
                         "data_dir",
                         std::env::current_dir().unwrap().to_string_lossy().as_ref(),
                     ))
                     .merge(("public_base_url", "https://example.test"))
                     .merge(("admin_listen", "127.0.0.1:8081"))
+                    .merge(("admin_base_url", "https://admin.example.test:8443"))
+                    .merge(("database_url_admin", "postgres://127.0.0.1/test"))
                     .merge(("session_key", STANDARD.encode(key)))
                     .merge(("rate_limits.auth_per_min", 1000)),
             )
             .unwrap(),
         ));
+        #[cfg(feature = "admin")]
+        let admin_db = Some(Arc::new(
+            Db::connect(&url, Role::Admin, 1, DatabaseTls::Disable)
+                .await
+                .unwrap(),
+        ));
+        #[cfg(not(feature = "admin"))]
+        let admin_db = None;
         let state = AppState {
             config,
-            auth: Some(Auth::new(config, db.clone()).unwrap()),
+            auth: Some(Auth::new(config, db.clone(), admin_db).await.unwrap()),
         };
         #[cfg(feature = "admin")]
         let app = if admin {
@@ -84,7 +95,72 @@ impl Client {
             db,
             jar: BTreeMap::new(),
             network: "127.0.0.1:1234".parse().unwrap(),
+            origin: if admin {
+                "https://admin.example.test:8443"
+            } else {
+                "https://example.test"
+            }
+            .into(),
         }
+    }
+    #[cfg(feature = "admin")]
+    fn listener(&self, admin: bool) -> Self {
+        Self {
+            app: if admin {
+                yhotos_http::admin_router(self.state.clone())
+            } else {
+                public_router(self.state.clone())
+            },
+            state: self.state.clone(),
+            pool: self.pool.clone(),
+            db: self.db.clone(),
+            jar: BTreeMap::new(),
+            network: self.network,
+            origin: if admin {
+                "https://admin.example.test:8443"
+            } else {
+                "https://example.test"
+            }
+            .into(),
+        }
+    }
+    #[cfg(feature = "admin")]
+    async fn enroll_totp(&mut self) -> totp::Secret {
+        let reply = self.get("/admin/u/security/totp").await;
+        assert_eq!(reply.status, StatusCode::OK);
+        let binding = self.session(true).await.id;
+        let pending = sqlx::query_scalar!(
+            "SELECT state FROM pending_webauthn WHERE binding_id=$1 AND kind='totp'",
+            binding
+        )
+        .fetch_one(&self.pool)
+        .await
+        .unwrap();
+        let raw = STANDARD
+            .decode(self.state.config.session_key.expose_secret())
+            .unwrap();
+        let key = blake3::derive_key("yhotos MFA encryption v1", &raw);
+        let ring =
+            yhotos_auth::Keyring::from_master(&SecretString::from(STANDARD.encode(key))).unwrap();
+        let id: Uuid = serde_json::from_value(pending["id"].clone()).unwrap();
+        let sealed: Vec<u8> = serde_json::from_value(pending["sealed"].clone()).unwrap();
+        let secret = totp::Secret::from_bytes(
+            ring.open(id.as_bytes(), &sealed)
+                .unwrap()
+                .try_into()
+                .unwrap(),
+        );
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap();
+        let code = totp::generate(&secret, now).unwrap();
+        location(
+            &self
+                .post("/admin/u/security/totp", &[("code", code.expose_secret())])
+                .await,
+            "/admin/u/security",
+        );
+        secret
     }
     async fn send(&mut self, method: &str, path: &str, body: String, json: bool) -> Reply {
         let mut builder = Request::builder().method(method).uri(path).header(
@@ -106,7 +182,7 @@ impl Client {
             );
             if json {
                 builder = builder
-                    .header(header::ORIGIN, "https://example.test")
+                    .header(header::ORIGIN, &self.origin)
                     .header("sec-fetch-site", "same-origin")
                     .header(
                         "x-csrf-token",
@@ -513,6 +589,7 @@ async fn totp_enrollment_login_replay_attempt_limit_and_removal_reauth(pool: PgP
     );
     c.get("/u/security").await;
     let s = c.session(false).await;
+    assert!(s.mfa_at.is_some());
     sqlx::query!(
         "UPDATE sessions SET reauth_at=now()-interval '6 minutes' WHERE id=$1",
         s.id
@@ -693,31 +770,24 @@ async fn admin_enrollment_guard_and_listener_cookie_isolation(pool: PgPool) {
     assert_ne!(id, nonadmin);
     let enrolled = admin.get("/admin/u/security/totp").await;
     assert_eq!(enrolled.status, StatusCode::OK);
-    // Any enabled method releases the setup guard; real enrollment is exercised
-    // separately through both TOTP and software-authenticator HTTP ceremonies.
-    let mut conn = pool.acquire().await.unwrap();
-    mfa::add(
-        &mut conn,
-        id,
-        &mfa::Method {
-            id: Uuid::now_v7(),
-            kind: "totp".into(),
-            secret_enc: Some(Vec::new()),
-            credential_id: None,
-            public_key: None,
-            sign_count: 0,
-            label: "Authenticator app".into(),
-            last_used_step: None,
-        },
-    )
-    .await
-    .unwrap();
-    admin
-        .state
-        .auth
-        .as_ref()
-        .unwrap()
-        .invalidate(&admin.hash(true));
+    let mut other = admin.listener(true);
+    location(&other.login(&name, &pw, true).await, "/admin/setup-mfa");
+    let other_hash = other.hash(true);
+    assert!(other.session(true).await.mfa_at.is_none());
+    // Both independent browsers are password-only until one proves enrollment.
+    location(&other.get("/admin/healthz").await, "/admin/setup-mfa");
+    let old = admin.hash(true);
+    admin.enroll_totp().await;
+    assert_ne!(old, admin.hash(true));
+    assert!(admin.session(true).await.mfa_at.is_some());
+    assert!(
+        sessions::get(&mut pool.acquire().await.unwrap(), &other_hash)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    location(&other.get("/admin/healthz").await, "/admin/login");
+    assert!(!other.jar.contains_key("ya"));
     assert_eq!(admin.get("/admin/healthz").await.status, StatusCode::OK);
     sqlx::query!("UPDATE users SET is_admin=false WHERE id=$1", id.0)
         .execute(&pool)
@@ -1045,4 +1115,197 @@ async fn unicode_username_and_account_lockout_across_spelling_and_ip_changes(poo
         c.login(&name, &pw, false).await.status,
         StatusCode::TOO_MANY_REQUESTS
     );
+}
+
+#[cfg(feature = "admin")]
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn admin_revoke_evicts_warmed_public_listener_immediately(pool: PgPool) {
+    cross_listener_invalidation(pool, false).await;
+}
+#[cfg(feature = "admin")]
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn admin_password_change_evicts_warmed_public_listener_immediately(pool: PgPool) {
+    cross_listener_invalidation(pool, true).await;
+}
+#[cfg(feature = "admin")]
+async fn cross_listener_invalidation(pool: PgPool, password_change: bool) {
+    let mut admin = Client::new(pool.clone(), true).await;
+    let mut public = admin.listener(false);
+    assert!(Arc::ptr_eq(
+        admin.state.auth.as_ref().unwrap(),
+        public.state.auth.as_ref().unwrap()
+    ));
+    let (_, name, password) = admin.seed(false, true).await;
+    admin.login(&name, &password, true).await;
+    let secret = admin.enroll_totp().await;
+    location(&public.login(&name, &password, false).await, "/login/mfa");
+    public.get("/login/mfa").await;
+    let next_step = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        + std::time::Duration::from_secs(30);
+    let code = totp::generate(&secret, next_step).unwrap();
+    location(
+        &public
+            .post("/login/mfa", &[("code", code.expose_secret())])
+            .await,
+        "/",
+    );
+    let session = public.session(false).await;
+    assert!(session.mfa_at.is_some());
+    assert_eq!(public.get("/u/security").await.status, StatusCode::OK);
+
+    // An independent Auth models another process and warms a separate cache.
+    let db = Arc::new(
+        Db::connect(
+            &SecretString::from(pool.connect_options().to_url_lossy().to_string()),
+            Role::Public,
+            1,
+            DatabaseTls::Disable,
+        )
+        .await
+        .unwrap(),
+    );
+    let remote_auth = Auth::new(admin.state.config, db, None).await.unwrap();
+    assert!(
+        remote_auth
+            .load(&session.token_hash)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    let mut remote = public.listener(false);
+    remote.state.auth = Some(remote_auth.clone());
+    remote.app = public_router(remote.state.clone());
+    remote.jar = public.jar.clone();
+    assert_eq!(remote.get("/u/security").await.status, StatusCode::OK);
+    admin.get("/admin/u/security").await;
+    if password_change {
+        let replacement = yhotos_auth::generate_temp_password();
+        location(
+            &admin
+                .post(
+                    "/admin/u/password",
+                    &[
+                        ("current_password", password.expose_secret()),
+                        ("new_password", replacement.expose_secret()),
+                    ],
+                )
+                .await,
+            "/admin/",
+        );
+        assert!(admin.session(true).await.mfa_at.is_some());
+    } else {
+        location(
+            &admin
+                .post(
+                    &format!("/admin/u/security/sessions/{}/revoke", session.id),
+                    &[],
+                )
+                .await,
+            "/admin/u/security",
+        );
+    }
+    // No sleeps, polling or manual invalidation between listeners.
+    location(&public.get("/u/security").await, "/login");
+    assert!(!public.jar.contains_key("__Host-ys"));
+    // PostgreSQL delivery is asynchronous across processes. Bound convergence
+    // below the cache TTL, yielding to the receiver without a timing sleep.
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while remote_auth
+            .load(&session.token_hash)
+            .await
+            .unwrap()
+            .is_some()
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    location(&remote.get("/u/security").await, "/login");
+}
+
+#[cfg(feature = "admin")]
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn admin_passkeys_use_distinct_origin_for_registration_and_login(pool: PgPool) {
+    let mut admin = Client::new(pool, true).await;
+    let (_, name, password) = admin.seed(false, true).await;
+    admin.login(&name, &password, true).await;
+    admin.get("/admin/setup-mfa").await;
+    // A public origin must fail the admin JSON CSRF check, even with valid tokens.
+    admin.origin = "https://example.test".into();
+    assert_eq!(
+        admin
+            .json("/admin/u/security/passkey/start", serde_json::json!({}))
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    admin.origin = "https://admin.example.test:8443".into();
+    let start = admin
+        .json("/admin/u/security/passkey/start", serde_json::json!({}))
+        .await;
+    assert_eq!(start.status, StatusCode::OK, "{}", start.body);
+    let challenge: CreationChallengeResponse = serde_json::from_str(&start.body).unwrap();
+    assert_eq!(challenge.public_key.rp.id, "admin.example.test");
+    let (soft, _) = SoftToken::new(true).unwrap();
+    let mut authenticator = WebauthnAuthenticator::new(soft);
+    let origin = Url::parse(&admin.origin).unwrap();
+    let registration = authenticator
+        .do_registration(origin.clone(), challenge)
+        .unwrap();
+    assert_eq!(
+        admin
+            .json(
+                "/admin/u/security/passkey/finish",
+                serde_json::to_value(registration).unwrap()
+            )
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert!(admin.session(true).await.mfa_at.is_some());
+    assert_eq!(admin.get("/admin/healthz").await.status, StatusCode::OK);
+    admin.get("/admin/u/security").await;
+    admin.post("/admin/logout", &[]).await;
+    location(
+        &admin.login(&name, &password, true).await,
+        "/admin/login/mfa",
+    );
+    admin.get("/admin/login/mfa").await;
+    let start = admin
+        .json("/admin/login/mfa/passkey/start", serde_json::json!({}))
+        .await;
+    assert_eq!(start.status, StatusCode::OK, "{}", start.body);
+    let challenge: RequestChallengeResponse = serde_json::from_str(&start.body).unwrap();
+    let wrong_port = Url::parse("https://admin.example.test:9443").unwrap();
+    let wrong_assertion = authenticator
+        .do_authentication(wrong_port, challenge)
+        .unwrap();
+    // Correct HTTP Origin cannot rescue an assertion signed for another origin.
+    assert_eq!(
+        admin
+            .json(
+                "/admin/login/mfa",
+                serde_json::to_value(wrong_assertion).unwrap()
+            )
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    let start = admin
+        .json("/admin/login/mfa/passkey/start", serde_json::json!({}))
+        .await;
+    assert_eq!(start.status, StatusCode::OK);
+    let challenge: RequestChallengeResponse = serde_json::from_str(&start.body).unwrap();
+    let assertion = authenticator.do_authentication(origin, challenge).unwrap();
+    location(
+        &admin
+            .json("/admin/login/mfa", serde_json::to_value(assertion).unwrap())
+            .await,
+        "/admin/",
+    );
+    assert!(admin.session(true).await.mfa_at.is_some());
+    assert_eq!(admin.get("/admin/healthz").await.status, StatusCode::OK);
 }

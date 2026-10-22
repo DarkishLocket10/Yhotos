@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "WITH touched AS (\n UPDATE sessions SET last_seen_at=clock_timestamp() WHERE token_hash=$1\n AND last_seen_at<=clock_timestamp()-interval '5 minutes'\n AND expires_at>clock_timestamp() AND created_at<=last_seen_at\n AND last_seen_at>clock_timestamp()-CASE WHEN (SELECT is_admin FROM users WHERE id=sessions.user_id) THEN interval '12 hours' ELSE interval '14 days' END\n AND created_at>clock_timestamp()-CASE WHEN (SELECT is_admin FROM users WHERE id=sessions.user_id) THEN interval '7 days' ELSE interval '90 days' END\n RETURNING last_seen_at\n)\nSELECT s.id,s.user_id,s.admin,s.created_at,COALESCE((SELECT last_seen_at FROM touched),s.last_seen_at) as \"last_seen_at!\",s.expires_at,s.reauth_at,s.ip_hash,s.ua_class,s.token_hash,\nu.must_change_password,u.is_admin,(u.disabled_at IS NOT NULL) as \"disabled!\",\nEXISTS(SELECT FROM user_mfa_list(u.id) WHERE kind IN ('totp','passkey')) as \"has_mfa!\",\nARRAY(SELECT group_id FROM user_groups WHERE user_id=u.id) as \"groups!\"\nFROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1",
+  "query": "WITH touched AS (\n UPDATE sessions SET last_seen_at=clock_timestamp() WHERE token_hash=$1\n AND last_seen_at<=clock_timestamp()-interval '5 minutes'\n AND expires_at>clock_timestamp() AND created_at<=last_seen_at\n AND last_seen_at>clock_timestamp()-CASE WHEN (SELECT is_admin FROM users WHERE id=sessions.user_id) THEN interval '12 hours' ELSE interval '14 days' END\n AND created_at>clock_timestamp()-CASE WHEN (SELECT is_admin FROM users WHERE id=sessions.user_id) THEN interval '7 days' ELSE interval '90 days' END\n RETURNING last_seen_at\n)\nSELECT s.id,s.user_id,s.admin,s.created_at,COALESCE((SELECT last_seen_at FROM touched),s.last_seen_at) as \"last_seen_at!\",s.expires_at,s.reauth_at,s.mfa_at,s.ip_hash,s.ua_class,s.token_hash,\nu.must_change_password,u.is_admin,(u.disabled_at IS NOT NULL) as \"disabled!\",\nEXISTS(SELECT FROM user_mfa_list(u.id) WHERE kind IN ('totp','passkey')) as \"has_mfa!\",\nARRAY(SELECT group_id FROM user_groups WHERE user_id=u.id) as \"groups!\"\nFROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1",
   "describe": {
     "columns": [
       {
@@ -77,6 +77,17 @@
       },
       {
         "ordinal": 7,
+        "name": "mfa_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "mfa_at"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
         "name": "ip_hash",
         "type_info": "Bytea",
         "origin": {
@@ -87,7 +98,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "ua_class",
         "type_info": "Text",
         "origin": {
@@ -98,7 +109,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "token_hash",
         "type_info": "Bytea",
         "origin": {
@@ -109,7 +120,7 @@
         }
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "must_change_password",
         "type_info": "Bool",
         "origin": {
@@ -120,7 +131,7 @@
         }
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "is_admin",
         "type_info": "Bool",
         "origin": {
@@ -131,19 +142,19 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "disabled!",
         "type_info": "Bool",
         "origin": "Expression"
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "has_mfa!",
         "type_info": "Bool",
         "origin": "Expression"
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "groups!",
         "type_info": "UuidArray",
         "origin": "Expression"
@@ -162,6 +173,7 @@
       null,
       false,
       true,
+      true,
       false,
       false,
       false,
@@ -172,5 +184,5 @@
       null
     ]
   },
-  "hash": "3178d7b1fc701655dbfe875ae6c0b3c27f72c2ef2dadc15ec12637d770223d2c"
+  "hash": "0c0352615a2f6a63f8adab697c1901759f9e186c80df2762397ef2c7f7a9a046"
 }

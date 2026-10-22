@@ -43,6 +43,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         last_seen_at: now,
         expires_at: now + time::Duration::days(90),
         reauth_at: Some(now),
+        mfa_at: None,
         ip_hash: Vec::new(),
         ua_class: "other".into(),
         token_hash: hash.clone(),
@@ -57,7 +58,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let config = Box::leak(Box::new(Config {
         public_listen: peer,
         admin_listen: Some(peer),
-        database_url: url,
+        database_url_public: url,
+        database_url_admin: None,
+        admin_base_url: None,
         data_dir: dir.path().to_owned(),
         public_base_url: "https://example.test".parse()?,
         session_key: master.into(),
@@ -73,7 +76,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         },
         log_format: LogFormat::Json,
     }));
-    let auth = Auth::new(config, db)?;
+    let auth = runtime.block_on(Auth::new(config, db, None))?;
     let app = public_router(AppState {
         config,
         auth: Some(auth.clone()),

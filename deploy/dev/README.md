@@ -47,11 +47,29 @@ Workers retain the `ClaimToken` returned alongside the claimed job and pass it
 to completion/failure calls. Updates match the job, worker and attempt; expired
 claims return `false` without altering a replacement worker's claim.
 
-Stop the database with `docker compose -f deploy/dev/compose.yml down`. The named
-volume preserves it; remove the volume before regenerating an existing password.
+`start.sh` derives and exports `COMPOSE_PROJECT_NAME` from a short SHA-256 hash
+of the canonical worktree path. Each worktree has an independent container and
+volume. Set `POSTGRES_PORT` to a free localhost port when running worktrees at
+the same time. Source the script before running Compose commands so they use
+that same project name:
 
-`start.sh` verifies a TCP login after the health check. If a container/volume
-from an earlier worktree has a different password, it recreates this Compose
-project's container **and volume**, discarding its disposable development data.
-Other connection errors fail without deleting data. Never use this bootstrap
-with production data.
+```sh
+source deploy/dev/start.sh
+docker compose -f deploy/dev/compose.yml down
+```
+
+Stopping preserves the volume. `start.sh` verifies a TCP login after the health
+check and exits on any error. A credential mismatch preserves all data and prints
+the exact project-specific `down --volumes` command for an explicit reset. Run
+that command only when you intend to discard this worktree's development data.
+`bash deploy/dev/test-start.sh` verifies isolation and failure behavior using a
+fake Docker CLI.
+
+Server configuration uses separate restricted deployment logins:
+`YHOTOS_DATABASE_URL_PUBLIC` for the public listener, and
+`YHOTOS_DATABASE_URL_ADMIN` for the admin listener and `create-admin` CLI. A public
+build needs only the public URL. An admin build serves both listeners and needs
+both URLs; never grant its public login membership in the admin role.
+`YHOTOS_ADMIN_BASE_URL` is required with the admin feature and selects the admin
+CSRF/WebAuthn origin independently of `YHOTOS_PUBLIC_BASE_URL`. Both URLs must use
+HTTPS without credentials, queries or fragments.

@@ -97,7 +97,7 @@ pub(crate) async fn password(
     if username.is_empty() || username.len() > 80 || username.chars().any(char::is_control) {
         return Ok(failed());
     }
-    let mut tx = auth.db.pool().begin().await?;
+    let mut tx = auth.db(a)?.pool().begin().await?;
     // Let citext perform case folding. Account IDs bind known-user lockouts
     // across every spelling accepted by the database, including Unicode.
     let mut user = users::get_by_username(&mut tx, &username).await?;
@@ -188,6 +188,7 @@ pub(crate) async fn password(
             &network,
             agent,
             None,
+            None,
             destination,
         )
         .await?;
@@ -234,6 +235,7 @@ pub(crate) async fn establish(
     network: &[u8],
     agent: &str,
     reauth_at: Option<time::OffsetDateTime>,
+    mfa_at: Option<time::OffsetDateTime>,
     destination: Option<&str>,
 ) -> Result<Response, HttpError> {
     if let Some(old) = old
@@ -265,6 +267,7 @@ pub(crate) async fn establish(
         expires_at: now
             + time::Duration::try_from(policy.absolute).map_err(|_| HttpError::BadRequest)?,
         reauth_at: Some(reauth_at.unwrap_or(now)),
+        mfa_at,
         ip_hash: network.to_vec(),
         ua_class: agent.to_owned(),
         token_hash: token.hash(TokenKind::Session).as_bytes().to_vec(),
@@ -281,12 +284,7 @@ pub(crate) async fn establish(
     .await?;
     let target = if user.must_change_password {
         a.password()
-    } else if a.0
-        && !mfa::list(c, user.id)
-            .await?
-            .iter()
-            .any(|m| m.kind == "totp" || m.kind == "passkey")
-    {
+    } else if a.0 && mfa_at.is_none() {
         "/admin/setup-mfa"
     } else {
         destination.unwrap_or(a.root())
@@ -315,7 +313,7 @@ pub(crate) async fn mfa_form(
     let Some(hash) = token_hash(&headers, a.pending_cookie(), TokenKind::PendingLogin) else {
         return Ok(redirect(a.login()));
     };
-    let mut tx = auth.db.pool().begin().await?;
+    let mut tx = auth.db(a)?.pool().begin().await?;
     if sessions::pending_get(&mut tx, &hash, a.0).await?.is_none() {
         return Ok(redirect(a.login()));
     }
@@ -367,7 +365,7 @@ async fn finish(
     ) else {
         return Ok(failed());
     };
-    let mut tx = auth.db.pool().begin().await?;
+    let mut tx = auth.db(a)?.pool().begin().await?;
     let Some(pending) = sessions::pending_get(&mut tx, &hash, a.0).await? else {
         return Ok(failed());
     };
@@ -397,7 +395,7 @@ async fn finish(
         let response = Json::<PublicKeyCredential>::from_request(request, &state).await;
         if let (Some(ceremony), Ok(Json(response))) = (ceremony, response) {
             let state: AuthenticationState = serde_json::from_value(ceremony)?;
-            if let Ok(result) = auth.passkeys.finish_authentication(state, &response) {
+            if let Ok(result) = auth.passkeys(a)?.finish_authentication(state, &response) {
                 if let Some(m) = methods
                     .iter()
                     .find(|m| m.credential_id.as_deref() == Some(result.credential_id.as_slice()))
@@ -466,6 +464,7 @@ async fn finish(
             &network,
             agent,
             Some(pending.password_at),
+            Some(time::OffsetDateTime::now_utc()),
             pending.next_path.as_deref().and_then(next_path),
         )
         .await?;
@@ -499,7 +498,7 @@ pub(crate) async fn passkey_start(
     let Some(hash) = token_hash(&headers, a.pending_cookie(), TokenKind::PendingLogin) else {
         return Ok(failed());
     };
-    let mut tx = auth.db.pool().begin().await?;
+    let mut tx = auth.db(a)?.pool().begin().await?;
     let Some(p) = sessions::pending_get(&mut tx, &hash, a.0).await? else {
         return Ok(failed());
     };
@@ -509,7 +508,7 @@ pub(crate) async fn passkey_start(
         .filter(|m| m.kind == "passkey")
         .map(|m| serde_json::from_slice::<Passkey>(m.public_key.as_deref().unwrap_or_default()))
         .collect::<Result<Vec<_>, _>>()?;
-    let (challenge, ceremony) = auth.passkeys.start_authentication(&keys, a.0)?;
+    let (challenge, ceremony) = auth.passkeys(a)?.start_authentication(&keys, a.0)?;
     sessions::ceremony_put(
         &mut tx,
         p.id,

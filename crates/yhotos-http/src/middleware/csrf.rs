@@ -100,7 +100,11 @@ pub(crate) async fn protect(
         || request.uri().path().starts_with("/api/")
         || request.uri().path().starts_with("/admin/api/")
     {
-        let expected = state.config.public_base_url.origin().ascii_serialization();
+        let audience = request.extensions().get::<crate::auth::Audience>().copied();
+        let Some(url) = audience.and_then(|a| a.base_url(&state)) else {
+            return HttpError::Csrf.into_response();
+        };
+        let expected = url.origin().ascii_serialization();
         let origin = request
             .headers()
             .get(header::ORIGIN)

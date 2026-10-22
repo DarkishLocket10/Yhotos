@@ -59,7 +59,7 @@ async fn run(
         if a.0 {
             // Admin privilege and MFA gates must observe account changes and
             // revocations on every request, including changes in another process.
-            let mut c = auth.db.pool().acquire().await?;
+            let mut c = auth.db(a)?.pool().acquire().await?;
             sessions::load(&mut c, hash).await?.map(Arc::new)
         } else {
             auth.load(hash).await?
@@ -118,7 +118,7 @@ async fn run(
                     auth::redirect(a.password())
                 },
             );
-        } else if a.0 && !s.has_mfa && !setup_allowed(path) {
+        } else if a.0 && (s.session.mfa_at.is_none() || !s.has_mfa) && !setup_allowed(path) {
             gate = Some(auth::redirect("/admin/setup-mfa"));
         }
         request.extensions_mut().insert(Current(s.clone()));
