@@ -11,26 +11,31 @@ workspace = true
 [features]
 raw = ["yhotos-codec/raw"]
 
+[dependencies]
+base64.workspace = true
+blake3.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+yhotos-core = { path = "../yhotos-core" }
+yhotos-db = { path = "../yhotos-db" }
+yhotos-storage = { path = "../yhotos-storage" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
 [dev-dependencies]
 criterion.workspace = true
-base64.workspace = true
-sqlx.workspace = true
 http-body-util.workspace = true
 yhotos-auth = { path = "../yhotos-auth" }
-yhotos-db = { path = "../yhotos-db" }
 secrecy.workspace = true
-serde_json.workspace = true
 time.workspace = true
-yhotos-core = { path = "../yhotos-core" }
 yhotos-config = { path = "../yhotos-config" }
 yhotos-http = { path = "../yhotos-http", features = ["admin"] }
-yhotos-storage = { path = "../yhotos-storage" }
 yhotos-codec = { path = "../yhotos-codec" }
 axum.workspace = true
-tokio.workspace = true
 tower = { workspace = true, features = ["util"] }
 tempfile.workspace = true
-uuid.workspace = true
 
 [[bench]]
 name = "auth"

@@ -1,0 +1,85 @@
+name: Benchmark gate
+on:
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: bench-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  perf:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      SQLX_OFFLINE: 'true'
+      DATABASE_URL: postgres://yhotos@127.0.0.1:5432/yhotos_pr?sslmode=disable
+      BASE_DATABASE_URL: postgres://yhotos@127.0.0.1:5432/yhotos_main?sslmode=disable
+      VIPS_CONCURRENCY: '2'
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
+        env:
+          POSTGRES_USER: yhotos
+          POSTGRES_DB: yhotos_test
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ['127.0.0.1:5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U yhotos -d yhotos_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install native codec development libraries
+        run: sudo apt-get update && sudo apt-get install -y libvips-dev libvips-tools liblcms2-dev libclang-dev libjxl-dev libheif-plugin-aomenc libheif-plugin-aomdec libheif-plugin-libde265
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo install sqlx-cli --version 0.9.0 --locked --no-default-features --features postgres,rustls
+      - name: Create isolated base and head databases
+        run: |
+          cargo sqlx database create
+          DATABASE_URL="$BASE_DATABASE_URL" cargo sqlx database create
+      - name: Interleave merge-base and head benchmarks
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: scripts/criterion-gate.sh "$(git merge-base HEAD "$BASE_SHA")"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: benchmark-report
+          path: |
+            bench-results/compare.md
+            target/criterion
+            bench-results/base-target/criterion
+          if-no-files-found: error
+          retention-days: 14
+  comment:
+    # Fork PRs keep read-only tokens; the table remains available as an artifact.
+    if: always() && github.event.pull_request.head.repo.full_name == github.repository
+    needs: perf
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: benchmark-report
+          path: report
+      - name: Post or update sticky benchmark comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          report=report/bench-results/compare.md
+          test -s "$report"
+          # Keep the report a string argument, never interpolate it into code.
+          id=$(gh api --paginate "repos/$REPO/issues/$PR/comments" --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- yhotos-benchmark-gate -->"))) | .id' | head -n 1)
+          if [[ -n "$id" ]]; then
+            gh api --method PATCH "repos/$REPO/issues/comments/$id" -F "body=@$report"
+          else
+            gh api --method POST "repos/$REPO/issues/$PR/comments" -F "body=@$report"
+          fi

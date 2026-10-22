@@ -73,6 +73,13 @@ async fn mutate(
     if value.get("liked").is_none() || value.get("flagged").is_none() {
         return Err("invalid mutation response".into());
     }
+    if (action == "like"
+        && value.get("liked").and_then(serde_json::Value::as_bool) != Some(method == "POST"))
+        || (action == "flag"
+            && value.get("flagged").and_then(serde_json::Value::as_bool) != Some(true))
+    {
+        return Err("mutation did not reach its requested state".into());
+    }
     Ok(())
 }
 fn config(dir: &std::path::Path, url: secrecy::SecretString) -> BenchResult<&'static Config> {
@@ -181,6 +188,10 @@ async fn cleanup(db: &Db, user: yhotos_core::UserId, album: AlbumId) -> BenchRes
         .await?;
     Ok(())
 }
+#[allow(
+    clippy::too_many_lines,
+    reason = "keep fixture lifecycle and timed measurement together"
+)]
 fn main() -> BenchResult<()> {
     let runtime = tokio::runtime::Runtime::new()?;
     let _context = runtime.enter();
@@ -211,34 +222,76 @@ fn main() -> BenchResult<()> {
         let (user, album, short, cookie) = runtime.block_on(seed(&db, count))?;
         let result = (|| -> BenchResult<()> {
             for (method, action) in [("POST", "like"), ("DELETE", "like"), ("POST", "flag")] {
-                let name = format!("interactions/{method}/{action}/{count}");
-                for _ in 0..20 {
-                    runtime.block_on(mutate(&app, &short, &cookie, method, action))?;
-                }
-                let mut samples = Vec::with_capacity(1000);
-                for _ in 0..1000 {
-                    let start = Instant::now();
-                    runtime.block_on(mutate(&app, &short, &cookie, method, action))?;
-                    samples.push(start.elapsed());
-                }
-                samples.sort_unstable();
-                eprintln!(
-                    "{name} p50={:?} p99={:?} (1000 samples)",
-                    samples.get(500),
-                    samples.get(990)
-                );
-                let mut failure = None;
-                criterion.bench_function(&name, |b| {
-                    b.iter(|| {
-                        if let Err(error) =
-                            runtime.block_on(mutate(&app, &short, &cookie, method, action))
-                        {
-                            failure = Some(error);
+                for retry in [false, true] {
+                    let name = if retry {
+                        format!("interactions/{method}/{action}/{count}")
+                    } else {
+                        format!("interactions/write/{method}/{action}/{count}")
+                    };
+                    // Preparation uses the real inverse operation outside timing. Flag
+                    // deletion is fixture maintenance through a bound SQLx statement.
+                    let measure = || -> BenchResult<Duration> {
+                        if action == "flag" {
+                            let mut conn = runtime.block_on(db.pool().acquire())?;
+                            let page = runtime
+                                .block_on(yhotos_db::photos::get_by_short_id(&mut conn, &short))?
+                                .ok_or("missing photo")?;
+                            runtime.block_on(
+                                sqlx::query!("DELETE FROM flags WHERE photo_id=$1", page.id as _)
+                                    .execute(&mut *conn),
+                            )?;
+                            if retry {
+                                runtime.block_on(mutate(&app, &short, &cookie, method, action))?;
+                            }
+                        } else {
+                            let prepare = if (method == "POST") == retry {
+                                "POST"
+                            } else {
+                                "DELETE"
+                            };
+                            runtime.block_on(mutate(&app, &short, &cookie, prepare, action))?;
                         }
+                        let start = Instant::now();
+                        runtime.block_on(mutate(&app, &short, &cookie, method, action))?;
+                        Ok(start.elapsed())
+                    };
+                    for _ in 0..20 {
+                        measure()?;
+                    }
+                    let mut samples = (0..1000)
+                        .map(|_| measure())
+                        .collect::<BenchResult<Vec<_>>>()?;
+                    samples.sort_unstable();
+                    let p99 = *samples.get(990).ok_or("missing samples")?;
+                    eprintln!(
+                        "{name} p50={:?} p99={p99:?} (1000 samples)",
+                        samples.get(500)
+                    );
+                    if !retry
+                        && std::env::var_os("YHOTOS_ENFORCE_TOWER_BUDGETS").is_some()
+                        && p99 >= Duration::from_millis(10)
+                    {
+                        return Err(format!("{name} exceeds 10 ms p99 budget").into());
+                    }
+                    let mut failure = None;
+                    criterion.bench_function(&name, |b| {
+                        b.iter_custom(|iterations| {
+                            let mut total = Duration::ZERO;
+                            for _ in 0..iterations {
+                                match measure() {
+                                    Ok(elapsed) => total += elapsed,
+                                    Err(error) => {
+                                        failure = Some(error);
+                                        break;
+                                    }
+                                }
+                            }
+                            total
+                        });
                     });
-                });
-                if let Some(error) = failure {
-                    return Err(error);
+                    if let Some(error) = failure {
+                        return Err(error);
+                    }
                 }
             }
             Ok(())

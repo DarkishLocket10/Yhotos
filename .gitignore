@@ -31,3 +31,12 @@ dist/
 
 # Agent run artefacts
 .agent-last-message.md
+
+# Performance/security CI output
+/.lighthouseci/
+/fuzz/target/
+/fuzz/artifacts/
+/fuzz/corpus/
+
+# Python harness bytecode
+__pycache__/

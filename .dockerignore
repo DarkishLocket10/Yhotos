@@ -1,0 +1,9 @@
+.git
+.worktrees
+target
+bench-results
+web/node_modules
+fuzz/target
+fuzz/corpus
+fuzz/artifacts
+**/__pycache__

@@ -1,0 +1,148 @@
+name: Nightly performance
+on:
+  schedule:
+    - cron: '41 7 * * *'
+  workflow_dispatch:
+  pull_request:
+    types: [labeled, synchronize, reopened]
+permissions:
+  contents: read
+concurrency:
+  group: nightly-perf-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  load:
+    if: >-
+      (github.event_name != 'pull_request' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'perf'))
+    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-24.04' || fromJSON('["self-hosted","tower"]') }}
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: read
+    env:
+      YHOTOS_FIXTURE_COUNT: '10000'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install pinned load driver and fixture browser
+        run: |
+          cargo install oha --version 1.16.0 --locked
+          npm --prefix web ci --no-audit
+          web/node_modules/.bin/playwright install --with-deps chromium
+      - name: Retrieve previous successful scheduled main result
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          mkdir -p bench-results/previous
+          if gh api "repos/$REPO/actions/workflows/nightly.yml/runs?branch=main&event=schedule&status=success&per_page=10" > bench-results/previous-runs.json 2> bench-results/previous-error.txt; then
+            previous=$(jq -r --arg current "$RUN_ID" '[.workflow_runs[] | select((.id | tostring) != $current)][0].id // empty' bench-results/previous-runs.json)
+          elif grep -q 'HTTP 404' bench-results/previous-error.txt; then
+            echo 'First run: workflow has no stored nightly result yet.'
+            previous=
+          else
+            cat bench-results/previous-error.txt >&2
+            exit 1
+          fi
+          if [[ -n "$previous" ]]; then
+            gh run download "$previous" --repo "$REPO" --name nightly-load --dir bench-results/previous
+          fi
+      - name: Load scenarios and security smoke
+        env:
+          PLAYWRIGHT_MODULE: ${{ github.workspace }}/web/node_modules/@playwright/test/index.mjs
+        run: scripts/bench.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: nightly-load
+          path: |
+            bench-results/load.json
+            bench-results/load.md
+            bench-results/album.json
+            bench-results/photo.json
+            bench-results/derivative.json
+            bench-results/search.json
+            bench-results/mixed.json
+            bench-results/rss-kib.txt
+            bench-results/*.cpu.json
+          retention-days: 30
+  pipeline:
+    # Keep CPU-heavy pipeline work out of the load-test measurement window.
+    needs: load
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+    runs-on: [self-hosted, tower]
+    timeout-minutes: 180
+    env:
+      SQLX_OFFLINE: 'true'
+      DATABASE_URL: postgres://yhotos@127.0.0.1:5432/yhotos_test?sslmode=disable
+      VIPS_CONCURRENCY: '2'
+      YHOTOS_ENFORCE_TOWER_BUDGETS: '1'
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
+        env:
+          POSTGRES_USER: yhotos
+          POSTGRES_DB: yhotos_test
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ['127.0.0.1:5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U yhotos -d yhotos_test"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Require the curated large fixture collection
+        run: |
+          test -f /fixtures/24mp.jpg
+          mkdir -p fixtures/large
+          cp -a /fixtures/. fixtures/large/
+      - run: cargo install sqlx-cli --version 0.9.0 --locked --no-default-features --features postgres,rustls
+      - run: cargo sqlx migrate run --source crates/yhotos-db/migrations
+      - run: cargo build --locked --release -p yhotos-codec-host
+      - name: Run every Criterion target with the large fixtures
+        run: |
+          for source in crates/yhotos-bench/benches/*.rs; do
+            cargo bench --locked -p yhotos-bench --features raw --bench "$(basename "$source" .rs)" -- --save-baseline nightly --noplot
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: nightly-criterion
+          path: target/criterion
+          retention-days: 30
+  regression-issue:
+    if: failure() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: [load, pipeline]
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        with:
+          name: nightly-load
+          path: report
+      - name: Open or update regression issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          printf 'Nightly performance or security gate failed. Run: %s\n\n' "$RUN_URL" > body.md
+          if [[ -s report/load.md ]]; then cat report/load.md >> body.md; fi
+          issue=$(gh issue list --repo "$REPO" --state open --search '"Nightly performance regression" in:title author:app/github-actions' --json number --jq '.[0].number // empty')
+          if [[ -n "$issue" ]]; then
+            gh issue comment "$issue" --repo "$REPO" --body-file body.md
+          else
+            gh issue create --repo "$REPO" --title 'Nightly performance regression' --body-file body.md
+          fi
