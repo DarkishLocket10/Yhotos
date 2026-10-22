@@ -56,8 +56,12 @@ and day grids are paginated at 60 photos, while all date counts remain complete.
 
 Public map HTML and both JSON routes use `Cache-Tag: map,visibility`; calendar
 pages use `calendar,visibility`; place pages use `places,place:<id>,visibility`.
-All use `public, max-age=60, stale-while-revalidate=600` and `Vary: Cookie`;
-cookie or authenticated responses are `private, no-store`. The shared visibility
+Public HTML uses `public, max-age=60, stale-while-revalidate=600`; both map JSON
+routes use `public, max-age=300` without a stale window. All use `Vary: Cookie`;
+cookie or authenticated responses are `private, no-store`. Map, place and calendar
+queries combine account permissions with validated, unlocked share links, as the
+gallery does. A share-only visitor sees only their link scopes; an account with
+share links sees the union of account access and those scopes. The shared visibility
 tag covers aggregates spanning arbitrarily many albums without unbounded headers.
 
 The edge purger is a missing prerequisite in this worktree: `CachePurger` and

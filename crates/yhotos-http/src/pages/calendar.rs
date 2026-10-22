@@ -1,9 +1,10 @@
 //! Calendar routes validate dates before acquiring a connection.
-use super::{Options, cached, context, view::render_calendar};
+use super::{Options, bindings, cached, context, view::render_calendar};
 use crate::{
     AppState,
     error::HttpError,
     middleware::{security_headers::Nonce, session::SessionIdentity},
+    share::Links,
 };
 use axum::{
     Extension,
@@ -33,6 +34,7 @@ pub(crate) async fn page(
     State(state): State<AppState>,
     Extension(nonce): Extension<Nonce>,
     Extension(identity): Extension<SessionIdentity>,
+    Extension(links): Extension<Links>,
     OriginalUri(uri): OriginalUri,
     Query(options): Query<Options>,
     headers: HeaderMap,
@@ -40,7 +42,7 @@ pub(crate) async fn page(
     let selection = selection(uri.path()).ok_or(HttpError::NotFound)?;
     let number = options.number()?;
     let mut conn = state.pool.acquire().await?;
-    let page = calendar::page(&mut conn, &identity.principal(), selection, number)
+    let page = calendar::page_for(&mut conn, &bindings(&identity, &links), selection, number)
         .await?
         .ok_or(HttpError::NotFound)?;
     let nonce = nonce.to_string();

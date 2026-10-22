@@ -131,6 +131,24 @@ pub async fn page(
     selection: Selection,
     number: u32,
 ) -> Result<Option<CalendarPage>, DbError> {
+    page_for(
+        conn,
+        &crate::access_sql::visible_photos(principal),
+        selection,
+        number,
+    )
+    .await
+}
+/// Reads a page visible to the union of independently verified principals in one query.
+///
+/// # Errors
+/// Returns invalid stored metadata or database failures; unavailable pages return `None`.
+pub async fn page_for(
+    conn: &mut PgConnection,
+    p: &crate::access_sql::Bindings,
+    selection: Selection,
+    number: u32,
+) -> Result<Option<CalendarPage>, DbError> {
     if number == 0 || selection.month.is_none() && number != 1 {
         return Ok(None);
     }
@@ -144,7 +162,6 @@ pub async fn page(
     };
     let grid = selection.month.is_some();
     let offset = i64::from(number - 1) * 60;
-    let p = crate::access_sql::visible_photos(principal);
     let row=crate::visible_page_query!(r#",
       selected AS MATERIALIZED (
         SELECT p.*,coalesce(taken_at,posted_at) AS date,

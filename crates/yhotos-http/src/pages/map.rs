@@ -1,9 +1,10 @@
 //! Browser-only tiles and visible photo clusters. No outbound HTTP client exists.
-use super::{Options as PageOptions, cache_response, cached, context};
+use super::{Options as PageOptions, bindings, cache_response, cached, context};
 use crate::{
     AppState,
     error::HttpError,
     middleware::{security_headers::Nonce, session::SessionIdentity},
+    share::Links,
     static_assets,
 };
 use askama::Template;
@@ -32,10 +33,11 @@ pub(crate) async fn page(
     State(state): State<AppState>,
     Extension(nonce): Extension<Nonce>,
     Extension(identity): Extension<SessionIdentity>,
+    Extension(links): Extension<Links>,
     headers: HeaderMap,
 ) -> Result<Response, HttpError> {
     let mut conn = state.pool.acquire().await?;
-    let places = map::places(&mut conn, &identity.principal())
+    let places = map::places_for(&mut conn, &bindings(&identity, &links))
         .await?
         .into_iter()
         .map(|place| {
@@ -67,6 +69,7 @@ pub(crate) struct Options {
 pub(crate) async fn tiles(
     State(state): State<AppState>,
     Extension(identity): Extension<SessionIdentity>,
+    Extension(links): Extension<Links>,
     Query(options): Query<Options>,
     headers: HeaderMap,
 ) -> Result<Response, HttpError> {
@@ -78,11 +81,17 @@ pub(crate) async fn tiles(
         .filter(|z| *z <= 20)
         .ok_or(HttpError::BadRequest)?;
     let mut conn = state.pool.acquire().await?;
-    let clusters = map::clusters(&mut conn, &identity.principal(), bounds, zoom).await?;
+    let clusters = map::clusters_for(&mut conn, &bindings(&identity, &links), bounds, zoom).await?;
     let features=clusters.into_iter().map(|c|serde_json::json!({"type":"Feature","geometry":{"type":"Point","coordinates":[c.lon,c.lat]},"properties":{"count":c.count,"short_id":c.short_id,"thumb_hash":c.thumb_hash,"terminal":c.terminal}})).collect::<Vec<_>>();
     let response =
         Json(serde_json::json!({"type":"FeatureCollection","features":features})).into_response();
-    cache_response(response, &headers, &identity, "map,visibility")
+    cache_response(
+        response,
+        &headers,
+        &identity,
+        "map,visibility",
+        "public, max-age=300",
+    )
 }
 
 /// Validated at the HTTP boundary before SQL, as with the cluster bbox.
@@ -96,6 +105,7 @@ pub(crate) struct PointOptions {
 pub(crate) async fn point_photos(
     State(state): State<AppState>,
     Extension(identity): Extension<SessionIdentity>,
+    Extension(links): Extension<Links>,
     Query(options): Query<PointOptions>,
     headers: HeaderMap,
 ) -> Result<Response, HttpError> {
@@ -108,9 +118,9 @@ pub(crate) async fn point_photos(
     }
     let number = options.page.number()?;
     let mut conn = state.pool.acquire().await?;
-    let page = map::point_photos(
+    let page = map::point_photos_for(
         &mut conn,
-        &identity.principal(),
+        &bindings(&identity, &links),
         options.lon,
         options.lat,
         number,
@@ -122,12 +132,14 @@ pub(crate) async fn point_photos(
         &headers,
         &identity,
         "map,visibility",
+        "public, max-age=300",
     )
 }
 pub(crate) async fn place(
     State(state): State<AppState>,
     Extension(nonce): Extension<Nonce>,
     Extension(identity): Extension<SessionIdentity>,
+    Extension(links): Extension<Links>,
     Path(id): Path<String>,
     Query(options): Query<PageOptions>,
     headers: HeaderMap,
@@ -135,7 +147,7 @@ pub(crate) async fn place(
     let place = id.parse::<uuid::Uuid>().map_err(|_| HttpError::NotFound)?;
     let number = options.number()?;
     let mut conn = state.pool.acquire().await?;
-    let page = yhotos_db::places::page(&mut conn, &identity.principal(), place, number)
+    let page = yhotos_db::places::page_for(&mut conn, &bindings(&identity, &links), place, number)
         .await?
         .ok_or(HttpError::NotFound)?;
     let nonce = nonce.to_string();

@@ -89,11 +89,28 @@ pub async fn page(
     place: uuid::Uuid,
     number: u32,
 ) -> Result<Option<PlacePage>, DbError> {
+    page_for(
+        conn,
+        &crate::access_sql::visible_photos(principal),
+        place,
+        number,
+    )
+    .await
+}
+/// Reads a page visible to the union of independently verified principals in one query.
+///
+/// # Errors
+/// Returns invalid stored metadata or database failures; unavailable pages return `None`.
+pub async fn page_for(
+    conn: &mut PgConnection,
+    p: &crate::access_sql::Bindings,
+    place: uuid::Uuid,
+    number: u32,
+) -> Result<Option<PlacePage>, DbError> {
     if number == 0 {
         return Ok(None);
     }
     let offset = i64::from(number - 1) * 60;
-    let p = crate::access_sql::visible_photos(principal);
     let row = crate::visible_page_query!(r#",
       selected AS MATERIALIZED (
         SELECT p.id,coalesce(p.taken_at,p.posted_at) AS date FROM visible_photos p WHERE place_id=$6

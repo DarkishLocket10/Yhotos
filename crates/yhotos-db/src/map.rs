@@ -27,7 +27,16 @@ pub async fn places(
     conn: &mut PgConnection,
     principal: &Principal<'_>,
 ) -> Result<Vec<PlaceCount>, DbError> {
-    let p = crate::access_sql::visible_photos(principal);
+    places_for(conn, &crate::access_sql::visible_photos(principal)).await
+}
+/// Lists places visible to the union of independently verified principals.
+///
+/// # Errors
+/// Returns connection or invalid stored data errors.
+pub async fn places_for(
+    conn: &mut PgConnection,
+    p: &crate::access_sql::Bindings,
+) -> Result<Vec<PlaceCount>, DbError> {
     let row = crate::visible_page_query!(r#"SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY name,country,id),'[]'::jsonb) AS "payload!"
       FROM (SELECT l.id,l.name,l.admin1,l.country,count(*) AS count FROM places l
         JOIN visible_photos p ON p.place_id=l.id GROUP BY l.id) t"#,p).fetch_one(conn).await?;
@@ -60,6 +69,24 @@ pub async fn clusters(
     bounds: Bounds,
     zoom: u8,
 ) -> Result<Vec<Cluster>, DbError> {
+    clusters_for(
+        conn,
+        &crate::access_sql::visible_photos(principal),
+        bounds,
+        zoom,
+    )
+    .await
+}
+/// Clusters only photos visible to the union of independently verified principals.
+///
+/// # Errors
+/// Rejects invalid bounds or zooms; returns malformed stored data or database failures.
+pub async fn clusters_for(
+    conn: &mut PgConnection,
+    p: &crate::access_sql::Bindings,
+    bounds: Bounds,
+    zoom: u8,
+) -> Result<Vec<Cluster>, DbError> {
     if zoom > 20
         || Bounds::parse(&format!(
             "{},{},{},{}",
@@ -68,7 +95,6 @@ pub async fn clusters(
     {
         return Err(DbError::InvalidInput);
     }
-    let p = crate::access_sql::visible_photos(principal);
     let cells = (2_f64.powi(i32::from(zoom)) * 8.0 * (bounds.east - bounds.west) / 360.0)
         .ceil()
         .clamp(1.0, 22.0);
@@ -157,6 +183,26 @@ pub async fn point_photos(
     lat: f64,
     number: u32,
 ) -> Result<Option<PointPage>, DbError> {
+    point_photos_for(
+        conn,
+        &crate::access_sql::visible_photos(principal),
+        lon,
+        lat,
+        number,
+    )
+    .await
+}
+/// Lists coordinate matches visible to the union of independently verified principals.
+///
+/// # Errors
+/// Rejects invalid coordinates or pagination; returns malformed stored data or SQL errors.
+pub async fn point_photos_for(
+    conn: &mut PgConnection,
+    p: &crate::access_sql::Bindings,
+    lon: f64,
+    lat: f64,
+    number: u32,
+) -> Result<Option<PointPage>, DbError> {
     if !lon.is_finite()
         || !lat.is_finite()
         || !(-180.0..=180.0).contains(&lon)
@@ -166,7 +212,6 @@ pub async fn point_photos(
         return Err(DbError::InvalidInput);
     }
     let offset = i64::from(number - 1) * 60;
-    let p = crate::access_sql::visible_photos(principal);
     let row = crate::visible_page_query!(
         r#",
       selected AS MATERIALIZED (

@@ -102,7 +102,13 @@ fn cached(
     identity: &SessionIdentity,
     tags: &str,
 ) -> Result<Response, HttpError> {
-    cache_response(Html(html).into_response(), headers, identity, tags)
+    cache_response(
+        Html(html).into_response(),
+        headers,
+        identity,
+        tags,
+        "public, max-age=60, stale-while-revalidate=600",
+    )
 }
 
 fn cache_response(
@@ -110,6 +116,7 @@ fn cache_response(
     headers: &HeaderMap,
     identity: &SessionIdentity,
     tags: &str,
+    public_policy: &'static str,
 ) -> Result<Response, HttpError> {
     let private =
         headers.contains_key(header::COOKIE) || !matches!(identity, SessionIdentity::Anonymous);
@@ -118,7 +125,7 @@ fn cache_response(
         HeaderValue::from_static(if private {
             "private, no-store"
         } else {
-            "public, max-age=60, stale-while-revalidate=600"
+            public_policy
         }),
     );
     response

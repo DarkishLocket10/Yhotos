@@ -5,7 +5,10 @@ use criterion::Criterion;
 use http_body_util::BodyExt;
 use std::{error::Error, hint::black_box, time::Instant};
 use tower::ServiceExt;
-use yhotos_core::{PhotoId, ShortId, access::Principal};
+use yhotos_core::{
+    PhotoId, ShortId,
+    access::{Principal, ShareTarget},
+};
 use yhotos_db::{
     calendar::{CalendarPage, Selection},
     map::{self, Bounds},
@@ -32,20 +35,20 @@ fn database(c: &mut Criterion, url: &str) -> Result<(), Box<dyn Error>> {
     )?;
     let mut conn = runtime.block_on(pool.acquire())?;
     let place = uuid::Uuid::now_v7();
+    let album = yhotos_core::AlbumId::new();
     runtime.block_on(async {
         sqlx::query!("CREATE TEMP TABLE places (LIKE public.places INCLUDING ALL)").execute(&mut *conn).await?;
         sqlx::query!("INSERT INTO places(id,name,country,lat,lon) VALUES($1,'Place benchmark','CA',43.7,-79.4)",place).execute(&mut *conn).await?;
         sqlx::query!("CREATE TEMP TABLE albums (LIKE public.albums INCLUDING ALL)").execute(&mut *conn).await?;
         sqlx::query!("CREATE TEMP TABLE photos (LIKE public.photos INCLUDING ALL)").execute(&mut *conn).await?;
         sqlx::query!("CREATE TEMP TABLE derivatives (LIKE public.derivatives INCLUDING ALL)").execute(&mut *conn).await?;
-        let album=uuid::Uuid::now_v7();
-        sqlx::query!("INSERT INTO albums(id,slug,title) VALUES($1,'map-bench','Map benchmark')",album).execute(&mut *conn).await?;
+        sqlx::query!("INSERT INTO albums(id,slug,title) VALUES($1,'map-bench','Map benchmark')",album as _).execute(&mut *conn).await?;
         let ids=(0..10_000).map(|_|PhotoId::new()).collect::<Vec<_>>();
         let shorts=ids.iter().map(|id|ShortId::from_photo_id(*id).to_string()).collect::<Vec<_>>();
         let ids=ids.iter().map(|id|id.0).collect::<Vec<_>>();
         sqlx::query!(r#"INSERT INTO photos(id,short_id,album_id,title,original_hash,original_name,original_bytes,mime,kind,gps_lat,gps_lon)
           SELECT id,short,$3,'Map benchmark',$4,'photo.jpeg',1,'image/jpeg','image',-80+mod(n,160),-170+mod(n,340)
-          FROM unnest($1::uuid[],$2::text[]) WITH ORDINALITY AS t(id,short,n)"#,&ids,&shorts,album,"a".repeat(64)).execute(&mut *conn).await?;
+          FROM unnest($1::uuid[],$2::text[]) WITH ORDINALITY AS t(id,short,n)"#,&ids,&shorts,album as _,"a".repeat(64)).execute(&mut *conn).await?;
         sqlx::query!("ANALYZE photos").execute(&mut *conn).await?;
         sqlx::query!("ANALYZE albums").execute(&mut *conn).await?;
         Ok::<_,sqlx::Error>(())
@@ -72,6 +75,7 @@ fn database(c: &mut Criterion, url: &str) -> Result<(), Box<dyn Error>> {
             black_box(runtime.block_on(map::clusters(&mut conn, &Principal::Anonymous, bounds, 8)))
         });
     });
+    account_share_clusters(c, &runtime, &mut conn, album, bounds)?;
     drop(conn);
     pool_latency(&runtime, &pool)?;
     let dir = tempfile::tempdir()?;
@@ -111,6 +115,29 @@ fn database(c: &mut Criterion, url: &str) -> Result<(), Box<dyn Error>> {
         Ok::<_, Box<dyn Error>>(())
     })?;
     location_benches(c, &runtime, &mut conn, bounds, place);
+    Ok(())
+}
+fn account_share_clusters(
+    c: &mut Criterion,
+    runtime: &tokio::runtime::Runtime,
+    conn: &mut sqlx::PgConnection,
+    album: yhotos_core::AlbumId,
+    bounds: Bounds,
+) -> Result<(), Box<dyn Error>> {
+    let account = yhotos_core::UserId::new();
+    let bindings = yhotos_db::access_sql::visible_photos(&Principal::User {
+        id: account,
+        groups: &[],
+        is_admin: false,
+    })
+    .with_links([ShareTarget::Album(album)]);
+    let clusters = runtime.block_on(map::clusters_for(conn, &bindings, bounds, 8))?;
+    if clusters.iter().map(|c| c.count).sum::<u64>() != 10_000 {
+        return Err("benchmark account/share union count mismatch".into());
+    }
+    c.bench_function("map/clusters/account_plus_share/10k", |b| {
+        b.iter(|| black_box(runtime.block_on(map::clusters_for(conn, &bindings, bounds, 8))));
+    });
     Ok(())
 }
 fn benchmark_config(
@@ -223,7 +250,7 @@ async fn map_request(app: &axum::Router) -> Result<(), Box<dyn Error>> {
             .headers()
             .get(axum::http::header::CACHE_CONTROL)
             .and_then(|h| h.to_str().ok())
-            != Some("public, max-age=60, stale-while-revalidate=600")
+            != Some("public, max-age=300")
     {
         return Err("map benchmark cache contract failed".into());
     }
