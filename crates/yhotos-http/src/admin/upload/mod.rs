@@ -461,6 +461,16 @@ async fn complete(
     };
     uploads::record_completion(&mut tx, id, row.user_id).await?;
     uploads::remove(&mut tx, id).await?;
+    // Durable attribution for every publication, in the same transaction.
+    yhotos_db::audit::write_target(
+        &mut tx,
+        Some(row.user_id),
+        "upload.complete",
+        "photo",
+        Some(photo.id.0),
+        &serde_json::json!({"outcome": result, "upload_id": id, "album_id": row.album_id.0, "bytes": row.declared_bytes}),
+    )
+    .await?;
     tx.commit().await?;
     // A crash after commit leaves only an orphan directory; the hourly sweep removes it.
     if state.store.remove_upload(&temp).await.is_err() {

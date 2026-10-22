@@ -3133,5 +3133,20 @@ fn video_identity_is_bounded_and_never_decodes() {
         std::fs::write(&input, &bytes[..20]).unwrap();
         let id = identify(&input, &Limits::default()).unwrap();
         assert_eq!((id.width, id.height), (None, None));
+
+        // A final top-level atom may declare size 0, meaning "to end of file".
+        let moov = bytes.windows(4).position(|b| b == b"moov").unwrap() - 4;
+        let mut to_eof = bytes.clone();
+        to_eof[moov..moov + 4].copy_from_slice(&0u32.to_be_bytes());
+        std::fs::write(&input, &to_eof).unwrap();
+        let id = identify(&input, &Limits::default()).unwrap();
+        assert_eq!(id.kind, Kind::Video { container });
+        assert_eq!((id.width, id.height), (Some(320), Some(240)));
+        // Size 0 is never accepted for a nested box.
+        let trak = bytes.windows(4).position(|b| b == b"trak").unwrap() - 4;
+        let mut nested = bytes.clone();
+        nested[trak..trak + 4].copy_from_slice(&0u32.to_be_bytes());
+        std::fs::write(&input, &nested).unwrap();
+        assert!(identify(&input, &Limits::default()).is_err());
     }
 }

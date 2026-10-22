@@ -575,6 +575,17 @@ async fn tus_competing_final_chunks_return_one_result_and_one_conflict(pool: PgP
         StatusCode::CONFLICT,
         "terminating a completed upload must not look like a successful cancel"
     );
+    let audited = sqlx::query_scalar!(
+        "SELECT count(*) FROM audit_log WHERE action='upload.complete' AND target_kind='photo' AND detail->>'outcome'='created'"
+    )
+    .fetch_one(&c.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        audited,
+        Some(1),
+        "each publication writes one durable audit row"
+    );
     assert_eq!(
         sqlx::query_scalar!("SELECT count(*) FROM photos")
             .fetch_one(&c.pool)

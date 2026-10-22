@@ -1,102 +1,108 @@
 {
   "db_name": "PostgreSQL",
+  "query": "SELECT status::text AS \"status!\",width,height,orientation,placeholder,dominant_colors,camera_make,gps_lat,gps_lon FROM photos WHERE id=$1",
   "describe": {
     "columns": [
       {
-        "name": "status!",
         "ordinal": 0,
-        "origin": "Expression",
-        "type_info": "Text"
+        "name": "status!",
+        "type_info": "Text",
+        "origin": "Expression"
       },
       {
-        "name": "width",
         "ordinal": 1,
+        "name": "width",
+        "type_info": "Int4",
         "origin": {
           "Table": {
-            "name": "width",
-            "table": "photos"
+            "table": "photos",
+            "name": "width"
           }
-        },
-        "type_info": "Int4"
+        }
       },
       {
-        "name": "height",
         "ordinal": 2,
+        "name": "height",
+        "type_info": "Int4",
         "origin": {
           "Table": {
-            "name": "height",
-            "table": "photos"
+            "table": "photos",
+            "name": "height"
           }
-        },
-        "type_info": "Int4"
+        }
       },
       {
-        "name": "orientation",
         "ordinal": 3,
+        "name": "orientation",
+        "type_info": "Int4",
         "origin": {
           "Table": {
-            "name": "orientation",
-            "table": "photos"
+            "table": "photos",
+            "name": "orientation"
           }
-        },
-        "type_info": "Int4"
+        }
       },
       {
-        "name": "placeholder",
         "ordinal": 4,
+        "name": "placeholder",
+        "type_info": "Bytea",
         "origin": {
           "Table": {
-            "name": "placeholder",
-            "table": "photos"
+            "table": "photos",
+            "name": "placeholder"
           }
-        },
-        "type_info": "Bytea"
+        }
       },
       {
-        "name": "dominant_colors",
         "ordinal": 5,
+        "name": "dominant_colors",
+        "type_info": "Int4Array",
         "origin": {
           "Table": {
-            "name": "dominant_colors",
-            "table": "photos"
+            "table": "photos",
+            "name": "dominant_colors"
           }
-        },
-        "type_info": "Int4Array"
+        }
       },
       {
-        "name": "camera_make",
         "ordinal": 6,
+        "name": "camera_make",
+        "type_info": "Text",
         "origin": {
           "Table": {
-            "name": "camera_make",
-            "table": "photos"
+            "table": "photos",
+            "name": "camera_make"
           }
-        },
-        "type_info": "Text"
+        }
       },
       {
-        "name": "gps_lat",
         "ordinal": 7,
+        "name": "gps_lat",
+        "type_info": "Float8",
         "origin": {
           "Table": {
-            "name": "gps_lat",
-            "table": "photos"
+            "table": "photos",
+            "name": "gps_lat"
           }
-        },
-        "type_info": "Float8"
+        }
       },
       {
-        "name": "gps_lon",
         "ordinal": 8,
+        "name": "gps_lon",
+        "type_info": "Float8",
         "origin": {
           "Table": {
-            "name": "gps_lon",
-            "table": "photos"
+            "table": "photos",
+            "name": "gps_lon"
           }
-        },
-        "type_info": "Float8"
+        }
       }
     ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
     "nullable": [
       null,
       true,
@@ -107,13 +113,7 @@
       true,
       true,
       true
-    ],
-    "parameters": {
-      "Left": [
-        "Uuid"
-      ]
-    }
+    ]
   },
-  "hash": "98d2d246d169428b49f3e69d7339f1e9bf9a781e96992019d7b58e5b69a84444",
-  "query": "SELECT status::text AS \"status!\",width,height,orientation,placeholder,dominant_colors,camera_make,gps_lat,gps_lon FROM photos WHERE id=$1"
+  "hash": "98d2d246d169428b49f3e69d7339f1e9bf9a781e96992019d7b58e5b69a84444"
 }

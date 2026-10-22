@@ -437,6 +437,27 @@ impl Walker {
             header,
         })
     }
+    /// Top-level header for video containers. `QuickTime` and ISO BMFF allow the last
+    /// top-level box to declare size 0, meaning it extends to the end of the file;
+    /// nested boxes never may, so this is only called for top-level walks.
+    fn top_level_header(&mut self, offset: u64, file_len: u64) -> Result<BoxHeader, CodecError> {
+        let head = self.read::<8>(offset, file_len)?;
+        if u32::from_be_bytes(head[..4].try_into().map_err(|_| CodecError::Decode)?) != 0 {
+            return self.header(offset, file_len);
+        }
+        self.remaining = self.remaining.checked_sub(1).ok_or(CodecError::Limits)?;
+        let kind: [u8; 4] = head[4..8].try_into().map_err(|_| CodecError::Decode)?;
+        if &kind == b"uuid" || file_len.checked_sub(offset).is_none_or(|n| n < 8) {
+            return Err(CodecError::Decode);
+        }
+        Ok(BoxHeader {
+            kind,
+            payload: offset + 8,
+            end: file_len,
+            #[cfg(feature = "raw")]
+            header: 8,
+        })
+    }
     fn read<const N: usize>(&mut self, offset: u64, end: u64) -> Result<[u8; N], CodecError> {
         if offset.checked_add(N as u64).is_none_or(|n| n > end) {
             return Err(CodecError::Decode);
@@ -756,7 +777,7 @@ pub(crate) fn video_dimensions(
     let mut at = 0;
     let mut first = None;
     while at < len {
-        let movie = walker.header(at, len)?;
+        let movie = walker.top_level_header(at, len)?;
         if movie.kind == *b"moov" {
             let mut track_offset = movie.payload;
             while track_offset < movie.end {
