@@ -279,6 +279,47 @@ impl JobHandler for Started {
 }
 
 #[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn caller_deadline_is_not_restarted_by_queue_cleanup(pool: PgPool) {
+    let queue = Queue::with_config(
+        pool.clone(),
+        QueueConfig {
+            shutdown_grace: Duration::from_secs(2),
+            ..QueueConfig::default()
+        },
+    )
+    .unwrap();
+    let id = queue.enqueue(Job::Gc, 0, None).await.unwrap();
+    let (stop, shutdown) = tokio::sync::oneshot::channel();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let worker = tokio::spawn(async move {
+        queue
+            .run_worker_until("absolute deadline", &[JobKind::Gc], Started(tx), async {
+                shutdown.await.unwrap()
+            })
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(3), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    // Much shorter than the configured two seconds: cleanup must retain this
+    // deadline instead of allocating another grace period after cancellation.
+    stop.send(tokio::time::Instant::now() + Duration::from_millis(200))
+        .unwrap();
+    tokio::time::timeout(Duration::from_millis(500), worker)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let row = sqlx::query!("SELECT attempts,locked_by FROM jobs WHERE id=$1", id.0)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(row.attempts, 0);
+    assert!(row.locked_by.is_none());
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
 async fn shutdown_release_obeys_same_deadline_when_database_is_blocked(pool: PgPool) {
     let queue = Queue::with_config(
         pool.clone(),

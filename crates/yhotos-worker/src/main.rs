@@ -2,7 +2,6 @@
 //! CPU job consumer with SIGTERM/SIGINT cancellation and fenced claim release.
 use anyhow::{Context, Result};
 use std::time::Duration;
-use tokio_util::sync::CancellationToken;
 use yhotos_jobs::{JobKind, Queue, QueueConfig};
 
 #[tokio::main]
@@ -56,14 +55,13 @@ async fn run() -> Result<()> {
     ingest.concurrency_per_host = config.worker.vips_concurrency;
     ingest.default_timezone = jiff::tz::TimeZone::get(&config.worker.default_timezone)
         .map_err(|_| anyhow::anyhow!("invalid worker default timezone"))?;
-    let queue = Queue::with_config(
-        db.pool().clone(),
-        QueueConfig {
-            concurrency: usize::from(config.worker.concurrency),
-            ..QueueConfig::default()
-        },
-    )?;
-    let shutdown = CancellationToken::new();
+    let queue_config = QueueConfig {
+        concurrency: usize::from(config.worker.concurrency),
+        ..QueueConfig::default()
+    };
+    let shutdown_grace = queue_config.shutdown_grace;
+    let queue = Queue::with_config(db.pool().clone(), queue_config)?;
+    let (stop, shutdown) = tokio::sync::oneshot::channel();
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .context("SIGTERM handler unavailable")?;
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
@@ -71,9 +69,8 @@ async fn run() -> Result<()> {
     let worker = format!("worker-{}", uuid::Uuid::now_v7());
     let signal = async {
         tokio::select! { _=term.recv()=>{}, _=interrupt.recv()=>{} }
-        shutdown.cancel();
     };
-    let run = queue.run_worker(
+    let run = queue.run_worker_until(
         &worker,
         &[
             JobKind::Ingest,
@@ -85,14 +82,28 @@ async fn run() -> Result<()> {
             JobKind::VideoTranscode,
         ],
         ingest,
-        shutdown.clone(),
+        async {
+            shutdown
+                .await
+                .unwrap_or_else(|_| tokio::time::Instant::now())
+        },
     );
     tokio::pin!(run);
-    tokio::select! {
-        result=&mut run => result?,
-        ()=signal => run.await?,
-    }
-    db.pool().close().await;
+    let (result, deadline) = tokio::select! {
+        result=&mut run => (result, tokio::time::Instant::now() + shutdown_grace),
+        ()=signal => {
+            // One deadline starts at the signal, including queue cleanup and
+            // SQLx's return/close waits for connections with cancelled queries.
+            let deadline = tokio::time::Instant::now() + shutdown_grace;
+            let _ = stop.send(deadline);
+            let result = tokio::time::timeout_at(deadline, &mut run)
+                .await
+                .unwrap_or(Err(yhotos_jobs::JobsError::ShutdownTimeout));
+            (result, deadline)
+        },
+    };
+    let _ = tokio::time::timeout_at(deadline, db.pool().close()).await;
+    result?;
     Ok(())
 }
 

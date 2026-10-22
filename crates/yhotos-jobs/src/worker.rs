@@ -21,7 +21,7 @@ pub struct QueueConfig {
     pub concurrency: usize,
     /// Fallback polling when a notification is missed, default three seconds.
     pub poll_interval: Duration,
-    /// Total shutdown budget, including database waits, drain and claim release (at most thirty seconds).
+    /// Total shutdown budget, including database waits, drain, claim release and pool closure (at most thirty seconds).
     pub shutdown_grace: Duration,
 }
 impl Default for QueueConfig {
@@ -54,6 +54,24 @@ impl Queue {
         handler: impl JobHandler,
         shutdown: CancellationToken,
     ) -> Result<(), JobsError> {
+        self.run_worker_until(worker_id, kinds, handler, async {
+            shutdown.cancelled().await;
+            tokio::time::Instant::now() + self.config.shutdown_grace
+        })
+        .await
+    }
+    /// Stops claiming when `shutdown` resolves and uses its absolute deadline for all cleanup.
+    /// The caller must also bound pool closure and process exit by that same deadline.
+    ///
+    /// # Errors
+    /// Returns database/listener failures, unexpected task termination or a cleanup timeout.
+    pub async fn run_worker_until(
+        &self,
+        worker_id: &str,
+        kinds: &[JobKind],
+        handler: impl JobHandler,
+        shutdown: impl std::future::Future<Output = tokio::time::Instant>,
+    ) -> Result<(), JobsError> {
         if worker_id.is_empty() || worker_id.len() > 128 || kinds.is_empty() {
             return Err(JobsError::InvalidJob);
         }
@@ -71,7 +89,7 @@ impl Queue {
             let mut listener = PgListener::connect_with(&self.pool).await?;
             listener.listen("jobs").await?;
             loop {
-                while tasks.len() < self.config.concurrency && !shutdown.is_cancelled() {
+                while tasks.len() < self.config.concurrency {
                     let available: Vec<&str> = kinds
                         .iter()
                         .filter(|kind| {
@@ -125,7 +143,6 @@ impl Queue {
                     });
                 }
                 tokio::select! {
-                    () = shutdown.cancelled() => break,
                     result = tasks.join_next(), if !tasks.is_empty() => {
                         let (id, result) = result.ok_or(JobsError::Task)?.map_err(|_| JobsError::Task)?;
                         result?;
@@ -144,16 +161,17 @@ impl Queue {
                     },
                 }
             }
-            Ok::<(), JobsError>(())
         };
         // This select covers *all* waits, including listener startup, pool
         // acquisition, claim COMMIT, sweep and depth queries inside select arms.
-        let outcome = tokio::select! {
+        let (outcome, deadline): (Result<(), JobsError>, _) = tokio::select! {
             biased;
-            () = shutdown.cancelled() => Ok(()),
-            result = work => result,
+            deadline = shutdown => (Ok(()), deadline),
+            result = work => (result, tokio::time::Instant::now() + self.config.shutdown_grace),
         };
-        let cleanup = self.drain_and_release(tasks, active, &cancel).await;
+        let cleanup = self
+            .drain_and_release(tasks, active, &cancel, deadline)
+            .await;
         outcome?;
         cleanup
     }
@@ -162,8 +180,8 @@ impl Queue {
         mut tasks: JoinSet<(JobId, Result<(), JobsError>)>,
         mut active: HashMap<JobId, (ClaimToken, JobKind)>,
         cancel: &CancellationToken,
+        deadline: tokio::time::Instant,
     ) -> Result<(), JobsError> {
-        let deadline = tokio::time::Instant::now() + self.config.shutdown_grace;
         let release_budget = (self.config.shutdown_grace / 2).min(Duration::from_secs(1));
         let drain_deadline = deadline - release_budget;
         // Drain even on listener/database errors. A task's durable result is checked before

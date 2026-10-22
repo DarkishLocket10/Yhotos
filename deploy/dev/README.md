@@ -63,11 +63,14 @@ path. `YHOTOS_WORKER__CODEC_TIMEOUT` is a wall-clock limit in seconds (default
 (`avif`, `jxl`, `jpeg`) and `scale2x`; names, uniqueness and the 32-output cap
 are checked before consuming jobs. The worker uses `Role::Worker` and verified
 database TLS, with an explicit loopback-only development opt-in
-`YHOTOS_WORKER__LOCAL_PLAINTEXT_DATABASE=true`. SIGTERM/SIGINT uses one 29-second shutdown budget for cancelling database waits,
-draining handlers and releasing remaining claims in a fenced batch. The last
-second is reserved for release; database unavailability returns a deadline error
-and stale-lock recovery remains the backstop. Unimplemented ML, geo and video handlers defer for one hour
-without exhausting their attempt allowance.
+`YHOTOS_WORKER__LOCAL_PLAINTEXT_DATABASE=true`. SIGTERM/SIGINT starts one absolute
+29-second deadline for cancelling database waits, draining handlers, releasing
+remaining claims in a fenced batch and closing the connection pool. The last
+second is reserved for release and pool closure; pool closure cannot extend the
+deadline even when a cancelled query is still blocked in Postgres. Database
+unavailability returns a deadline error and stale-lock recovery remains the
+backstop. Unimplemented ML, geo and video handlers defer for one hour without
+exhausting their attempt allowance.
 
 `YHOTOS_WORKER__DEFAULT_TIMEZONE` is the IANA timezone used when EXIF
 `DateTimeOriginal` has no `OffsetTimeOriginal` (default `UTC`). The database

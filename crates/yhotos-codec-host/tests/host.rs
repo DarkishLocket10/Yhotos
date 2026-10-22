@@ -23,10 +23,13 @@ fn job(input: &Path, out: &Path) -> Value {
     json!({"input":input,"out_dir":out,"outputs":[{"name":"medium.avif","resize":{"long_edge":192,"square":false},"encode":{"Avif":{"quality":90,"speed":6}},"keep_icc":true},{"name":"medium.jxl","resize":{"long_edge":192,"square":false},"encode":{"Jxl":{"distance":0.5,"effort":3}},"keep_icc":true},{"name":"medium.jpg","resize":{"long_edge":192,"square":false},"encode":{"Jpeg":{"quality":95,"progressive":true,"chroma_subsampling":false}},"keep_icc":false}],"want":["identity","metadata","thumbhash","dominant_colors"]})
 }
 fn invoke(job: &Value, args: &[&str]) -> std::process::Output {
+    invoke_with_concurrency(job, args, "999")
+}
+fn invoke_with_concurrency(job: &Value, args: &[&str], concurrency: &str) -> std::process::Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_yhotos-codec-host"))
         .args(args)
         .env("VIPS_WARNING", "injected")
-        .env("VIPS_CONCURRENCY", "999")
+        .env("VIPS_CONCURRENCY", concurrency)
         .env("VIPS_DISC_THRESHOLD", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -40,6 +43,26 @@ fn invoke(job: &Value, args: &[&str]) -> std::process::Output {
         .write_all(&serde_json::to_vec(job).unwrap())
         .unwrap();
     child.wait_with_output().unwrap()
+}
+#[cfg(feature = "test-hooks")]
+#[test]
+fn validated_concurrency_reaches_native_initialization_and_survives_decode() {
+    for (setting, expected) in [
+        ("3", "3\n"),
+        ("0", "2\n"),
+        ("999", "2\n"),
+        ("invalid", "2\n"),
+    ] {
+        let tmp = tempfile::tempdir().unwrap();
+        let output = invoke_with_concurrency(
+            &job(&fixture("chart-srgb.png"), tmp.path()),
+            &["--self-test-concurrency"],
+            setting,
+        );
+        assert!(output.status.success(), "{setting}: {:?}", output.status);
+        assert_eq!(output.stderr, b"");
+        assert_eq!(output.stdout, expected.as_bytes(), "{setting}");
+    }
 }
 #[test]
 fn three_output_report_and_hashes() {

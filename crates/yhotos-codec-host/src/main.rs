@@ -162,16 +162,16 @@ impl From<CodecError> for Failure {
 }
 // A new exec clears env before any libvips initialization, without unsafe Rust
 // environment mutation. No PATH/HOME/LD_*/VIPS_* supplied by the caller survives.
-fn clean_environment() -> Result<(), Failure> {
+fn clean_environment() -> Result<u8, Failure> {
     let concurrency = std::env::var("VIPS_CONCURRENCY")
         .ok()
         .and_then(|s| s.parse::<u8>().ok())
         .filter(|n| (1..=64).contains(n))
-        .unwrap_or(2)
-        .to_string();
+        .unwrap_or(2);
+    let concurrency_text = concurrency.to_string();
     #[allow(unused_mut)]
     let mut expected = vec![
-        ("VIPS_CONCURRENCY", concurrency.as_str()),
+        ("VIPS_CONCURRENCY", concurrency_text.as_str()),
         ("VIPS_WARNING", "0"),
         ("VIPS_DISC_THRESHOLD", "3g"),
         ("LC_ALL", "C"),
@@ -194,7 +194,7 @@ fn clean_environment() -> Result<(), Failure> {
             .iter()
             .all(|(k, v)| std::env::var(k).is_ok_and(|s| s == *v))
     {
-        return Ok(());
+        return Ok(concurrency);
     }
     let executable = std::env::current_exe().map_err(|_| Failure(2, "startup failed"))?;
     let error = std::process::Command::new(executable)
@@ -245,7 +245,7 @@ fn paths(job: &Job) -> Result<(PathBuf, Vec<PathBuf>), Failure> {
 }
 #[allow(clippy::too_many_lines)] // The single-job protocol is kept in one sequential flow.
 fn run() -> Result<(), Failure> {
-    clean_environment()?;
+    let concurrency = clean_environment()?;
     #[cfg(target_os = "linux")]
     {
         let parent = std::env::args()
@@ -300,9 +300,9 @@ fn run() -> Result<(), Failure> {
         return Err(Failure(2, "memory limit not enforced"));
     }
     let (input, paths) = paths(&job)?;
+    yhotos_codec::sandbox::initialize(concurrency)?;
     #[cfg(target_os = "linux")]
     {
-        yhotos_codec::sandbox::initialize()?;
         filesystem::restrict(
             &input,
             &job.out_dir
@@ -320,6 +320,18 @@ fn run() -> Result<(), Failure> {
     let decode_start = Instant::now();
     let working = yhotos_codec::decode(&input, &id, &job.limits.codec())?;
     let decode_ms = decode_start.elapsed().as_millis();
+    #[cfg(feature = "test-hooks")]
+    if std::env::args_os().any(|a| a == "--self-test-concurrency") {
+        // Query libvips after decode too, so lazy native initialization cannot
+        // silently restore the default. The supervisor preserves these bytes.
+        writeln!(
+            std::io::stdout().lock(),
+            "{}",
+            yhotos_codec::sandbox::initialize(concurrency)?
+        )
+        .map_err(|_| Failure(3, "report failed"))?;
+        return Ok(());
+    }
     #[cfg(all(target_os = "linux", debug_assertions))]
     if std::env::args_os().any(|a| a == "--self-test-timeout") {
         loop {
