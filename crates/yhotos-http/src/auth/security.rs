@@ -102,6 +102,7 @@ pub(crate) async fn password(
     };
     let new = input.new_password;
     let username = user.username.clone();
+    let previous_hash = yhotos_auth::PasswordHash::parse(&user.password_hash)?;
     let permit = auth
         .password_slots
         .clone()
@@ -112,6 +113,9 @@ pub(crate) async fn password(
     let hash = tokio::task::spawn_blocking(move || {
         let _permit = permit;
         yhotos_auth::check_password_policy(&new, &username)?;
+        if yhotos_auth::verify_password(&new, &previous_hash)? {
+            return Err(yhotos_auth::AuthError::PasswordPolicy);
+        }
         passwords.hash_password(&new)
     })
     .await

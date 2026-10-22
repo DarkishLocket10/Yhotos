@@ -728,6 +728,87 @@ async fn forced_password_gate_rotation_and_other_sessions_revoked(pool: PgPool) 
     assert_eq!(count, 1);
 }
 #[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn password_change_rejects_reuse_and_retires_the_old_password(pool: PgPool) {
+    for forced in [true, false] {
+        let mut c = Client::new(pool.clone(), false).await;
+        let (id, name, password) = c.seed(forced, false).await;
+        c.login(&name, &password, false).await;
+        c.get("/u/password").await;
+        let session = c.session(false).await;
+        let before = users::get_by_id(&mut pool.acquire().await.unwrap(), id)
+            .await
+            .unwrap()
+            .unwrap();
+        let current = if forced { "" } else { password.expose_secret() };
+        let policy_error = c
+            .post(
+                "/u/password",
+                &[
+                    ("current_password", current),
+                    ("new_password", &password.expose_secret()[..8]),
+                ],
+            )
+            .await;
+        let reused = c
+            .post(
+                "/u/password",
+                &[
+                    ("current_password", current),
+                    ("new_password", password.expose_secret()),
+                ],
+            )
+            .await;
+        assert_eq!(reused.status, StatusCode::BAD_REQUEST);
+        assert_eq!(reused.status, policy_error.status);
+        assert_eq!(reused.body, policy_error.body);
+        assert_eq!(reused.body, "Sign in failed");
+        assert!(!reused.headers.contains_key(header::SET_COOKIE));
+        let after = users::get_by_id(&mut pool.acquire().await.unwrap(), id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.password_hash, before.password_hash);
+        assert_eq!(after.must_change_password, forced);
+        assert_eq!(c.session(false).await.id, session.id);
+        let changes = sqlx::query_scalar!(
+            r#"SELECT count(*) AS "count!" FROM audit_log WHERE user_id=$1 AND action='password.change'"#,
+            id.0
+        ).fetch_one(&pool).await.unwrap();
+        assert_eq!(changes, 0);
+        if forced {
+            location(&c.get("/u/security").await, "/u/password");
+            assert_eq!(
+                c.get("/api/v1/anything").await.body,
+                r#"{"error":"password_change_required"}"#
+            );
+        } else {
+            assert_eq!(c.get("/u/security").await.status, StatusCode::OK);
+        }
+
+        c.get("/u/password").await;
+        let new = yhotos_auth::generate_temp_password();
+        location(
+            &c.post(
+                "/u/password",
+                &[
+                    ("current_password", current),
+                    ("new_password", new.expose_secret()),
+                ],
+            )
+            .await,
+            "/",
+        );
+        assert_eq!(c.get("/u/security").await.status, StatusCode::OK);
+        location(&c.post("/logout", &[]).await, "/login");
+        let retired = c.login(&name, &password, false).await;
+        assert_eq!(retired.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(retired.body, "Sign in failed");
+        assert!(!c.jar.contains_key("__Host-ys"));
+        location(&c.login(&name, &new, false).await, "/");
+        assert_eq!(c.get("/u/security").await.status, StatusCode::OK);
+    }
+}
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
 async fn concurrent_revocation_cannot_recreate_a_session_during_password_change(pool: PgPool) {
     for forced in [true, false] {
         let mut c = Client::new(pool.clone(), false).await;
