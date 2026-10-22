@@ -11,7 +11,23 @@ workspace = true
 [dev-dependencies]
 criterion.workspace = true
 yhotos-auth = { path = "../yhotos-auth" }
+yhotos-core = { path = "../yhotos-core" }
+yhotos-config = { path = "../yhotos-config" }
+yhotos-http = { path = "../yhotos-http" }
+axum.workspace = true
+tokio.workspace = true
+tower = { workspace = true, features = ["util"] }
+tempfile.workspace = true
+uuid.workspace = true
 
 [[bench]]
 name = "auth"
+harness = false
+
+[[bench]]
+name = "access"
+harness = false
+
+[[bench]]
+name = "http"
 harness = false

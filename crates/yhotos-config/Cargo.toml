@@ -7,3 +7,19 @@ rust-version.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+default = []
+admin = []
+
+[dependencies]
+figment.workspace = true
+serde.workspace = true
+secrecy = { workspace = true, features = ["serde"] }
+url.workspace = true
+base64.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+uuid.workspace = true
