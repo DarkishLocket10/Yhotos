@@ -22,6 +22,7 @@ pub mod sessions;
 pub mod settings;
 pub mod share_links;
 pub mod tags;
+pub mod uploads;
 pub mod users;
 
 use secrecy::{ExposeSecret, SecretString};

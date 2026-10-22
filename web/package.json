@@ -5,10 +5,18 @@
   "type": "module",
   "scripts": {
     "build": "node esbuild.config.mjs",
-    "test": "node --test tests/*.mjs"
+    "typecheck": "tsc --noEmit",
+    "test": "node tests/build.mjs && node --test tests/*.test.mjs",
+    "size": "node tests/size.mjs",
+    "check": "npm run typecheck && npm test && npm run build && npm run size",
+    "e2e": "playwright test"
   },
   "dependencies": {
-    "esbuild": "0.28.2",
     "maplibre-gl": "6.15.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.1",
+    "typescript": "5.9.3",
+    "esbuild": "0.28.2"
   }
 }

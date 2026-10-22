@@ -29,6 +29,7 @@ enum Class {
     Cheap,
     Expensive,
     Auth,
+    Interaction,
 }
 fn class(path: &str) -> Class {
     if path.starts_with("/login")
@@ -117,6 +118,7 @@ impl RateLimiter {
             Class::Cheap => self.budgets.cheap_per_min,
             Class::Expensive => self.budgets.expensive_per_min,
             Class::Auth => self.budgets.auth_per_min,
+            Class::Interaction => 60,
         };
         let (mut bucket, now) = if let Some(bucket) = self.buckets.get_mut(&(ip, class)) {
             (bucket, clock())
@@ -203,7 +205,17 @@ pub(crate) async fn limit(
         Ok(ip) => ip,
         Err(error) => return error.into_response(),
     };
-    let route_class = class(request.uri().path());
+    let interaction = (request.uri().path().starts_with("/api/v1/photos/")
+        || request.uri().path().starts_with("/s/photos/"))
+        && matches!(
+            *request.method(),
+            axum::http::Method::POST | axum::http::Method::DELETE
+        );
+    let route_class = if interaction {
+        Class::Interaction
+    } else {
+        class(request.uri().path())
+    };
     let route_class = if route_class == Class::Auth && request.method() != axum::http::Method::POST
     {
         Class::Cheap

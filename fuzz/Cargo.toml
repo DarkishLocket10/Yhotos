@@ -54,3 +54,10 @@ path = "fuzz_targets/map_bbox.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "tus_headers"
+path = "fuzz_targets/tus_headers.rs"
+test = false
+doc = false
+bench = false

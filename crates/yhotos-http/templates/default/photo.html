@@ -5,4 +5,5 @@
 {% if !downloads.is_empty() %}<details><summary>Download photo</summary><ul>{% for download in downloads %}<li><a href="{{ download.href }}" download>{{ download.label }}</a></li>{% endfor %}</ul></details>{% endif %}{% if let Some(actions) = actions %}{% include "default/share/actions.html" %}{% endif %}
 {% if !exif.is_empty() %}<section aria-label="Photo details"><h2>Photo details</h2><dl>{% for (label,value) in exif %}<dt>{{ label }}</dt><dd>{{ value }}</dd>{% endfor %}</dl></section>{% endif %}
 {% if let Some(url) = map %}<p><a href="{{ url }}" rel="noreferrer">View photo location on OpenStreetMap</a></p>{% endif %}
-</main>{% endblock %}
+<script type="application/json" nonce="{{ context.nonce }}" id="photo-data">{{ island|safe }}</script>
+</main>{% for script in scripts %}<script type="module" nonce="{{ context.nonce }}" src="{{ script }}"></script>{% endfor %}{% endblock %}

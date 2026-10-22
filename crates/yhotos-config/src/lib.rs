@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{net::SocketAddr, path::PathBuf, time::Duration};
 use url::Url;
 
+// The codec host accepts tightened limits only, up to this 2 GiB ceiling.
+const MAX_UPLOAD_BYTES: u64 = 2 << 30;
+
 /// Validated process settings. Debug output redacts secret fields.
 #[derive(Debug)]
 pub struct Config {
@@ -130,7 +133,7 @@ pub struct RateLimits {
 /// Bounded upload sizes, with chunks no larger than the whole upload.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 pub struct Upload {
-    /// Maximum complete upload size.
+    /// Maximum complete upload size, at most the codec host's 2 GiB ceiling.
     pub max_bytes: u64,
     /// Maximum individual chunk size.
     pub chunk_bytes: u32,
@@ -217,7 +220,7 @@ impl Default for Defaults {
             write_timeout_secs: 30,
             transfer_deadline_secs: 30 * 60,
             upload: Upload {
-                max_bytes: 2 * 1024 * 1024 * 1024,
+                max_bytes: MAX_UPLOAD_BYTES,
                 chunk_bytes: 8 * 1024 * 1024,
             },
             log_format: LogFormat::Json,
@@ -397,6 +400,9 @@ impl Config {
         if max_bytes == Some(0) {
             errors.push("upload.max_bytes: must be positive".into());
         }
+        if max_bytes.is_some_and(|max| max > MAX_UPLOAD_BYTES) {
+            errors.push("upload.max_bytes: must not exceed the codec host ceiling of 2 GiB".into());
+        }
         if global_stream_cap == Some(0) {
             errors.push("global_stream_cap: must be positive".into());
         }
@@ -550,6 +556,23 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = Config::from_figment(valid(dir.path())).unwrap();
         assert!(config.database_url_worker.is_none());
+    }
+    #[test]
+    fn upload_limit_cannot_exceed_the_host_ceiling() {
+        let dir = tempfile::tempdir().unwrap();
+        for max in [MAX_UPLOAD_BYTES, MAX_UPLOAD_BYTES - 1] {
+            let config =
+                Config::from_figment(valid(dir.path()).merge(("upload.max_bytes", max))).unwrap();
+            assert_eq!(config.upload.max_bytes, max);
+        }
+        for max in [MAX_UPLOAD_BYTES + 1, 4 << 30, u64::MAX] {
+            let error = Config::from_figment(valid(dir.path()).merge(("upload.max_bytes", max)))
+                .unwrap_err();
+            assert_eq!(
+                error.problems(),
+                &["upload.max_bytes: must not exceed the codec host ceiling of 2 GiB"]
+            );
+        }
     }
     #[test]
     fn worker_settings_are_bounded_and_overridable() {

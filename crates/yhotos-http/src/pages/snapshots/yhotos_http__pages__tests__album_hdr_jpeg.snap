@@ -1,6 +1,6 @@
 ---
 source: crates/yhotos-http/src/pages/tests.rs
-expression: grid
+expression: snapshot_html(grid)
 ---
 <!doctype html>
 <html lang="en">
@@ -20,11 +20,11 @@ expression: grid
 <meta property="og:image:height" content="1365">
 <meta property="og:type" content="website">
 </head>
-<body><header class="site-header"><a href="/">Yhotos</a><span>Photo gallery</span><nav aria-label="Gallery"><a href="/map">Map</a> <a href="/calendar">Calendar</a></nav></header><main><nav aria-label="Breadcrumb"><ol class="breadcrumbs"><li><a href="/">Home</a></li><li><a href="/a/gallery">Fixture gallery</a></li></ol></nav><h1>Fixture gallery</h1><p>Photos from the garden</p>
+<body><header class="site-header"><a href="/">Yhotos</a><span>Photo gallery</span></header><main><nav aria-label="Breadcrumb"><ol class="breadcrumbs"><li><a href="/">Home</a></li><li><a href="/a/gallery">Fixture gallery</a></li></ol></nav><h1>Fixture gallery</h1><p>Photos from the garden</p>
 
 <form method="get" class="sort-form"><label for="sort">Sort photos</label><select name="sort" id="sort">
 <option value="taken" selected>Date taken</option><option value="posted">Date posted</option><option value="name">Name</option><option value="manual">Manual order</option></select><button type="submit">Apply sorting</button></form>
-<p>1 photos</p><section aria-label="Photos" class="photo-grid"><div class="grid-row"><a class="cell" id="cell0" href="/p/aaaaaaaaaaab?sort=taken"><picture>
+<p>1 photos</p><section aria-label="Photos" class="photo-grid"><div class="grid-row"><a data-photo-link class="cell" id="cell0" href="/p/aaaaaaaaaaab?sort=taken"><picture>
 
 
 <source media="(max-width: 600px) and (dynamic-range: high)" type="image/jpeg" srcset="/i/3b2b250ebd7cbd209b5be1bab8741021edc11ebd74c187ff81f5bfdd3592e5c3/small.jpeg.hdr 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 1.000000), 1200px">
@@ -40,6 +40,16 @@ expression: grid
 </picture></a></div></section>
 
 <nav aria-label="Pagination" class="pagination"><span>Page 1</span></nav>
-<script type="application/json" nonce="fixture-nonce" id="gallery-data">{"photos":[{"id":"aaaaaaaaaaab","title":"Photo 01"}]}</script>
-</main><footer>Yhotos photo gallery · Place data: <a href="https://www.geonames.org/">GeoNames</a> (<a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>)</footer></body>
+<script type="application/json" nonce="fixture-nonce" id="gallery-data">[JSON island data]</script>
+</main><dialog id="lightbox" aria-labelledby="lightbox-title" aria-describedby="lightbox-status">
+<div class="lightbox-toolbar"><h2 id="lightbox-title"></h2><button type="button" data-close aria-label="Close photo viewer">Close</button></div>
+<div class="lightbox-stage" data-stage><picture data-picture><img data-image alt="" width="4" height="3" decoding="async"></picture></div>
+<nav aria-label="Lightbox navigation"><button type="button" data-previous aria-label="Previous photo">Previous</button><button type="button" data-next aria-label="Next photo">Next</button></nav>
+<div class="lightbox-tools"><button type="button" data-zoom aria-label="Zoom photo" aria-pressed="false">Zoom</button><button type="button" data-info aria-expanded="false" aria-controls="lightbox-info">Photo details</button><button type="button" data-download aria-expanded="false" aria-controls="lightbox-downloads">Download photo</button>
+
+<button type="button" data-share>Copy photo link</button><button type="button" data-slideshow aria-pressed="false">Play slideshow</button><button type="button" data-fullscreen>Enter fullscreen</button></div>
+<section id="lightbox-info" aria-label="Photo details" hidden><p data-description></p><dl data-details></dl></section><ul id="lightbox-downloads" aria-label="Download sizes" hidden></ul>
+<p id="lightbox-status" role="status" aria-live="polite"></p>
+</dialog>
+<script type="module" nonce="fixture-nonce" src="/static/lightbox.fixture.js"></script><script type="module" nonce="fixture-nonce" src="/static/prefetch.fixture.js"></script><script type="module" nonce="fixture-nonce" src="/static/transitions.fixture.js"></script><footer>Yhotos photo gallery</footer></body>
 </html>

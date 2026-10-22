@@ -21,11 +21,20 @@ seccompiler.workspace = true
 landlock.workspace = true
 
 [dev-dependencies]
+axum.workspace = true
+futures-core.workspace = true
+base64.workspace = true
+figment.workspace = true
+secrecy.workspace = true
+http-body-util.workspace = true
+tower = { workspace = true, features = ["util"] }
+yhotos-auth = { path = "../yhotos-auth", features = ["test-util"] }
+yhotos-config = { path = "../yhotos-config", features = ["admin"] }
 tempfile.workspace = true
 async-trait.workspace = true
 tokio-util = { workspace = true, features = ["rt"] }
 yhotos-jobs = { path = "../yhotos-jobs" }
-yhotos-http = { path = "../yhotos-http" }
+yhotos-http = { path = "../yhotos-http", features = ["admin", "test-util"] }
 jiff.workspace = true
 time = { workspace = true, features = ["macros"] }
 

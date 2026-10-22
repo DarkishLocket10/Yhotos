@@ -40,13 +40,11 @@ jobs:
         working-directory: web
         run: |
           npm ci
-          npm run build
+          npm run check
       - name: Test offline gazetteer importer
         run: python3 -m unittest discover -s deploy/geo -p 'test_*.py'
-      - name: Test map interactions
-        run: npm --prefix web test
-      - name: Test bundled passkey redirects
-        run: node --test crates/yhotos-http/tests/passkey_redirect.mjs
+      - name: Test bundled islands
+        run: node --test crates/yhotos-http/tests/passkey_redirect.mjs crates/yhotos-http/tests/upload.mjs
 
   test:
     runs-on: ubuntu-24.04

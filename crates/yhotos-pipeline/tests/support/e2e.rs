@@ -185,9 +185,9 @@ async fn real_host_chart_and_orientations_publish_and_rerun_without_changes(pool
 async fn assert_oriented_pages(pool: &PgPool, id: PhotoId, name: &str) {
     let source = yhotos_codec::identify(&fixture(name), &yhotos_codec::Limits::default()).unwrap();
     let expected = if source.orientation >= 5 {
-        (source.height, source.width)
+        (source.height.unwrap(), source.width.unwrap())
     } else {
-        (source.width, source.height)
+        (source.width.unwrap(), source.height.unwrap())
     };
     assert_ne!(
         expected.0, expected.1,

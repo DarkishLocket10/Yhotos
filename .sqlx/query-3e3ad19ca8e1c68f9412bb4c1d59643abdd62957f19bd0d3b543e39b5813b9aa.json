@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS(SELECT 1 FROM completed_uploads WHERE id=$1 AND user_id=$2 AND expires_at>now()) AS \"completed!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "completed!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "3e3ad19ca8e1c68f9412bb4c1d59643abdd62957f19bd0d3b543e39b5813b9aa"
+}
