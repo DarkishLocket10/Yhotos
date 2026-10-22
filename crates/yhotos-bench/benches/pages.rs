@@ -27,6 +27,25 @@ fn fixture() -> Result<AlbumPage, Box<dyn Error>> {
     )?)
 }
 fn reviewed_layouts(criterion: &mut Criterion, page: &AlbumPage, context: &PageContext<'_>) {
+    let mut hdr_jpeg = page.clone();
+    for photo in &mut hdr_jpeg.photos {
+        for mut derivative in photo.derivatives.clone() {
+            if derivative.format == "jpeg" {
+                derivative.hdr = true;
+                photo.derivatives.push(derivative);
+            }
+        }
+    }
+    criterion.bench_function("pages/render_album/60_hdr_jpeg", |b| {
+        b.iter(|| {
+            black_box(render_album(
+                black_box(&hdr_jpeg),
+                1,
+                PageSort::Taken,
+                context,
+            ))
+        });
+    });
     let mut single = page.clone();
     single.photos.truncate(1);
     single.total = 1;

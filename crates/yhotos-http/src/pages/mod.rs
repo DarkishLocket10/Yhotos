@@ -230,11 +230,11 @@ fn legacy_patterns(uri: &Uri) -> Option<Vec<String>> {
             let mut patterns = vec![
                 format!("/index.php?{query}"),
                 format!("/category/{category}"),
-                format!("/category/{id}"),
             ];
             if let Some(slug) = slug {
                 patterns.push(format!("/{slug}"));
             }
+            patterns.push(format!("/category/{id}"));
             Some(patterns)
         }
         "/picture.php" => {

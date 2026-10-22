@@ -27,9 +27,11 @@ expression: "render_album(&granted, 1, PageSort::Taken, &context()).unwrap()"
 <p>3 photos</p><section aria-label="Photos" class="photo-grid"><div class="grid-row"><a class="cell" id="cell0" href="/p/aaaaaaaaaaad?sort=taken"><picture>
 
 
+
 <source media="(max-width: 600px)" type="image/jxl" srcset="/i/7aa906a1ba51c165954350845f56deb1385f7b9d4dabdf3858fd6e88ff5e2d8e/small.jxl 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.441379), 530px">
 <source media="(max-width: 600px)" type="image/avif" srcset="/i/6cf3e54a5c9e927cf86865f4ff0a79ad85c4534d32d297fdf528077d6c7d067b/small.avif 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.441379), 530px">
 <source media="(max-width: 600px)" type="image/jpeg" srcset="/i/3ea375a133d3ff442837481f8684264a3d59433215687ee4ed65edd662ef3306/small.jpeg 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.441379), 530px">
+
 
 
 <source type="image/jxl" srcset="/i/7aa906a1ba51c165954350845f56deb1385f7b9d4dabdf3858fd6e88ff5e2d8e/small.jxl 640w, /i/45ae236d38a8d21cbc2be69ebb33c66548a040728ee3e7ecd8b33e815ba0457b/medium.jxl 1280w, /i/925a971de6226453fcd82b650340fe06fafe9c8780e7a89ac07766d9fdad813c/large.jxl 2048w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.441379), 530px">
@@ -38,9 +40,11 @@ expression: "render_album(&granted, 1, PageSort::Taken, &context()).unwrap()"
 </picture><span class="badge">Play video</span></a><a class="cell" id="cell1" href="/p/aaaaaaaaaaac?sort=taken"><picture>
 
 
+
 <source media="(max-width: 600px)" type="image/jxl" srcset="/i/f164205fdcd05ae1fb296713aed7a3c851a54b653a7d192431875e83b045308a/small.jxl 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.186207), 223px">
 <source media="(max-width: 600px)" type="image/avif" srcset="/i/b1a550371a9c3f719760d5b606cf0e23b6b1544ecf77d05227f3a33423aa2268/small.avif 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.186207), 223px">
 <source media="(max-width: 600px)" type="image/jpeg" srcset="/i/28c5872a55a7e9fa8d04af8583eec3df258cba7cc78c4b5916d09fc4bf931ae3/small.jpeg 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.186207), 223px">
+
 
 
 <source type="image/jxl" srcset="/i/f164205fdcd05ae1fb296713aed7a3c851a54b653a7d192431875e83b045308a/small.jxl 640w, /i/9a7129b6a4a4f10bd5eb1404fe569d9f12ee1147374eaed6451cbb0d1500c7e4/medium.jxl 1280w, /i/b7f5f8781a9aa593e7e5780d7db190f0527206051a3a6afb77c40f68d3e515e8/large.jxl 2048w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.186207), 223px">
@@ -49,9 +53,11 @@ expression: "render_album(&granted, 1, PageSort::Taken, &context()).unwrap()"
 </picture><span class="badge">RAW</span></a><a class="cell" id="cell2" href="/p/aaaaaaaaaaab?sort=taken"><picture>
 
 
+
 <source media="(max-width: 600px)" type="image/jxl" srcset="/i/9a9d0df9335d93fd27756284451504644cfde75c1232c38956013142370e47c8/small.jxl 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.372414), 447px">
 <source media="(max-width: 600px)" type="image/avif" srcset="/i/22a3e0e373d4af995786f78be8d28a6396eb57b451ad0d5173c6bc90d6b51897/small.avif 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.372414), 447px">
 <source media="(max-width: 600px)" type="image/jpeg" srcset="/i/3b2b250ebd7cbd209b5be1bab8741021edc11ebd74c187ff81f5bfdd3592e5c3/small.jpeg 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.372414), 447px">
+
 
 
 <source type="image/jxl" srcset="/i/9a9d0df9335d93fd27756284451504644cfde75c1232c38956013142370e47c8/small.jxl 640w, /i/560e59ba4bdcfa9b4e62586a16d15575e7444f2064e42b69161cfb4fe63f4f57/medium.jxl 1280w, /i/55d293db28ed212a3c5c3b19a1bc0becc7be9f023cc540afc8a57b5f65e5d5ff/large.jxl 2048w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.372414), 447px">

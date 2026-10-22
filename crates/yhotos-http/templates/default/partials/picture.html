@@ -1,11 +1,13 @@
 <picture>
 {% if !image.hdr_jxl.mobile.is_empty() %}<source media="(max-width: 600px) and (dynamic-range: high)" type="image/jxl" srcset="{{ image.hdr_jxl.mobile }}" sizes="{{ image.sizes }}">{% endif %}
 {% if !image.hdr_avif.mobile.is_empty() %}<source media="(max-width: 600px) and (dynamic-range: high)" type="image/avif" srcset="{{ image.hdr_avif.mobile }}" sizes="{{ image.sizes }}">{% endif %}
+{% if !image.hdr_jpeg.mobile.is_empty() %}<source media="(max-width: 600px) and (dynamic-range: high)" type="image/jpeg" srcset="{{ image.hdr_jpeg.mobile }}" sizes="{{ image.sizes }}">{% endif %}
 {% if !image.jxl.mobile.is_empty() %}<source media="(max-width: 600px)" type="image/jxl" srcset="{{ image.jxl.mobile }}" sizes="{{ image.sizes }}">{% endif %}
 {% if !image.avif.mobile.is_empty() %}<source media="(max-width: 600px)" type="image/avif" srcset="{{ image.avif.mobile }}" sizes="{{ image.sizes }}">{% endif %}
 {% if !image.jpeg.mobile.is_empty() %}<source media="(max-width: 600px)" type="image/jpeg" srcset="{{ image.jpeg.mobile }}" sizes="{{ image.sizes }}">{% endif %}
 {% if !image.hdr_jxl.all.is_empty() %}<source media="(dynamic-range: high)" type="image/jxl" srcset="{{ image.hdr_jxl.all }}" sizes="{{ image.sizes }}">{% endif %}
 {% if !image.hdr_avif.all.is_empty() %}<source media="(dynamic-range: high)" type="image/avif" srcset="{{ image.hdr_avif.all }}" sizes="{{ image.sizes }}">{% endif %}
+{% if !image.hdr_jpeg.all.is_empty() %}<source media="(dynamic-range: high)" type="image/jpeg" srcset="{{ image.hdr_jpeg.all }}" sizes="{{ image.sizes }}">{% endif %}
 {% if !image.jxl.all.is_empty() %}<source type="image/jxl" srcset="{{ image.jxl.all }}" sizes="{{ image.sizes }}">{% endif %}
 {% if !image.avif.all.is_empty() %}<source type="image/avif" srcset="{{ image.avif.all }}" sizes="{{ image.sizes }}">{% endif %}
 <img src="{{ image.src }}" srcset="{{ image.jpeg.all }}" sizes="{{ image.sizes }}" width="{{ image.width }}" height="{{ image.height }}" loading="{{ image.loading }}" decoding="async" alt="{{ image.alt }}" data-thumbhash="{{ image.thumbhash }}">

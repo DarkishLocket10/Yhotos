@@ -356,6 +356,65 @@ async fn photos_have_sorted_neighbours_metadata_hdr_downloads_and_og(pool: PgPoo
     );
 }
 #[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn hdr_jpeg_only_representation_precedes_sdr_sources(pool: PgPool) {
+    let f = Fixture::new(pool, 1).await;
+    let mut album = f.album_row(&SessionIdentity::Anonymous).await;
+    let photo = &mut album.photos[0];
+    // JPEG is the only HDR encoding; SDR modern formats must not shadow it.
+    for mut derivative in photo.derivatives.clone() {
+        if derivative.format == "jpeg" {
+            derivative.hdr = true;
+            photo.derivatives.push(derivative);
+        }
+    }
+    let photo = photos::PhotoPage {
+        photo: photo.clone(),
+        chain: album.chain.clone(),
+        previous: None,
+        next: None,
+    };
+    album.album.cover = Some(photo.photo.clone());
+    let detail = render_photo(&photo, PageSort::Taken, &context()).unwrap();
+    let grid = render_album(&album, 1, PageSort::Taken, &context()).unwrap();
+    let home = render_home(&[album.album.clone()], &context()).unwrap();
+    for (html, capped) in [(&detail, false), (&grid, true), (&home, true)] {
+        let picture = html.split("<picture>").nth(1).unwrap();
+        let picture = picture.split("</picture>").next().unwrap();
+        let hdr = picture
+            .split("<source ")
+            .skip(1)
+            .map(|s| s.split('>').next().unwrap())
+            .find(|s| s.contains("media=\"(dynamic-range: high)\" type=\"image/jpeg\""))
+            .expect("full HDR JPEG source");
+        assert!(hdr.contains(".jpeg.hdr 640w"));
+        assert!(hdr.contains(".jpeg.hdr 1280w"));
+        assert!(hdr.contains(".jpeg.hdr 2048w"));
+        assert!(picture.find(hdr).unwrap() < picture.find("<source type=\"image/jxl\"").unwrap());
+        if capped {
+            let mobile = picture
+                .split("<source ")
+                .skip(1)
+                .map(|s| s.split('>').next().unwrap())
+                .find(|s| s.contains("media=\"(max-width: 600px) and (dynamic-range: high)\" type=\"image/jpeg\""))
+                .expect("mobile HDR JPEG source");
+            assert!(mobile.contains(".jpeg.hdr 640w"));
+            assert!(!mobile.contains("1280w"));
+            assert!(!mobile.contains("2048w"));
+            assert!(
+                picture.find(mobile).unwrap()
+                    < picture
+                        .find("media=\"(max-width: 600px)\" type=\"image/jxl\"")
+                        .unwrap()
+            );
+        }
+        let fallback = picture.split("<img ").nth(1).unwrap();
+        assert!(!fallback.contains(".hdr"));
+    }
+    insta::assert_snapshot!("photo_hdr_jpeg", detail);
+    insta::assert_snapshot!("album_hdr_jpeg", grid);
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
 async fn dimensions_size_budget_and_xss_in_all_contexts(pool: PgPool) {
     let f = Fixture::new(pool, 60).await;
     let mut row = f.album_row(&SessionIdentity::Anonymous).await;
@@ -456,6 +515,57 @@ async fn legacy_table_drives_only_relative_redirects(pool: PgPool) {
         assert!(!redirects::valid_destination(target));
     }
 }
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn legacy_exact_path_then_slug_then_numeric_id(pool: PgPool) {
+    let f = Fixture::new(pool, 3).await;
+    let mut conn = f.state.pool.acquire().await.unwrap();
+    for (pattern, index) in [("/category/12", 0), ("/garden", 1)] {
+        redirects::insert(
+            &mut conn,
+            pattern,
+            ShareTarget::Photo(PhotoId(Uuid::from_u128(index + 1))),
+        )
+        .await
+        .unwrap();
+    }
+    for (url, index) in [
+        ("/index.php?/category/12-garden", 1),
+        ("/index.php?/category/12-unknown", 0),
+        ("/index.php?/category/12", 0),
+    ] {
+        let response = f.get(url).await;
+        assert_eq!(response.status(), StatusCode::MOVED_PERMANENTLY);
+        assert_eq!(
+            response.headers()[header::LOCATION],
+            format!("/p/{}", f.photos[index])
+        );
+    }
+    // Both exact representations retain priority over the conflicting slug/ID.
+    redirects::insert(
+        &mut conn,
+        "/category/12-garden",
+        ShareTarget::Album(f.album),
+    )
+    .await
+    .unwrap();
+    let response = f.get("/index.php?/category/12-garden").await;
+    assert_eq!(response.status(), StatusCode::MOVED_PERMANENTLY);
+    assert_eq!(response.headers()[header::LOCATION], "/a/gallery");
+    redirects::insert(
+        &mut conn,
+        "/index.php?/category/12-garden",
+        ShareTarget::Photo(PhotoId(Uuid::from_u128(3))),
+    )
+    .await
+    .unwrap();
+    let response = f.get("/index.php?/category/12-garden").await;
+    assert_eq!(response.status(), StatusCode::MOVED_PERMANENTLY);
+    assert_eq!(
+        response.headers()[header::LOCATION],
+        format!("/p/{}", f.photos[2])
+    );
+}
+
 #[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
 async fn legacy_visibility_matches_pages_for_targets_and_ancestors(pool: PgPool) {
     let f = Fixture::new(pool, 3).await;
@@ -976,10 +1086,8 @@ async fn mobile_grid_and_cover_sources_are_capped_across_formats(pool: PgPool) {
     let mut album = f.album_row(&SessionIdentity::Anonymous).await;
     let photo = &mut album.photos[0];
     for mut derivative in photo.derivatives.clone() {
-        if derivative.format != "jpeg" {
-            derivative.hdr = true;
-            photo.derivatives.push(derivative);
-        }
+        derivative.hdr = true;
+        photo.derivatives.push(derivative);
     }
     album.album.cover = Some(photo.clone());
     album.children = vec![album.album.clone()];
@@ -1006,7 +1114,7 @@ async fn mobile_grid_and_cover_sources_are_capped_across_formats(pool: PgPool) {
                     assert!(source.contains("sizes=\""));
                 }
             }
-            assert_eq!(mobile_count, 5);
+            assert_eq!(mobile_count, 6);
             assert!(picture.contains("1280w"));
             assert!(picture.contains("2048w"));
         }
