@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO photo_tags(id,photo_id,tag_id,source,confidence) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (photo_id,tag_id) DO UPDATE SET source=excluded.source,confidence=excluded.confidence",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        {
+          "Custom": {
+            "name": "tag_source",
+            "kind": {
+              "Enum": [
+                "manual",
+                "auto"
+              ]
+            }
+          }
+        },
+        "Float4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "67387e526ba8d48957d38397615fdce2874b6738672b8666b79a121ef24ca391"
+}

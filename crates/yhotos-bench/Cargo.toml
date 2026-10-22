@@ -11,6 +11,10 @@ workspace = true
 [dev-dependencies]
 criterion.workspace = true
 yhotos-auth = { path = "../yhotos-auth" }
+yhotos-db = { path = "../yhotos-db" }
+secrecy.workspace = true
+serde_json.workspace = true
+time.workspace = true
 yhotos-core = { path = "../yhotos-core" }
 yhotos-config = { path = "../yhotos-config" }
 yhotos-http = { path = "../yhotos-http" }
@@ -30,4 +34,8 @@ harness = false
 
 [[bench]]
 name = "http"
+harness = false
+
+[[bench]]
+name = "jobs"
 harness = false

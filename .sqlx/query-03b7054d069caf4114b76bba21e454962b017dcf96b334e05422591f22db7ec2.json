@@ -1,0 +1,128 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO flags(id,photo_id,user_id,share_link_id) VALUES ($1,$2,$3,$4) RETURNING id, created_at, user_id as \"user_id: _\", share_link_id as \"share_link_id: _\", photo_id as \"photo_id: _\", updated_at, resolved_at, resolution as \"resolution: _\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "flags",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "flags",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "user_id: _",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "flags",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "share_link_id: _",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "flags",
+            "name": "share_link_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "photo_id: _",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "flags",
+            "name": "photo_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "flags",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "resolved_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "flags",
+            "name": "resolved_at"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "resolution: _",
+        "type_info": {
+          "Custom": {
+            "name": "flag_resolution",
+            "kind": {
+              "Enum": [
+                "replaced",
+                "reedited",
+                "removed",
+                "visibility",
+                "dismissed"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "flags",
+            "name": "resolution"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "03b7054d069caf4114b76bba21e454962b017dcf96b334e05422591f22db7ec2"
+}

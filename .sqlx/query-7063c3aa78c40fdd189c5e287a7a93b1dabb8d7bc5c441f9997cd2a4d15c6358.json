@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM embeddings WHERE photo_id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7063c3aa78c40fdd189c5e287a7a93b1dabb8d7bc5c441f9997cd2a4d15c6358"
+}

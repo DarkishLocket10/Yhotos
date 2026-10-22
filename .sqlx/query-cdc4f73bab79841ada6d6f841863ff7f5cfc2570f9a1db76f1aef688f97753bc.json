@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT secret_enc FROM user_mfa WHERE false",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "secret_enc",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "user_mfa",
+            "name": "secret_enc"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "cdc4f73bab79841ada6d6f841863ff7f5cfc2570f9a1db76f1aef688f97753bc"
+}

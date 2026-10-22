@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE jobs SET error=$2,run_after=now()+make_interval(secs=>$3::double precision),finished_at=CASE WHEN attempts>=max_attempts THEN now() ELSE NULL END,locked_at=NULL,locked_by=NULL WHERE id=$1 AND locked_at IS NOT NULL AND finished_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5191d457155cc12230de55479e2d79c30acab417afee52e787bcc2952792f18d"
+}

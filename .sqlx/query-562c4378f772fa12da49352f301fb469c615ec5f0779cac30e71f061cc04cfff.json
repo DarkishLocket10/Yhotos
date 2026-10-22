@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE user_mfa SET label='changed' WHERE false",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "562c4378f772fa12da49352f301fb469c615ec5f0779cac30e71f061cc04cfff"
+}

@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "EXPLAIN (ANALYZE, FORMAT TEXT) UPDATE jobs SET locked_by=$1,locked_at=now(),attempts=attempts+1 WHERE id=(SELECT id FROM jobs WHERE finished_at IS NULL AND locked_at IS NULL AND run_after<=now() AND kind=ANY($2) AND attempts<max_attempts ORDER BY priority DESC,run_after,id LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING id as \"id: _\", created_at, updated_at, kind, payload, priority, run_after, attempts, max_attempts, locked_by, locked_at, finished_at, error\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "QUERY PLAN",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "6c089a46dc6f2b4ff02efae515dc4fb79b288de71d6a3032a61bcf7523a4073e"
+}

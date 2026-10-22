@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE sessions SET last_seen_at=now(),reauth_at=now() WHERE false",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "4273060adbad06d9f32cf81518e549a5a75ed5c8ffa24b16a9aa6449c8ca3cb5"
+}

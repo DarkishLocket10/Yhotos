@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE settings SET value='{}' WHERE false",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "5973f4bef8a67ce0686a401c4bf5940c0d49196fa463f31143705f9ce6a12714"
+}

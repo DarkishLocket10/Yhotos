@@ -1,0 +1,174 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id as \"id: _\", created_at, updated_at, parent_id as \"parent_id: _\", slug as \"slug: _\", title, description, sort_order, cover_photo_id as \"cover_photo_id: _\", visibility as \"visibility: _\", manual_order, deleted_at FROM albums ORDER BY parent_id NULLS FIRST,sort_order,id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: _",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "albums",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "albums",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "albums",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "parent_id: _",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "albums",
+            "name": "parent_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "slug: _",
+        "type_info": {
+          "Custom": {
+            "name": "citext",
+            "kind": "Simple"
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "albums",
+            "name": "slug"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "title",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "albums",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "description",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "albums",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "sort_order",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "albums",
+            "name": "sort_order"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "cover_photo_id: _",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "albums",
+            "name": "cover_photo_id"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "visibility: _",
+        "type_info": {
+          "Custom": {
+            "name": "visibility",
+            "kind": {
+              "Enum": [
+                "inherit",
+                "public",
+                "restricted"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "albums",
+            "name": "visibility"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "manual_order",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "albums",
+            "name": "manual_order"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "deleted_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "albums",
+            "name": "deleted_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "ae6bd065eb1f268c91e61dc0d76840bca2756c2cd35a3b3266f0a7ace3f5360a"
+}

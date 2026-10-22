@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE jobs SET priority=1 WHERE false",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "4ccfb40f29b475e7a3205e0e10a56ba9e87a8bd287c86819e9863f7dff3e5860"
+}

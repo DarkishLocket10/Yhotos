@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE photos SET title=$2,description=$3,taken_at=$4,width=$5,height=$6,orientation=$7,is_hdr=$8,has_gain_map=$9,icc_name=$10,camera_make=$11,camera_model=$12,lens=$13,focal_mm=$14,aperture=$15,shutter=$16,iso=$17,gps_lat=$18,gps_lon=$19,place_id=$20,dominant_colors=$21,placeholder=$22 WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Timestamptz",
+        "Int4",
+        "Int4",
+        "Int4",
+        "Bool",
+        "Bool",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Float8",
+        "Float8",
+        "Text",
+        "Int4",
+        "Float8",
+        "Float8",
+        "Uuid",
+        "Int4Array",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "73492c62c099f17979c11697b7f125b9e75fc33e50c6bb82c9a3efcf4e213921"
+}

@@ -5,6 +5,11 @@ use crate::{AlbumId, GroupId, PhotoId, UserId};
 
 /// Visibility can be narrowed by restrictions on any ancestor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "sqlx", derive(sqlx::Type))]
+#[cfg_attr(
+    feature = "sqlx",
+    sqlx(type_name = "visibility", rename_all = "lowercase")
+)]
 pub enum Visibility {
     /// Visible without a grant, subject to ancestor restrictions.
     Public,

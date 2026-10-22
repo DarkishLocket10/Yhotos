@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT $1::text AS \"short!: ShortId\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "short!: ShortId",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "fd34ee2f48fa6389bdc2e1c19743e39e4b89d4bebda1067851615ad53fddad96"
+}

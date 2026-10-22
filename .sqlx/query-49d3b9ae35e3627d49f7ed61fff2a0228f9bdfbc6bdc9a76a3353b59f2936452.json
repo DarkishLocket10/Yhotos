@@ -1,0 +1,51 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT count(*) AS \"opens!\", count(DISTINCT visitor_hash) AS \"unique_visitors!\", min(opened_at) AS first_open, max(opened_at) AS last_open, coalesce((SELECT jsonb_object_agg(country,opens) FROM (SELECT country,count(*) AS opens FROM share_link_opens WHERE share_link_id=$1 AND country IS NOT NULL GROUP BY country) c),'{}'::jsonb) AS \"countries!\" FROM share_link_opens WHERE share_link_id=$1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "opens!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "unique_visitors!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "first_open",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "last_open",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "countries!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "49d3b9ae35e3627d49f7ed61fff2a0228f9bdfbc6bdc9a76a3353b59f2936452"
+}

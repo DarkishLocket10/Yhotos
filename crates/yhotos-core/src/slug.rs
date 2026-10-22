@@ -75,6 +75,37 @@ impl fmt::Display for Slug {
     }
 }
 
+#[cfg(feature = "sqlx")]
+mod postgres {
+    use super::Slug;
+    use sqlx::{
+        Decode, Encode, Postgres, Type,
+        encode::IsNull,
+        error::BoxDynError,
+        postgres::{PgArgumentBuffer, PgTypeInfo, PgValueRef},
+    };
+
+    impl Type<Postgres> for Slug {
+        fn type_info() -> PgTypeInfo {
+            PgTypeInfo::with_name("citext")
+        }
+        fn compatible(ty: &PgTypeInfo) -> bool {
+            <String as Type<Postgres>>::compatible(ty) || *ty == Self::type_info()
+        }
+    }
+    impl Encode<'_, Postgres> for Slug {
+        fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> Result<IsNull, BoxDynError> {
+            <&str as Encode<Postgres>>::encode(self.as_str(), buf)
+        }
+    }
+    impl Decode<'_, Postgres> for Slug {
+        fn decode(value: PgValueRef<'_>) -> Result<Self, BoxDynError> {
+            let text = <&str as Decode<Postgres>>::decode(value)?;
+            Ok(Self::new(text)?)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

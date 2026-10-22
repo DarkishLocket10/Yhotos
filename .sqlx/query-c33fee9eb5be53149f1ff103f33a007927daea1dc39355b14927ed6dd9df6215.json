@@ -1,0 +1,50 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT principal_kind as \"principal_kind: _\", principal_id FROM photo_grants WHERE photo_id=$1 ORDER BY principal_kind,principal_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "principal_kind: _",
+        "type_info": {
+          "Custom": {
+            "name": "principal_kind",
+            "kind": {
+              "Enum": [
+                "user",
+                "group"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "photo_grants",
+            "name": "principal_kind"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "principal_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "photo_grants",
+            "name": "principal_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "c33fee9eb5be53149f1ff103f33a007927daea1dc39355b14927ed6dd9df6215"
+}

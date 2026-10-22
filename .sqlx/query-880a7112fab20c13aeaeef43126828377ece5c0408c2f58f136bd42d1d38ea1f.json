@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "CREATE TABLE public.forbidden_table(id uuid)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "880a7112fab20c13aeaeef43126828377ece5c0408c2f58f136bd42d1d38ea1f"
+}

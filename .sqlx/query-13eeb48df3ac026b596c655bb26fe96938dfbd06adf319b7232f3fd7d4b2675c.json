@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SET ROLE yhotos_worker",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "13eeb48df3ac026b596c655bb26fe96938dfbd06adf319b7232f3fd7d4b2675c"
+}

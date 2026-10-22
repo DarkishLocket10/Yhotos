@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SET ROLE yhotos_public",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "1fa07dc3127255648fd493eba53de5048cf88a207c2fc83bbe6001b4c9a16071"
+}

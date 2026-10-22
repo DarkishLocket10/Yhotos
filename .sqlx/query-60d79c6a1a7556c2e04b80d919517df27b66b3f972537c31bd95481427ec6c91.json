@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "RESET ROLE",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "60d79c6a1a7556c2e04b80d919517df27b66b3f972537c31bd95481427ec6c91"
+}

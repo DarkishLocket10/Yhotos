@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE share_links SET allow_view=$2,allow_download=$3,allow_like=$4,allow_flag=$5 WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bool",
+        "Bool",
+        "Bool",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ec540f3d7dbc63e94ecf5b56b9c131fab19099964a607406b9035d11ca1e6b37"
+}

@@ -3412,13 +3412,17 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "criterion",
+ "secrecy",
+ "serde_json",
  "tempfile",
+ "time",
  "tokio",
  "tower",
  "uuid",
  "yhotos-auth",
  "yhotos-config",
  "yhotos-core",
+ "yhotos-db",
  "yhotos-http",
 ]
 
@@ -3460,6 +3464,19 @@ dependencies = [
 [[package]]
 name = "yhotos-db"
 version = "0.1.0"
+dependencies = [
+ "log",
+ "secrecy",
+ "serde_json",
+ "sqlx",
+ "thiserror 2.0.21",
+ "time",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "yhotos-core",
+]
 
 [[package]]
 name = "yhotos-http"
