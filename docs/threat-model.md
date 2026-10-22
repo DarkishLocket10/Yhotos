@@ -29,7 +29,7 @@ T8. Insider on the LAN or tailnet (lower likelihood; still, admin is authenticat
 
 B1. Internet to Cloudflare edge: TLS, WAF, rate limits, caching. Not under our control; treat Cloudflare as a filter, not a guarantee.
 B2. Cloudflare to `server-public` through the tunnel: only Cloudflare can reach it; verify the `CF-Connecting-IP` header only from the tunnel, nothing else.
-B3. `server-public` to Postgres and the filesystem: the public server has a database role with no write access to `users`, `user_mfa`, `settings`, or `jobs` beyond inserting events, likes, flags, and share-link opens; the filesystem is mounted read-only.
+B3. `server-public` to Postgres and the filesystem: the public server has a database role with no direct write access to `users`, `user_mfa`, `settings`, or `jobs`. It may insert events, likes, flags, share-link opens, sessions and audit rows, maintain its own sessions, and change a user's own password only through a `SECURITY DEFINER` function (`user_set_own_password`) so the grant surface on `users` is one function, not a table. The filesystem is mounted read-only.
 B4. Tailscale to `server-admin`: only tailnet devices reach it; the admin role in Postgres is broader.
 B5. Worker to `yhotos-codec-host`: the child process is sandboxed; the worker trusts only the structured report it returns and re-validates files.
 B6. Worker/server to `yhotos-ml`: internal network only; ML results are untrusted data (tags, text) and are escaped like any input.

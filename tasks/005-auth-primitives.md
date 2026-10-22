@@ -22,7 +22,7 @@ crates: [yhotos-auth]
 
 ## Scope
 
-`crates/yhotos-auth/`, `fuzz/fuzz_targets/token_parse.rs`, `crates/yhotos-bench/benches/auth.rs`. Workspace `Cargo.toml` for new dependencies only.
+`crates/yhotos-auth/`, `fuzz/` (create the cargo-fuzz harness crate if it does not exist yet: `fuzz/Cargo.toml` with `libfuzzer-sys` and `arbitrary`, `fuzz/fuzz_targets/token_parse.rs`; it is a workspace-excluded package as `cargo fuzz init` makes it), `crates/yhotos-bench/` (`Cargo.toml` gains a `yhotos-auth` dependency and an `auth` bench target with `harness = false`; `benches/auth.rs`), `Cargo.lock`, and the workspace `Cargo.toml` for new dependencies.
 
 ## Design
 
@@ -63,7 +63,7 @@ pub struct LockoutPolicy { pub free_attempts: u32 (5), pub base_delay: Duration 
 pub struct LockoutState { failures: u32, locked_until: Option<Timestamp> }
 impl LockoutState { pub fn check(&self, now) -> Result<(), LockedUntil>; pub fn record_failure(&mut self, now, policy); pub fn record_success(&mut self); }
 ```
-Exponential: delay = base * 2^(failures - free) capped at max. Pure, tested.
+Exponential: after the free attempts are used up, the first lockout is `base`, then it doubles: delay = base * 2^(failures - free - 1) for failures > free, capped at max. So with the defaults, failures 1 to 5 are free, the 6th failure locks for 30 s, the 7th for 60 s, the 8th for 120 s. Pure, tested.
 
 ### TOTP
 `totp::generate_secret() -> Secret (20 bytes)`, `totp::provisioning_uri(issuer, account, &secret)`, `totp::verify(&secret, code: &str, now, last_used_step: Option<u64>) -> Result<u64 /*step*/, AuthError>`: SHA1, 6 digits, 30 s, accepts step -1..=+1, rejects a step <= last_used_step (replay). Test vectors from RFC 6238 Appendix B (adapted to 6 digits/SHA1) must pass.

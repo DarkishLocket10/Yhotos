@@ -39,8 +39,10 @@ Code
 - Do not edit `docs/` to match your implementation. If the docs are wrong or incomplete, say so in the PR description and implement what the docs say, or stop and report if that is impossible.
 
 Scope
-- Touch only what the brief lists. If you believe something outside it must change, write that in the PR description under "Out of scope, needs a decision" and do not do it.
-- If the brief is contradictory or impossible as written, stop, write what you found in `tasks/<id>.blocked.md`, commit that, and open the PR anyway so a human sees it.
+- Touch only what the brief lists, plus the supporting files that any task may always change when its brief requires them: `Cargo.lock`, the workspace `Cargo.toml` (dependency pins), the manifests of the crates you work in, `crates/yhotos-bench/Cargo.toml` and `crates/yhotos-bench/benches/` (benchmark targets), `fuzz/` (the cargo-fuzz harness crate and its manifest, with `libfuzzer-sys` and `arbitrary` as its only dependencies), `deploy/dev/`, and `.github/workflows/ci.yml` when an acceptance item needs a CI service or job. List each such change in the PR under "What changed".
+- If you believe something else outside the brief must change, write that in the PR description under "Out of scope, needs a decision" and do not do it.
+- `tasks/<id>.blocked.md` is for a brief that cannot be satisfied at all (a real contradiction, a missing prerequisite crate API). It is not for a missing manifest line, a lockfile update, or a benchmark target; do those. If one requirement of the brief is impossible, implement the rest, and describe the impossible part in the PR instead of stopping everything.
+- If the brief is contradictory or impossible as written, stop, write what you found in `tasks/<id>.blocked.md`, and finish; the run script opens the PR so a human sees it.
 - Do not install system packages, change CI secrets, or touch anything outside the repository worktree.
 
 ## Git

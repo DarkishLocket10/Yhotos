@@ -23,7 +23,7 @@ crates: [yhotos-core, yhotos-config, yhotos-http, yhotos-server]
 
 ## Scope
 
-`crates/yhotos-core/`, `crates/yhotos-config/`, `crates/yhotos-http/` (router, middleware, error mapping, templates, static assets wiring), `crates/yhotos-server/`, `crates/yhotos-bench/benches/access.rs`. Workspace `Cargo.toml` only to add dependencies that the design lists.
+`crates/yhotos-core/`, `crates/yhotos-config/`, `crates/yhotos-http/` (router, middleware, error mapping, templates, static assets wiring), `crates/yhotos-server/`, `crates/yhotos-bench/` (its `Cargo.toml` gains a `yhotos-core` dependency and an `access` bench target with `harness = false`; `benches/access.rs`), `Cargo.lock`, and the workspace `Cargo.toml` to add the dependencies the design lists.
 
 ## Design
 
