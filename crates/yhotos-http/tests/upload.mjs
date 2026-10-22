@@ -160,3 +160,29 @@ test('island limits uploads to four and rejects stored cross-origin URLs', async
   await until(() => app.elements.uploads.children.every(row => row.children[1].textContent === 'Ready'));
   assert.equal(posts, 5); assert.equal(maximum, 4); assert.equal(saved.size, 0);
 });
+
+test('cancel is withdrawn once the upload is published and processing', async () => {
+  const file = new File(['abcd'], 'published.jpg', { lastModified: 456 });
+  const calls = [];
+  let release;
+  const processing = new Promise(resolve => { release = resolve; });
+  const app = island(async (path, options) => {
+    calls.push(options.method);
+    if (options.method === 'POST') return created('00000000-0000-4000-8000-000000000003');
+    if (options.method === 'PATCH') {
+      const next = Number(options.headers['Upload-Offset']) + options.body.size;
+      return patched(next, next === file.size);
+    }
+    if (options.method === 'GET') { await processing; return ready(); }
+    return new Response(null, { status: 404 });
+  });
+  app.choose([file]);
+  const row = () => app.elements.uploads.children[0];
+  await until(() => calls.includes('GET'));
+  const cancel = row().children[4];
+  assert.equal(cancel.disabled, true);
+  assert.equal(cancel.hidden, true);
+  release();
+  await until(() => row().children[1].textContent === 'Ready');
+  assert.equal(calls.includes('DELETE'), false);
+});

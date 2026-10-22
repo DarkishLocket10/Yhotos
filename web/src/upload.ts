@@ -65,6 +65,9 @@ if (root) {
     work.photo = safePhoto(response.headers.get("Location"));
     work.progress.value = work.file.size;
     work.url = null;
+    // The photo is published; cancelling now could not remove it, so stop offering it.
+    work.cancel.disabled = true;
+    work.cancel.hidden = true;
     remember(work.key, null);
   }
   async function poll(work: Work) {

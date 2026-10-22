@@ -152,6 +152,17 @@ struct Timings {
     total_ms: u128,
 }
 struct Failure(u8, &'static str);
+/// Maps an identification error to the host exit contract. Corrupt headers and
+/// permanently unsupported content (for example animated JXL) are definitive
+/// rejections (2). IO and native-host failures say nothing about the validity of
+/// an otherwise resumable upload, so they stay retryable through `From`.
+fn identify_failure(error: CodecError) -> Failure {
+    if matches!(error, CodecError::Decode | CodecError::Unsupported) {
+        Failure(2, "image rejected")
+    } else {
+        Failure::from(error)
+    }
+}
 impl From<CodecError> for Failure {
     fn from(e: CodecError) -> Self {
         match e {
@@ -318,15 +329,7 @@ fn run() -> Result<(), Failure> {
         }
     }
     let start = Instant::now();
-    let id = yhotos_codec::identify(&input, &job.limits.codec()).map_err(|error| {
-        // Corrupt headers are definitive rejections. IO and native-host failures
-        // say nothing about the validity of an otherwise resumable upload.
-        if error == CodecError::Decode {
-            Failure(2, "image rejected")
-        } else {
-            Failure::from(error)
-        }
-    })?;
+    let id = yhotos_codec::identify(&input, &job.limits.codec()).map_err(identify_failure)?;
     let identify_ms = start.elapsed().as_millis();
     if job.outputs.is_empty()
         && job
@@ -522,5 +525,20 @@ fn main() -> std::process::ExitCode {
             let _ = writeln!(std::io::stderr().lock(), "{message}");
             std::process::ExitCode::from(code)
         }
+    }
+}
+
+#[cfg(test)]
+mod identify_failure_tests {
+    use super::{CodecError, identify_failure};
+
+    #[test]
+    fn unsupported_and_corrupt_inputs_are_rejections_not_retries() {
+        assert_eq!(identify_failure(CodecError::Unsupported).0, 2);
+        assert_eq!(identify_failure(CodecError::Decode).0, 2);
+        assert_eq!(identify_failure(CodecError::BadMagic).0, 2);
+        assert_eq!(identify_failure(CodecError::Limits).0, 2);
+        // An IO failure says nothing about the file, so it stays retryable.
+        assert_eq!(identify_failure(CodecError::Io).0, 3);
     }
 }
