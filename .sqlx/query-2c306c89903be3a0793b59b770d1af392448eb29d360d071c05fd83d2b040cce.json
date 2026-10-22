@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "TRUNCATE pg_temp.photos,pg_temp.albums,pg_temp.album_grants,pg_temp.photo_grants",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "2c306c89903be3a0793b59b770d1af392448eb29d360d071c05fd83d2b040cce"
+}

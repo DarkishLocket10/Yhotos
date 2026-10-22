@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO photo_grants(id,photo_id,principal_kind,principal_id) VALUES($1,$2,$3::text::principal_kind,$4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b2a325f1f1f88bc59c03e41e6bafeed4770d178b6e2df5899137a4234581864e"
+}

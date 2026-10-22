@@ -1,0 +1,41 @@
+<!doctype html><canvas id="canvas"></canvas><pre id="result"></pre><script>
+// Sixty distinct compositions with full-frame sizes and a separate square crop.
+const images = [];
+const canvas = document.querySelector('canvas');
+for (let index = 0; index < 60; index++) {
+  for (const [variant, width] of [['thumb', 320], ['thumbsquare', 320], ['small', 640], ['medium', 1280], ['large', 2048]]) {
+    const square = variant === 'thumbsquare';
+    canvas.width = square ? 480 : width;
+    canvas.height = square ? 320 : Math.round(width * 2 / 3);
+    const g = canvas.getContext('2d');
+    g.scale(canvas.width / 2048, canvas.height / 1365);
+    const hue = (index * 37) % 360;
+    const sky = g.createLinearGradient(0, 0, 2048, 1365);
+    sky.addColorStop(0, `hsl(${hue} 45% 65%)`);
+    sky.addColorStop(.6, `hsl(${(hue + 65) % 360} 70% 78%)`);
+    sky.addColorStop(1, '#31644b');
+    g.fillStyle = sky;
+    g.fillRect(0, 0, 2048, 1365);
+    g.fillStyle = `hsl(${(hue + 120) % 360} 25% 35%)`;
+    g.beginPath();
+    g.moveTo(0, 1365);
+    for (let peak = 0; peak < 9; peak++) {
+      g.lineTo(peak * 256, 550 + ((index * 71 + peak * 137) % 550));
+    }
+    g.lineTo(2048, 1365);
+    g.fill();
+    g.fillStyle = '#fff2c2';
+    g.beginPath();
+    g.arc(300 + (index * 97) % 1450, 200 + (index * 31) % 250, 110, 0, Math.PI * 2);
+    g.fill();
+    let output = canvas;
+    if (square) {
+      output = document.createElement('canvas');
+      output.width = output.height = 320;
+      output.getContext('2d').drawImage(canvas, 80, 0, 320, 320, 0, 0, 320, 320);
+    }
+    images.push({index, variant, width, height: output.height, base64: output.toDataURL('image/jpeg', .75).split(',')[1]});
+  }
+}
+document.querySelector('#result').textContent = JSON.stringify(images);
+</script>

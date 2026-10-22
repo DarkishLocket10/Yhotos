@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO photos(id,short_id,album_id,title,description,sort_order,original_hash,original_name,original_bytes,mime,kind,width,height,dominant_colors,placeholder,camera_make,camera_model,iso,gps_lat,gps_lon,taken_at,posted_at) VALUES($1,$2,$3,$4,'Garden detail',$5,$6,'garden.jpeg',1,'image/jpeg',$7::text::media_kind,$8,$9,ARRAY[2443131],$10,'Fixture','Camera',100,43.65,-79.38,'2026-01-01'::timestamptz + $5::integer*interval '1 day','2026-06-01'::timestamptz - $5::integer*interval '1 day')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Text",
+        "Int4",
+        "Text",
+        "Text",
+        "Int4",
+        "Int4",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "cce86d068d42a541e3cb1b935cc00b0e260c5211828d0f85a01bc8705beeff3f"
+}

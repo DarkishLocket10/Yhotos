@@ -10,7 +10,7 @@ use axum::{
 use base64::{Engine, engine::general_purpose::STANDARD};
 use std::{fmt, io::Write};
 
-const PREFIX: &str = "default-src 'none'; img-src 'self'; script-src 'nonce-";
+const PREFIX: &str = "default-src 'none'; img-src 'self' data:; script-src 'nonce-";
 const MIDDLE: &str = "'; style-src 'self' 'nonce-";
 const SUFFIX: &str =
     "'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";

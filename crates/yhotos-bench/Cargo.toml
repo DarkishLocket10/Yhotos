@@ -61,5 +61,9 @@ name = "files"
 harness = false
 
 [[bench]]
+name = "pages"
+harness = false
+
+[[bench]]
 name = "codec"
 harness = false

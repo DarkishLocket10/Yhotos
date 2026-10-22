@@ -1,0 +1,3 @@
+{% if !albums.is_empty() %}<section aria-label="Albums" class="album-list">{% for album in albums %}
+<article class="album-card"><a href="{{ album.href }}">{% if let Some(image) = album.image %}{% include "default/partials/picture.html" %}{% endif %}<h2>{{ album.title }}</h2></a><p>{{ album.description }}</p><p>{{ album.count }} photos</p></article>
+{% endfor %}</section>{% endif %}
