@@ -4,7 +4,7 @@ slug: deploy
 model: gpt-6.1-sol
 effort: xhigh
 review_effort: xhigh
-depends_on: [007, 009, 011]
+depends_on: [007, 009, 011, 014, 018]
 crates: [deploy]
 ---
 
@@ -23,7 +23,7 @@ A reproducible production deployment on tower: signed container images built in 
 
 ## Scope
 
-Areas: `deploy/` (Dockerfiles, `compose.yml`, `compose.staging.yml`, `.env.example`, `cloudflared/`, `postgres/roles.sql`, `backup/`), `.github/workflows/release.yml`, `docs/operations.md` (runbook), plus supporting files. Edits `.github/`, so run on the Mac.
+Areas: `deploy/` (Dockerfiles, `compose.yml`, `compose.staging.yml`, `.env.example`, `cloudflared/`, `postgres/roles.sql`, `backup/`), `.github/workflows/release.yml`, `docs/operations.md` (runbook), plus supporting files. Edits `.github/`; both the Mac and yesktop GitHub tokens have the `workflow` scope.
 
 ## Design
 
