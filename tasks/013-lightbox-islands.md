@@ -4,7 +4,7 @@ slug: lightbox-islands
 model: gpt-6.1-sol
 effort: high
 review_effort: high
-depends_on: [011]
+depends_on: [010, 011]
 crates: [yhotos-http]
 ---
 
