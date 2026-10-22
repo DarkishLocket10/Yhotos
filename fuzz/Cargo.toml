@@ -31,3 +31,10 @@ path = "fuzz_targets/safe_join.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "range_header"
+path = "fuzz_targets/range_header.rs"
+test = false
+doc = false
+bench = false

@@ -14,7 +14,7 @@ async fn migrations_from_empty_are_idempotent(pool: PgPool) {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(row.count, 2);
+    assert_eq!(row.count, 3);
     let extensions=sqlx::query!(r#"SELECT count(*) AS "count!" FROM pg_extension WHERE extname IN ('pgcrypto','citext','vector')"#).fetch_one(&pool).await.unwrap();
     assert_eq!(extensions.count, 3);
 }

@@ -11,8 +11,9 @@ use figment::Figment;
 use http_body_util::BodyExt;
 use std::net::SocketAddr;
 use tower::ServiceExt;
+use yhotos_config::Config;
 
-fn state(trust_proxy: bool, cheap: u32) -> AppState {
+pub(crate) fn state(trust_proxy: bool, cheap: u32) -> AppState {
     let dir = tempfile::tempdir().unwrap();
     let f = Figment::new()
         .merge((
@@ -28,9 +29,14 @@ fn state(trust_proxy: bool, cheap: u32) -> AppState {
         .merge(("admin_listen", "127.0.0.1:8081"))
         .merge(("trust_proxy", trust_proxy))
         .merge(("rate_limits.cheap_per_min", cheap));
-    AppState {
-        config: Box::leak(Box::new(Config::from_figment(f).unwrap())),
-    }
+    let config = Box::leak(Box::new(Config::from_figment(f).unwrap()));
+    AppState::new(
+        config,
+        sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://127.0.0.1/test")
+            .unwrap(),
+        yhotos_storage::Store::open(dir.path()).unwrap(),
+    )
 }
 fn request(path: &str, ip: &str) -> Request<Body> {
     let mut req = Request::builder().uri(path).body(Body::empty()).unwrap();
@@ -347,7 +353,7 @@ async fn proxy_trust_uses_only_cloudflare_and_rejects_invalid_values() {
 async fn admin_never_leaks_onto_public_listener() {
     let state = state(false, 600);
     assert_eq!(
-        public_router(state)
+        public_router(state.clone())
             .oneshot(request("/admin/healthz", "127.0.0.1:1"))
             .await
             .unwrap()

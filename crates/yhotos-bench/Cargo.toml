@@ -10,6 +10,8 @@ workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
+sqlx.workspace = true
+http-body-util.workspace = true
 yhotos-auth = { path = "../yhotos-auth" }
 yhotos-db = { path = "../yhotos-db" }
 secrecy.workspace = true
@@ -43,4 +45,8 @@ harness = false
 
 [[bench]]
 name = "storage"
+harness = false
+
+[[bench]]
+name = "files"
 harness = false

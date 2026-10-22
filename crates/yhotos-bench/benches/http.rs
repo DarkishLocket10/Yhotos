@@ -41,7 +41,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         log_format: LogFormat::Json,
     }));
     let _runtime_guard = runtime.enter();
-    let app = public_router(AppState { config });
+    let app = public_router(AppState::new(
+        config,
+        yhotos_db::Db::connect_lazy(
+            &config.database_url,
+            yhotos_db::Role::Public,
+            2,
+            yhotos_db::DatabaseTls::Require,
+        )?
+        .pool()
+        .clone(),
+        yhotos_storage::Store::open(dir.path())?,
+    ));
     criterion.bench_function("http/healthz/known_ip", |b| {
         b.iter(|| {
             let mut request = Request::new(Body::empty());
