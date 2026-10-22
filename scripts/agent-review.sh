@@ -40,19 +40,32 @@ git pull -q --ff-only origin "$BRANCH" || true
 OUT="$(mktemp)"
 trap 'rm -f "$OUT"' EXIT
 echo "reviewing $BRANCH with gpt-6-astra (effort $EFFORT)"
-codex exec review \
-  --base main \
+PROMPT_FILE="$(mktemp)"
+{
+  cat "$REPO_ROOT/scripts/review-prompt.md"
+  echo
+  echo "The PR is task $TASK_ID ($SLUG) on branch $BRANCH. The base is origin/main."
+  echo "Get the diff with: git diff origin/main...HEAD   and the file list with: git diff --name-only origin/main...HEAD"
+  echo "You may read any file in the worktree. Do not modify anything."
+  echo "Your final message must be the review in the format above and nothing else."
+} > "$PROMPT_FILE"
+LAST="$(mktemp)"
+codex exec \
+  -C "$WT" \
   -m gpt-6-astra \
   -c "model_reasoning_effort=\"$EFFORT\"" \
   -c 'approval_policy="never"' \
   -c 'mcp_servers={}' \
-  --title "$TASK_ID $SLUG" \
-  - < "$REPO_ROOT/scripts/review-prompt.md" > "$OUT" 2>&1 || true
+  -s read-only \
+  --output-last-message "$LAST" \
+  - < "$PROMPT_FILE" > "$OUT" 2>&1 || true
+rm -f "$PROMPT_FILE"
+if [[ -s "$LAST" ]]; then cp "$LAST" "$OUT"; fi
+rm -f "$LAST"
 
 {
   echo "## Automated review (gpt-6-astra, effort $EFFORT)"
   echo
-  # Keep only the review body: drop codex's own progress lines.
-  sed -E '/^(\[|codex|thinking|exec|tokens used|-{3,})/d' "$OUT"
+  cat "$OUT"
 } | gh pr comment "$BRANCH" --body-file -
 echo "posted review on PR for $BRANCH"
