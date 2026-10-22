@@ -160,12 +160,18 @@ if (root) {
       retry.addEventListener("click", () => { if (work.running) return; work.abort.abort(); work.abort = new AbortController(); waiting.push(work); pump(); });
       cancel.addEventListener("click", () => {
         work.cancelled = true; work.abort.abort(); remember(key, null); retry.hidden = true; cancel.disabled = true;
-        label.textContent = "Cancelled"; delete row.dataset.key;
-        if (work.url) {
-          void fetch(work.url, { method: "DELETE", credentials: "same-origin", redirect: "error", headers: { "Tus-Resumable": "1.0.0", "X-CSRF-Token": csrf } })
-            .then(response => { if (!response.ok && response.status !== 404) label.textContent = "Cancelled. Temporary upload will expire automatically."; })
-            .catch(() => { label.textContent = "Cancelled. Temporary upload will expire automatically."; });
-        }
+        delete row.dataset.key;
+        if (!work.url) { label.textContent = "Cancelled"; return; }
+        // Only a confirmed termination is reported as cancelled: the final chunk may
+        // already have published the photo even though its response never arrived.
+        label.textContent = "Cancelling";
+        void fetch(work.url, { method: "DELETE", credentials: "same-origin", redirect: "error", headers: { "Tus-Resumable": "1.0.0", "X-CSRF-Token": csrf } })
+          .then(response => {
+            if (response.status === 204 || response.status === 404) label.textContent = "Cancelled";
+            else if (response.status === 409) label.textContent = "Already uploaded. Delete the photo from its album if it is not wanted.";
+            else label.textContent = "Cancelled. Temporary upload will expire automatically.";
+          })
+          .catch(() => { label.textContent = "Cancel not confirmed. Temporary upload will expire automatically."; });
       });
       row.append(name, label, progress, retry, cancel); list.append(row); waiting.push(work);
     }

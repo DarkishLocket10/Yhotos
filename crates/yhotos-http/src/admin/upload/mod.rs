@@ -242,9 +242,17 @@ async fn terminate(
     Path(id): Path<Uuid>,
 ) -> Result<Response, HttpError> {
     let mut tx = pool(&state)?.begin().await?;
-    let row = uploads::lock(&mut tx, id, current.0.session.user_id)
-        .await?
-        .ok_or(HttpError::NotFound)?;
+    let Some(row) = uploads::lock(&mut tx, id, current.0.session.user_id).await? else {
+        // A completed upload is already a published photo; terminating it is a
+        // conflict, not a missing upload, so the client never reports "cancelled".
+        return Err(
+            if uploads::was_completed(&mut tx, id, current.0.session.user_id).await? {
+                HttpError::Upload(StatusCode::CONFLICT)
+            } else {
+                HttpError::NotFound
+            },
+        );
+    };
     let temp: TempId = row.tmp_path.parse().map_err(internal)?;
     state.store.remove_upload(&temp).await.map_err(internal)?;
     uploads::remove(&mut tx, id).await?;

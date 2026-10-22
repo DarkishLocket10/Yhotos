@@ -186,3 +186,32 @@ test('cancel is withdrawn once the upload is published and processing', async ()
   await until(() => row().children[1].textContent === 'Ready');
   assert.equal(calls.includes('DELETE'), false);
 });
+
+test('cancel after commit but before the final response reports the published photo', async () => {
+  const file = new File(['abcd'], 'raced.jpg', { lastModified: 789 });
+  let releaseFinal;
+  const finalHeld = new Promise(resolve => { releaseFinal = resolve; });
+  const calls = [];
+  const app = island(async (path, options) => {
+    calls.push(options.method);
+    if (options.method === 'POST') return created('00000000-0000-4000-8000-000000000004');
+    if (options.method === 'PATCH') {
+      const next = Number(options.headers['Upload-Offset']) + options.body.size;
+      if (next === file.size) {
+        // The server committed the upload; the response is lost when the client aborts.
+        await finalHeld;
+        throw new DOMException('Aborted', 'AbortError');
+      }
+      return patched(next, false);
+    }
+    if (options.method === 'DELETE') return new Response(null, { status: 409 });
+    return new Response(null, { status: 404 });
+  });
+  app.choose([file]);
+  const row = () => app.elements.uploads.children[0];
+  await until(() => calls.filter(m => m === 'PATCH').length === 2);
+  row().children[4].listeners.click();
+  releaseFinal();
+  await until(() => calls.includes('DELETE') && row().children[1].textContent !== 'Cancelling');
+  assert.match(row().children[1].textContent, /^Already uploaded/);
+});

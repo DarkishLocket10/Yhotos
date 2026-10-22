@@ -571,6 +571,11 @@ async fn tus_competing_final_chunks_return_one_result_and_one_conflict(pool: PgP
         "a competitor arriving after commit must also get 409"
     );
     assert_eq!(
+        c.send("DELETE", &url, &[], Body::empty()).await.status(),
+        StatusCode::CONFLICT,
+        "terminating a completed upload must not look like a successful cancel"
+    );
+    assert_eq!(
         sqlx::query_scalar!("SELECT count(*) FROM photos")
             .fetch_one(&c.pool)
             .await
