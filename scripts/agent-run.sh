@@ -5,6 +5,7 @@
 #   scripts/agent-run.sh NNN                 run tasks/NNN-*.md on this machine
 #   scripts/agent-run.sh NNN --resume "msg"  continue in the existing worktree with extra instructions
 #   scripts/agent-run.sh NNN --host yesktop  run on yesktop over ssh (repo must exist at ~/work/Yhotos there)
+#   scripts/agent-run.sh NNN --base REF      branch from REF instead of origin/main
 #
 # Reads model/effort from the brief header. Refuses to start under 8 GB free memory.
 set -euo pipefail
@@ -14,10 +15,12 @@ TASK_ID="${1:?task id required}"
 shift || true
 RESUME_MSG=""
 HOST="local"
+BASE="origin/main"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --resume) RESUME_MSG="${2:?}"; shift 2 ;;
     --host) HOST="${2:?}"; shift 2 ;;
+    --base) BASE="${2:?}"; shift 2 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -63,7 +66,7 @@ if [[ -z "$RESUME_MSG" ]]; then
   if git show-ref --quiet "refs/remotes/origin/$BRANCH"; then
     git worktree add -q "$WT" "$BRANCH"
   else
-    git worktree add -q -b "$BRANCH" "$WT" origin/main
+    git worktree add -q -b "$BRANCH" "$WT" "$BASE"
   fi
 else
   [[ -d "$WT" ]] || { echo "no worktree to resume at $WT" >&2; exit 1; }
