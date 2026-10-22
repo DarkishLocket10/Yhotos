@@ -16,7 +16,9 @@ cargo-fuzz = true
 libfuzzer-sys = "=0.4.13"
 arbitrary = { version = "=1.5.0", features = ["derive"] }
 base64 = "=0.23.1"
+tempfile = "=3.27.0"
 yhotos-auth = { path = "../crates/yhotos-auth" }
+yhotos-codec = { path = "../crates/yhotos-codec", features = ["raw"] }
 
 [[bin]]
 name = "token_parse"
@@ -35,6 +37,13 @@ bench = false
 [[bin]]
 name = "range_header"
 path = "fuzz_targets/range_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "identify"
+path = "fuzz_targets/identify.rs"
 test = false
 doc = false
 bench = false

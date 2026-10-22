@@ -1,0 +1,118 @@
+# Codec boundary
+
+Requires installed libvips >=8.15, lcms2 and libjxl development headers.
+On macOS these are supplied by Homebrew libvips. The build script probes and
+links installed libraries and generates bindings; it never downloads them.
+`libvips` 2.3.0's Rust operation wrappers omit JPEG XL save/load, so this task
+uses a minimal bindgen boundary rather than extending or bypassing those
+wrappers. No native code is placed outside this crate.
+
+`identify` probes headers only. JPEG and HEIF gain map detection reads metadata
+segments/boxes and seeks past pixel payloads. JXL's basic-info and color headers
+are checked with libjxl before the explicit libvips loader. Generic loader probing is avoided because
+short JXL streams can enter unrelated fallback decoders and hang. Limits are checked again before decode, and
+supplied Identity values must agree with a fresh header probe.
+
+Apple JPEG gain maps are found through the APP2 MPF index, then the indexed
+auxiliary JPEGs' APP1 XMP. The index is capped at 64 images; its TIFF offsets
+stay inside APP2, image ranges stay inside the file and cannot overlap, and
+all JPEG headers share a 16 MiB scan budget. Primary-header signature text
+alone is insufficient for Apple gain map detection.
+
+ISO HEIF/AVIF gain maps are found through `meta/pitm`, `iinf/infe` item types
+and `iref/dimg`: a `tmap` item must reference the primary image first and a
+declared gain image second. Both 16-bit and 32-bit item ids are supported,
+independently of box ordering. `iprp/ipco/auxC` retains Apple auxiliary type
+detection; arbitrary pixel/unknown property bytes do not count as signatures.
+HEIF and CR3 share checked finite box extents, eight nesting levels and 4096
+total boxes. HEIF metadata shares a 16 MiB budget, and references are capped at
+4096 per meta. These checks run before the native HEIF header loader.
+
+The materialized working image is unsigned 16-bit linear libvips D65 XYZ, scaled by 256
+(about 0.004 XYZ units per step). Alpha is unassociated unsigned 16-bit. Each
+resize starts from that original working image, center crops before a square
+resize, and uses premultiplied alpha and Lanczos3. Export color-manages XYZ back
+to the source RGB profile, or explicitly to sRGB. CMYK and gray profiles are
+used at import and converted to an embedded sRGB profile for RGB-only output codecs. Only ICC is retained by encoders;
+metadata-bearing derivative requests and reserved HDR requests are rejected.
+Native handles own a reference, cannot cross threads, and never outlive global
+initialization. Native errors are mapped to fixed public errors.
+
+TIFF and BigTIFF dimensions are checked by our bounded directory reader before
+libvips is called, including chained IFDs and nested SubIFDs. Directory cycles,
+excessive counts, and invalid offsets are rejected. These checks do not depend
+on which error a particular libtiff/libvips version emits.
+Every entry, including unknown tags, has its type, u32 count-times-size and
+in-file payload extent validated before libvips or rawler sees it. The reader
+caps entries at 4096 in total (and therefore per IFD) and sums all declared
+payload lengths, including overlapping/inline values, against 256 MiB across
+all directories. EXIF, GPS, interoperability and typed IFD links are included.
+Overflow and budget failures return `Limits`; invalid types/extents return
+`Decode` through identify, decode and metadata alike.
+
+Alpha import uses the sample format's opacity range: 8-bit 0..255, 16-bit
+0..65535, and floating TIFF/scRGB 0..1. It is scaled before casting to the
+16-bit working alpha band; signed/complex alpha formats return `Unsupported`.
+Floating scRGB color bypasses `icc_import`'s device-RGB uchar cast and uses
+`vips_scRGB2XYZ` directly, retaining floating precision until the working-image
+quantization. Other floating interpretations return `Unsupported` rather than
+silently quantizing normalized values as 8-bit device samples. The generated
+float TIFF regression checks (0.25, 0.5, 0.75) against the mean <1.0/max <2.5
+delta E 2000 gates in the working image and a lossless JXL round trip. It also
+checks transparent, half and opaque alpha, including extended scRGB luminance.
+JPEG fallback explicitly flattens alpha against white in the exported 16-bit
+image before scaling and casting to uchar. This retains ICC and avoids the
+JPEG saver's implicit flatten interpreting 8-bit alpha as RGB16 opacity.
+
+RAW identification never calls rawler's `decode_dummy`, `full_image`, or
+`preview_image`: those APIs can allocate and decode before returning dimensions.
+TIFF-based RAW uses metadata-only dimension probes. Every embedded JPEG
+candidate is checked against its own SOF dimensions, and the largest is decoded
+from its encoded bytes by the color-managed libvips path, retaining its ICC.
+TIFF JPEGInterchangeFormat previews and JPEG strips (including DNG SubIFDs),
+and RW2 JPEG blobs are enumerated. Without a JPEG, rawler
+performs the camera-default 16-bit demosaic after the sensor headers pass limits.
+Other proprietary containers without a metadata-only probe return Unsupported;
+they never fall back to an unbounded dummy decode. RAW fixtures are intentionally
+optional and must be synced from tower. No RAW performance or fidelity claim is made without them.
+
+Sensor lossless JPEG strips/tiles are checked against their own SOF dimensions
+and component-expanded allocation width before rawler can decode, independently
+of TIFF dimensions or the presence of a preview. TIFF tile geometry, Panasonic
+sensor tags and DNG JPEG XL headers are checked
+as well. Sensor marker scans share a 16 MiB budget and at most 4096 segments.
+Canon CR2/old TIFF MakerNote IFDs use the same entry and payload validation and
+aggregate budgets as ordinary TIFF directories. Cr2OldOffset (0x0081) and slice
+offset/length tables (0x00c5/0x00c6) have their referenced JPEG SOFs checked,
+including component-expanded widths and in-file extents, before any rawler
+entry point. `src/raw.rs` lists the validated decoder inputs by camera make.
+CR3 never enters rawler, including for metadata. Our BMFF walker locates JPEGs
+in Canon's PRVW preview UUID (after its eight-byte prefix) and THMB records under
+moov/the descriptor UUID, validates each record's extent and JPEG SOF against
+limits, and passes the largest preview to the normal libvips JPEG import path.
+Dimensions, orientation, ICC and available metadata come from that JPEG;
+sensor-only CMT metadata is not extracted. A CR3 without a JPEG preview returns
+`CodecError::Unsupported`, with no demosaic fallback. Successful identities keep
+`Kind::Raw(RawMake("Canon"))`.
+
+The walker retains finite positive extents, forward progress, eight nesting
+levels, 4096 total boxes, the 16 MiB moov cap and CMP1 geometry checks. Preview
+headers share a 16 MiB scan budget; at most 64 JPEG records are examined and only
+the selected encoded JPEG is buffered (at most 64 MiB and max_bytes). Sample
+counts and movie headers stay opaque; unknown UUID payloads are skipped by their
+checked extent. The stsz count, unknown UUID/nested free, mvhd version 2 and
+zero-sized child regressions exercise identify, decode and metadata rejections.
+The RAW-enabled identify fuzz target exercises arbitrary files, nested CR3 boxes
+and JPEG payloads inside a valid preview UUID.
+
+The mandatory photographic resize test uses the owner's stripped sRGB
+`fixtures/images/photo.jpg`, compares full-image local SSIM against linear
+`vips thumbnail` at half size, and enforces 0.98. The tower 24 MP photographic
+test remains an additional optional check.
+
+Run normal codec benchmarks with `cargo bench -p yhotos-bench --bench codec`;
+add `--features raw` to include CR3 preview identification and medium encodes.
+
+The ThumbHash DCT and packing follow the MIT-licensed reference by Evan Wallace:
+https://github.com/evanw/thumbhash . Reference vectors were generated with the
+unmodified JavaScript implementation, including alpha and non-square cases.
