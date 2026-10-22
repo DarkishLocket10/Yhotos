@@ -1,0 +1,54 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT status::text AS \"status!\",failure_reason,derivative_plan,(SELECT count(*) FROM derivatives WHERE photo_id=$1) AS \"count!\" FROM photos WHERE id=$1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "status!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "failure_reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "failure_reason"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "derivative_plan",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "derivative_plan"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      true,
+      true,
+      null
+    ]
+  },
+  "hash": "8c37779755ab88a0954c7c31b0589ccc021bf214256717b49f9f8ff1588ddd37"
+}

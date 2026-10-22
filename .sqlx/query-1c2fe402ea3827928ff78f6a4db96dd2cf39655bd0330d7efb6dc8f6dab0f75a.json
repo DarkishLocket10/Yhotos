@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO jobs(id,kind,payload,priority,run_after,max_attempts) VALUES($1,$2,$3,$4,coalesce($5,now()),$6)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Jsonb",
+        "Int4",
+        "Timestamptz",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1c2fe402ea3827928ff78f6a4db96dd2cf39655bd0330d7efb6dc8f6dab0f75a"
+}

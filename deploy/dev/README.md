@@ -73,3 +73,90 @@ both URLs; never grant its public login membership in the admin role.
 `YHOTOS_ADMIN_BASE_URL` is required with the admin feature and selects the admin
 CSRF/WebAuthn origin independently of `YHOTOS_PUBLIC_BASE_URL`. Both URLs must use
 HTTPS without credentials, queries or fragments.
+
+## CPU worker tuning
+
+The worker requires its own `YHOTOS_DATABASE_URL_WORKER`, using a deployment
+login that inherits only `yhotos_worker`. It fails at startup if this URL is
+missing or invalid and never uses the public or admin URL for its connection.
+Servers do not require or use the worker URL. The shared configuration loader
+still requires `YHOTOS_DATABASE_URL_PUBLIC`, `YHOTOS_PUBLIC_BASE_URL`,
+`YHOTOS_SESSION_KEY` and `YHOTOS_DATA_DIR`; when building the workspace with all
+features, the admin settings above are also required. Never reuse a public or
+admin login as the worker login. The old `YHOTOS_DATABASE_URL` is no longer used.
+
+`YHOTOS_WORKER__CONCURRENCY` limits simultaneous codec hosts (default half the
+available CPUs, minimum one). `YHOTOS_WORKER__VIPS_CONCURRENCY` controls threads
+per host (default 2, range 1..=64). Start with eight hosts and two threads on
+tower's sixteen cores; lower the host count when memory or disk bandwidth is the
+limit. `YHOTOS_WORKER__CODEC_HOST_PATH` must be an absolute trusted executable
+path. `YHOTOS_WORKER__CODEC_TIMEOUT` is a wall-clock limit in seconds (default
+300, maximum 600). `YHOTOS_WORKER__VARIANT_PLAN` optionally supplies a structured
+`{ variants: [...] }` plan with `name`, `long_edge`, `square`, `formats`
+(`avif`, `jxl`, `jpeg`) and `scale2x`; names, uniqueness and the 32-output cap
+are checked before consuming jobs. The worker uses `Role::Worker` and verified
+database TLS, with an explicit loopback-only development opt-in
+`YHOTOS_WORKER__LOCAL_PLAINTEXT_DATABASE=true`. SIGTERM/SIGINT starts one absolute
+29-second deadline for cancelling database waits, draining handlers, releasing
+remaining claims in a fenced batch, closing the connection pool and shutting
+down the explicitly owned Tokio runtime. Runtime shutdown uses only the
+remaining deadline so a blocking storage publication lock cannot delay exit.
+The last second is reserved for release and pool closure; pool closure cannot extend the
+deadline even when a cancelled query is still blocked in Postgres. Database
+unavailability returns a deadline error and stale-lock recovery remains the
+backstop. Unimplemented ML, geo and video handlers defer for one hour without
+exhausting their attempt allowance.
+
+Ingest envelopes carry `{ photo_id, original_hash }`, with a canonical BLAKE3
+digest. Deduplication includes both fields. `photos::replace_original` resets
+publication and atomically enqueues the new hash through the same dedupe
+primitive as `Queue`; a running job for the old hash cannot suppress it.
+Publication, failure and stale-lock recovery check the job's original hash
+before changing the photo. A delayed old envelope completes without processing
+the replacement.
+
+`YHOTOS_WORKER__DEFAULT_TIMEZONE` is the IANA timezone used when EXIF
+`DateTimeOriginal` has no `OffsetTimeOriginal` (default `UTC`). The database
+keeps the original wall clock in `taken_at_local` and the interpreted instant in
+`taken_at`. An explicit EXIF offset always takes precedence. During daylight
+saving transitions, ambiguous local times choose the earlier instant and
+nonexistent times advance by the gap. Invalid zones are rejected at startup.
+
+Linux codec hosts require Landlock ABI v3 (Linux 6.2+) and enabled Landlock LSM.
+They fail closed if read/write/truncate confinement cannot be fully enforced.
+Trusted libvips/libheif plugins are initialized before confinement, without
+opening an image; the host checks that startup has retained only one thread.
+The decoder then has read access only to its input file and read/write access
+to regular files in its private output directory. Production containers should
+also mount only that input read-only and that output directory writable.
+
+Queue facade metrics are `yhotos_jobs_claimed_total`,
+`yhotos_jobs_completed_total`, `yhotos_jobs_failed_total` (all labelled `kind`),
+`yhotos_jobs_duration_seconds` (histogram) and `yhotos_jobs_queue_depth` (gauge,
+refreshed every ten seconds). The worker installs a Prometheus recorder and
+serves `/metrics` at `YHOTOS_WORKER__METRICS_LISTEN` (default
+`127.0.0.1:9101`; only loopback addresses are accepted). Duration observations
+export as histogram buckets, sum and count.
+
+`cargo test -p yhotos-codec-host --all-features --test pipeline` runs the actual
+host against the dev database. The host-package harness gives Cargo access to
+`CARGO_BIN_EXE_yhotos-codec-host`; the test bodies live in the pipeline crate.
+CI runs these tests inside `Dockerfile.codec` with its pgvector service.
+Successful codec CI logs include the per-variant fidelity scores and bytes.
+The macOS fidelity test requires SSIM at least 0.002 above the documented gates;
+Linux retains the documented gates to account for its different AV1 build.
+`test-hooks` enables an explicit bounded child-delay environment variable and
+an in-process parent verification barrier; production builds omit both hooks.
+
+Build the host in release mode, then run
+`cargo bench -p yhotos-bench --bench pipeline`. It reports single-photo and
+eight-photo parallel full ingests, resetting publication outside the measured
+region. The 24 MP budget is skipped unless a fixture of at least 24 MP exists in
+`fixtures/large/`; a small metadata-fixture measurement is reported instead.
+Set `YHOTOS_BENCH_PIPELINE_FIXTURE=fixtures/images/photo-large.jpg` to measure
+the committed 3400x2627 photograph explicitly. This smaller source does not
+establish the 24/30 MP tower budget. Criterion reports the whole eight-photo
+batch; divide its time by eight for per-photo throughput.
+The architecture's default sizes, 2x variants and encoder
+rules expand to 23 files; the performance document's older 13-file count does
+not match that plan.

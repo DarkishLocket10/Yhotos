@@ -18,9 +18,39 @@ base64.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 seccompiler.workspace = true
+landlock.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+async-trait.workspace = true
+tokio-util = { workspace = true, features = ["rt"] }
+yhotos-jobs = { path = "../yhotos-jobs" }
+yhotos-http = { path = "../yhotos-http" }
+jiff.workspace = true
+time = { workspace = true, features = ["macros"] }
 
 [features]
+test-hooks = []
 raw = ["yhotos-codec/raw"]
+
+[dev-dependencies.yhotos-pipeline]
+path = "../yhotos-pipeline"
+features = ["test-hooks"]
+
+[dev-dependencies.yhotos-core]
+path = "../yhotos-core"
+
+[dev-dependencies.yhotos-db]
+path = "../yhotos-db"
+
+[dev-dependencies.yhotos-storage]
+path = "../yhotos-storage"
+
+[dev-dependencies.sqlx]
+workspace = true
+
+[dev-dependencies.tokio]
+workspace = true
+
+[dev-dependencies.uuid]
+workspace = true

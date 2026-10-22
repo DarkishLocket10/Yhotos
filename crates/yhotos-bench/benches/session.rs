@@ -193,10 +193,12 @@ fn config(
     let key = Token::generate().hash(TokenKind::Session);
     let master = encode_standard(key.as_bytes());
     Ok(Box::leak(Box::new(Config {
+        worker: yhotos_config::Worker::default(),
         public_listen: peer,
         admin_listen: Some(peer),
         database_url_public: url,
         database_url_admin: None,
+        database_url_worker: None,
         admin_base_url: None,
         data_dir: dir.to_owned(),
         public_base_url: "https://example.test".parse()?,

@@ -71,3 +71,10 @@ harness = false
 [[bench]]
 name = "share"
 harness = false
+
+[dev-dependencies.yhotos-pipeline]
+path = "../yhotos-pipeline"
+
+[[bench]]
+name = "pipeline"
+harness = false

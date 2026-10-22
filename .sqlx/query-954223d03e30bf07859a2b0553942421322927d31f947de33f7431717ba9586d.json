@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "describe": {
+    "columns": [
+      {
+        "name": "updated_at",
+        "ordinal": 0,
+        "origin": {
+          "Table": {
+            "name": "updated_at",
+            "table": "photos"
+          }
+        },
+        "type_info": "Timestamptz"
+      },
+      {
+        "name": "derivative_plan",
+        "ordinal": 1,
+        "origin": {
+          "Table": {
+            "name": "derivative_plan",
+            "table": "photos"
+          }
+        },
+        "type_info": "Text"
+      }
+    ],
+    "nullable": [
+      false,
+      true
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    }
+  },
+  "hash": "954223d03e30bf07859a2b0553942421322927d31f947de33f7431717ba9586d",
+  "query": "SELECT updated_at,derivative_plan FROM photos WHERE id=$1"
+}

@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "describe": {
+    "columns": [
+      {
+        "name": "status!",
+        "ordinal": 0,
+        "origin": "Expression",
+        "type_info": "Text"
+      },
+      {
+        "name": "failure_reason",
+        "ordinal": 1,
+        "origin": {
+          "Table": {
+            "name": "failure_reason",
+            "table": "photos"
+          }
+        },
+        "type_info": "Text"
+      },
+      {
+        "name": "count!",
+        "ordinal": 2,
+        "origin": "Expression",
+        "type_info": "Int8"
+      }
+    ],
+    "nullable": [
+      null,
+      true,
+      null
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    }
+  },
+  "hash": "ee79e83bc98e47c3a4c46d337cb9e19a28504b700f3f399c21f736524b859d7b",
+  "query": "SELECT status::text AS \"status!\",failure_reason,(SELECT count(*) FROM derivatives WHERE photo_id=$1) AS \"count!\" FROM photos WHERE id=$1"
+}

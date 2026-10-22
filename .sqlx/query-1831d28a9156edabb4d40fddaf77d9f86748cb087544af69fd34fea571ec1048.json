@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE photos SET status='pending',derivative_plan=NULL,generation=generation+1 WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1831d28a9156edabb4d40fddaf77d9f86748cb087544af69fd34fea571ec1048"
+}

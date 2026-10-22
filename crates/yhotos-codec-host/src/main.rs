@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
-//! One bounded JSON job per process. Production confinement is Linux plus mounts.
+//! One bounded JSON job per process. Linux confines filesystem access before decoding.
+#[cfg(target_os = "linux")]
+mod filesystem;
 #[cfg(target_os = "linux")]
 mod seccomp;
 use base64::Engine;
@@ -160,13 +162,30 @@ impl From<CodecError> for Failure {
 }
 // A new exec clears env before any libvips initialization, without unsafe Rust
 // environment mutation. No PATH/HOME/LD_*/VIPS_* supplied by the caller survives.
-fn clean_environment() -> Result<(), Failure> {
-    let expected = [
-        ("VIPS_CONCURRENCY", "2"),
+fn clean_environment() -> Result<u8, Failure> {
+    let concurrency = std::env::var("VIPS_CONCURRENCY")
+        .ok()
+        .and_then(|s| s.parse::<u8>().ok())
+        .filter(|n| (1..=64).contains(n))
+        .unwrap_or(2);
+    let concurrency_text = concurrency.to_string();
+    #[allow(unused_mut)]
+    let mut expected = vec![
+        ("VIPS_CONCURRENCY", concurrency_text.as_str()),
         ("VIPS_WARNING", "0"),
         ("VIPS_DISC_THRESHOLD", "3g"),
         ("LC_ALL", "C"),
     ];
+    #[cfg(feature = "test-hooks")]
+    let test_delay = std::env::var("YHOTOS_TEST_DELAY_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|ms| *ms <= 60_000)
+        .map(|n| n.to_string());
+    #[cfg(feature = "test-hooks")]
+    if let Some(delay) = test_delay.as_deref() {
+        expected.push(("YHOTOS_TEST_DELAY_MS", delay));
+    }
     if std::env::vars_os()
         .filter(|(name, _)| name != "__CF_USER_TEXT_ENCODING")
         .count()
@@ -175,7 +194,7 @@ fn clean_environment() -> Result<(), Failure> {
             .iter()
             .all(|(k, v)| std::env::var(k).is_ok_and(|s| s == *v))
     {
-        return Ok(());
+        return Ok(concurrency);
     }
     let executable = std::env::current_exe().map_err(|_| Failure(2, "startup failed"))?;
     let error = std::process::Command::new(executable)
@@ -226,7 +245,7 @@ fn paths(job: &Job) -> Result<(PathBuf, Vec<PathBuf>), Failure> {
 }
 #[allow(clippy::too_many_lines)] // The single-job protocol is kept in one sequential flow.
 fn run() -> Result<(), Failure> {
-    clean_environment()?;
+    let concurrency = clean_environment()?;
     #[cfg(target_os = "linux")]
     {
         let parent = std::env::args()
@@ -253,6 +272,12 @@ fn run() -> Result<(), Failure> {
         return yhotos_codec::sandbox::check_process_isolation(pid)
             .map_err(|_| Failure(3, "process sandbox failed"));
     }
+    #[cfg(feature = "test-hooks")]
+    if let Ok(delay) = std::env::var("YHOTOS_TEST_DELAY_MS")
+        && let Ok(ms) = delay.parse::<u64>()
+    {
+        std::thread::sleep(std::time::Duration::from_millis(ms.min(60_000)));
+    }
     let mut bytes = Vec::new();
     std::io::stdin()
         .take(JOB_BYTES + 1)
@@ -275,12 +300,38 @@ fn run() -> Result<(), Failure> {
         return Err(Failure(2, "memory limit not enforced"));
     }
     let (input, paths) = paths(&job)?;
+    yhotos_codec::sandbox::initialize(concurrency)?;
+    #[cfg(target_os = "linux")]
+    {
+        filesystem::restrict(
+            &input,
+            &job.out_dir
+                .canonicalize()
+                .map_err(|_| Failure(2, "invalid output directory"))?,
+        )?;
+        #[cfg(debug_assertions)]
+        if std::env::args_os().any(|a| a == "--self-test-filesystem") {
+            return filesystem::probe(&input, &job.out_dir);
+        }
+    }
     let start = Instant::now();
     let id = yhotos_codec::identify(&input, &job.limits.codec())?;
     let identify_ms = start.elapsed().as_millis();
     let decode_start = Instant::now();
     let working = yhotos_codec::decode(&input, &id, &job.limits.codec())?;
     let decode_ms = decode_start.elapsed().as_millis();
+    #[cfg(feature = "test-hooks")]
+    if std::env::args_os().any(|a| a == "--self-test-concurrency") {
+        // Query libvips after decode too, so lazy native initialization cannot
+        // silently restore the default. The supervisor preserves these bytes.
+        writeln!(
+            std::io::stdout().lock(),
+            "{}",
+            yhotos_codec::sandbox::initialize(concurrency)?
+        )
+        .map_err(|_| Failure(3, "report failed"))?;
+        return Ok(());
+    }
     #[cfg(all(target_os = "linux", debug_assertions))]
     if std::env::args_os().any(|a| a == "--self-test-timeout") {
         loop {

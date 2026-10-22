@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT status::text AS \"status!\",taken_at,taken_at_local FROM photos WHERE id=$1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "status!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "taken_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "taken_at"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "taken_at_local",
+        "type_info": "Timestamp",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "taken_at_local"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      true,
+      true
+    ]
+  },
+  "hash": "c52b6950e9be0dc873d6021c8ed14c78688c2a33e542635cc22e86afeca63485"
+}

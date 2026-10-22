@@ -16,9 +16,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
     let peer: SocketAddr = "127.0.0.1:1".parse()?;
     let config = Box::leak(Box::new(Config {
+        worker: yhotos_config::Worker::default(),
         public_listen: peer,
         admin_listen: Some(peer),
         database_url_admin: None,
+        database_url_worker: None,
         admin_base_url: None,
         database_url_public: format!("postgres://{}@localhost/test", uuid::Uuid::now_v7()).into(),
         data_dir: dir.path().to_owned(),

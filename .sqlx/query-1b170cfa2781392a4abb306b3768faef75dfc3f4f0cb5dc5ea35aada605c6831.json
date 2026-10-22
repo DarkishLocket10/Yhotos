@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "describe": {
+    "columns": [
+      {
+        "name": "status!",
+        "ordinal": 0,
+        "origin": "Expression",
+        "type_info": "Text"
+      }
+    ],
+    "nullable": [
+      null
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    }
+  },
+  "hash": "1b170cfa2781392a4abb306b3768faef75dfc3f4f0cb5dc5ea35aada605c6831",
+  "query": "SELECT status::text AS \"status!\" FROM photos WHERE id=$1"
+}

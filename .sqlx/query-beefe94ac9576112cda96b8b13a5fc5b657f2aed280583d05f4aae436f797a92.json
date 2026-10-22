@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT short_id,width,height,orientation,original_orientation FROM photos WHERE id=$1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "short_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "short_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "width",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "width"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "height",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "height"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "orientation",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "orientation"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "original_orientation",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "original_orientation"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "beefe94ac9576112cda96b8b13a5fc5b657f2aed280583d05f4aae436f797a92"
+}

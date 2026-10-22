@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "describe": {
+    "columns": [],
+    "nullable": [],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    }
+  },
+  "hash": "c4adc9434670d85d50135de10e957c627c75612020e06e9d73b940a4a85797fb",
+  "query": "UPDATE jobs SET locked_at=now()-interval '12 minutes' WHERE id=ANY($1)"
+}

@@ -1,0 +1,78 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT original_hash,original_bytes,generation,kind::text AS \"kind!\",status::text AS \"status!\",derivative_plan FROM photos WHERE id=$1 AND deleted_at IS NULL",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "original_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "original_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "original_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "original_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "generation",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "generation"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "kind!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "status!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "derivative_plan",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "derivative_plan"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null,
+      null,
+      true
+    ]
+  },
+  "hash": "d5d46dfafce376b7d2f99e204b05d66b7baffe5278caf51b44aa94fa536a7177"
+}

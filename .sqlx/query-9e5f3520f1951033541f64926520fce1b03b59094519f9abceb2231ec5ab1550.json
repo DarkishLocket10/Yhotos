@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE jobs SET locked_at=NULL,locked_by=NULL,attempts=jobs.attempts-1 FROM UNNEST($1::uuid[],$2::text[],$3::int[]) AS claim(id,owner,attempt) WHERE jobs.id=claim.id AND jobs.locked_by=claim.owner AND jobs.attempts=claim.attempt AND jobs.finished_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "TextArray",
+        "Int4Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9e5f3520f1951033541f64926520fce1b03b59094519f9abceb2231ec5ab1550"
+}
