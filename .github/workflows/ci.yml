@@ -22,6 +22,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install native codec development libraries
+        run: sudo apt-get update && sudo apt-get install -y libvips-dev libvips-tools liblcms2-dev libclang-dev libjxl-dev libheif-plugin-aomenc libheif-plugin-aomdec libheif-plugin-libde265
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -63,6 +65,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Install native codec development libraries
+        run: sudo apt-get update && sudo apt-get install -y libvips-dev libvips-tools liblcms2-dev libclang-dev libjxl-dev libheif-plugin-aomenc libheif-plugin-aomdec libheif-plugin-libde265
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -117,3 +121,14 @@ jobs:
           GITLEAKS_VERSION: '8.30.1'
           GITLEAKS_ENABLE_COMMENTS: 'false'
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: 'false'
+
+  codec:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build codec image from pinned base digest
+        run: docker build --iidfile /tmp/codec-image -f deploy/dev/Dockerfile.codec .
+      - name: Test Linux codec and seccomp inside the built image digest
+        run: docker run --rm --network=none -v "$PWD:/workspace" "$(cat /tmp/codec-image)"

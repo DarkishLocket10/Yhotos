@@ -8,6 +8,9 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+raw = ["yhotos-codec/raw"]
+
 [dev-dependencies]
 criterion.workspace = true
 sqlx.workspace = true
@@ -21,6 +24,7 @@ yhotos-core = { path = "../yhotos-core" }
 yhotos-config = { path = "../yhotos-config" }
 yhotos-http = { path = "../yhotos-http" }
 yhotos-storage = { path = "../yhotos-storage" }
+yhotos-codec = { path = "../yhotos-codec" }
 axum.workspace = true
 tokio.workspace = true
 tower = { workspace = true, features = ["util"] }
@@ -49,4 +53,8 @@ harness = false
 
 [[bench]]
 name = "files"
+harness = false
+
+[[bench]]
+name = "codec"
 harness = false

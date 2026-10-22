@@ -79,3 +79,24 @@ opt-level = 3
 [profile.bench]
 inherits = "release"
 debug = 1
+
+# Native image and sandbox boundaries for task 006.
+[workspace.dependencies.bindgen]
+version = "=0.73.2"
+default-features = false
+features = ["runtime"]
+
+[workspace.dependencies.pkg-config]
+version = "=0.3.34"
+
+[workspace.dependencies.rawler]
+version = "=0.8.0"
+default-features = false
+
+[workspace.dependencies.nix]
+version = "=0.31.3"
+features = ["resource", "signal", "process"]
+
+[workspace.dependencies.seccompiler]
+version = "=0.5.0"
+
