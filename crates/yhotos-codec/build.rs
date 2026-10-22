@@ -21,6 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if (major, minor) < (0, 9) {
         println!("cargo:rustc-cfg=libjxl_legacy_icc");
     }
+    let heif = pkg_config::Config::new().probe("libheif")?;
     let lcms = pkg_config::Config::new().probe("lcms2")?;
     let mut builder = bindgen::Builder::default()
         .header("src/native.h")
@@ -30,6 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .allowlist_function("vips_image_(get_width|get_height|get_bands|get_orientation|get_format|get_interpretation|hasalpha|get_typeof|get_int|get_string|get_blob|remove|set_int|set_blob_copy|copy_memory|write_to_memory|new_from_memory_copy)")
         .allowlist_function("JxlDecoder(Create|Destroy|SubscribeEvents|SetInput|ReleaseInput|ProcessInput|GetBasicInfo|GetICCProfileSize|GetColorAsICCProfile)")
         .allowlist_type("JxlBasicInfo")
+        .allowlist_function("heif_init")
         .allowlist_var("JXL_DEC_.*")
         .allowlist_function("g_(object_unref|free|log_set_handler)")
         .allowlist_function("cms(OpenProfileFromMem|CloseProfile|GetProfileInfoASCII|GetColorSpace|CreateRGBProfile|BuildTabulatedToneCurveFloat|FreeToneCurve|SaveProfileToMem|MLUalloc|MLUsetASCII|MLUfree|WriteTag)")
@@ -45,6 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .chain(&lcms.include_paths)
         .chain(&jxl.include_paths)
+        .chain(&heif.include_paths)
     {
         builder = builder.clang_arg(format!("-I{}", dir.display()));
     }

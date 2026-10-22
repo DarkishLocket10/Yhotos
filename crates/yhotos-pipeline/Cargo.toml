@@ -12,6 +12,7 @@ workspace = true
 test-hooks = []
 
 [dependencies]
+jiff.workspace = true
 yhotos-core = { path = "../yhotos-core", features = ["sqlx"] }
 yhotos-db = { path = "../yhotos-db" }
 yhotos-storage = { path = "../yhotos-storage" }

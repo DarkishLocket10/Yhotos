@@ -71,4 +71,5 @@ pub(crate) struct Metadata {
     pub iso: Option<u32>,
     pub gps: Option<(f64, f64)>,
     pub taken_at: Option<String>,
+    pub offset_time_original: Option<String>,
 }

@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE photos SET status=$3::text::photo_status,failure_reason=$4 WHERE id=$1 AND original_hash=$2 AND status<>'ready'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0bf0c37594ddc7268e36d0fc8b4586f8a4c0d90f26561540ce263abf2e69c8c4"
+}

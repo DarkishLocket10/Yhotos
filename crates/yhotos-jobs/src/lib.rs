@@ -145,6 +145,9 @@ pub enum JobsError {
     /// A task panicked or was unexpectedly cancelled.
     #[error("worker task failed")]
     Task,
+    /// Database unavailability prevented releasing claims within the shutdown budget.
+    #[error("worker shutdown deadline exceeded")]
+    ShutdownTimeout,
 }
 /// Handler outcomes determine durable retry or terminal failure.
 #[derive(Debug, thiserror::Error)]
@@ -246,7 +249,7 @@ impl Queue {
             return Ok(JobId(row.id));
         }
         let id = JobId::new();
-        sqlx::query!("INSERT INTO jobs(id,kind,payload,priority,run_after,max_attempts) VALUES($1,$2,$3,$4,$5,$6)", id.0, kind, payload, priority, run_after.unwrap_or_else(OffsetDateTime::now_utc), job.kind().max_attempts()).execute(&mut *conn).await?;
+        sqlx::query!("INSERT INTO jobs(id,kind,payload,priority,run_after,max_attempts) VALUES($1,$2,$3,$4,coalesce($5,now()),$6)", id.0, kind, payload, priority, run_after, job.kind().max_attempts()).execute(&mut *conn).await?;
         sqlx::query!("SELECT pg_notify('jobs','')")
             .execute(conn)
             .await?;

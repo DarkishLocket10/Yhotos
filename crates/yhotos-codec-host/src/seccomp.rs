@@ -15,7 +15,7 @@ pub(super) fn apply() -> Result<(), ()> {
     let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
     let calls = [
         // Buffered IO, mmap-backed loaders and encoder output. Path permissions are
-        // enforced by read-only production mounts, NOT by pointer inspection in BPF.
+        // enforced by Landlock before decoding, in addition to production mounts.
         libc::SYS_read,
         libc::SYS_write,
         libc::SYS_readv,
@@ -33,6 +33,11 @@ pub(super) fn apply() -> Result<(), ()> {
         libc::SYS_fcntl,
         libc::SYS_fsync,
         libc::SYS_ftruncate,
+        // Startup installs a deny-by-default filesystem policy. These calls can
+        // only further restrict rights; a compromised decoder cannot relax it.
+        libc::SYS_landlock_create_ruleset,
+        libc::SYS_landlock_add_rule,
+        libc::SYS_landlock_restrict_self,
         // Heap, mappings, allocator page release, CPU topology and thread stacks.
         libc::SYS_brk,
         libc::SYS_mmap,
@@ -85,6 +90,32 @@ pub(super) fn apply() -> Result<(), ()> {
     ] {
         rules.insert(call, vec![]);
     }
+    // Landlock redundantly sets this flag after seccomp startup. Allow only
+    // the monotonic operation, with the exact unused arguments required by Linux.
+    let nnp = [
+        u64::try_from(libc::PR_SET_NO_NEW_PRIVS).map_err(|_| ())?,
+        1,
+        0,
+        0,
+        0,
+    ];
+    let conditions = nnp
+        .into_iter()
+        .enumerate()
+        .map(|(index, value)| {
+            SeccompCondition::new(
+                u8::try_from(index).map_err(|_| ())?,
+                SeccompCmpArgLen::Qword,
+                SeccompCmpOp::Eq,
+                value,
+            )
+            .map_err(|_| ())
+        })
+        .collect::<Result<Vec<_>, ()>>()?;
+    rules.insert(
+        libc::SYS_prctl,
+        vec![SeccompRule::new(conditions).map_err(|_| ())?],
+    );
     // Thread signals stay in this host's thread group; resource operations use
     // PID 0 (the calling process). Same-UID workers must never be targets.
     for (call, target) in [

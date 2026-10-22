@@ -9,6 +9,7 @@ rust-version.workspace = true
 workspace = true
 
 [dependencies]
+jiff.workspace = true
 yhotos-config = { path = "../yhotos-config" }
 yhotos-db = { path = "../yhotos-db" }
 yhotos-jobs = { path = "../yhotos-jobs" }

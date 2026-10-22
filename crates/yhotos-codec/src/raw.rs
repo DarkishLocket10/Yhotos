@@ -488,6 +488,10 @@ pub(crate) fn metadata(path: &Path) -> Result<Metadata, CodecError> {
             .iso_speed
             .or_else(|| exif.iso_speed_ratings.map(u32::from)),
         taken_at: exif.date_time_original.as_deref().map(crate::metadata::cap),
+        offset_time_original: exif
+            .offset_time_original
+            .as_deref()
+            .map(crate::metadata::cap),
         gps,
         rating: md
             .rating

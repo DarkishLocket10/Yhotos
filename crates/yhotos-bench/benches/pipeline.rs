@@ -27,10 +27,17 @@ fn fixture(dir: &Path) -> Option<PathBuf> {
     None
 }
 fn main() -> Result<(), Box<dyn Error>> {
-    let Some(input) = fixture(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/large"))
-    else {
-        eprintln!("pipeline/ingest skipped: no 24 MP fixture in fixtures/large");
-        return Ok(());
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
+    let (input, prefix) = if let Some(input) = fixture(&fixtures.join("large")) {
+        (input, "pipeline")
+    } else {
+        eprintln!(
+            "24 MP pipeline budget skipped: no large fixture; measuring the small metadata fixture"
+        );
+        (
+            fixtures.join("images/exif-heavy.jpg"),
+            "pipeline/metadata_fixture",
+        )
     };
     let runtime = tokio::runtime::Runtime::new()?;
     let _context = runtime.enter();
@@ -84,12 +91,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         .configure_from_args();
     let mut failure = None;
     for parallelism in [1, 8] {
-        let name = if parallelism == 1 {
-            "pipeline/ingest_single"
-        } else {
-            "pipeline/ingest_8_parallel"
-        };
-        c.bench_function(name,|b|b.iter_custom(|iterations| {
+        let name = format!(
+            "{prefix}/{}",
+            if parallelism == 1 {
+                "ingest_single"
+            } else {
+                "ingest_8_parallel"
+            }
+        );
+        c.bench_function(&name,|b|b.iter_custom(|iterations| {
             let mut total=Duration::ZERO;
             for _ in 0..iterations {
                 let result=runtime.block_on(async {

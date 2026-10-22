@@ -4,6 +4,7 @@ mod host;
 mod plan;
 mod protocol;
 mod publish;
+mod timestamp;
 pub use plan::{Format, Variant, VariantPlan};
 pub use protocol::Limits;
 pub use yhotos_jobs::JobError;
@@ -33,6 +34,9 @@ pub struct Ingest {
     pub concurrency_per_host: u8,
     /// Wall-clock deadline covering writes, reads, and child exit, normally five minutes.
     pub codec_timeout: Duration,
+    /// Timezone for capture dates lacking an EXIF offset; defaults to UTC.
+    /// DST folds choose the earlier instant and gaps shift forward by the gap.
+    pub default_timezone: jiff::tz::TimeZone,
     /// Host-only delay, absent in production builds.
     #[cfg(feature = "test-hooks")]
     pub test_delay: Option<Duration>,
@@ -60,6 +64,7 @@ impl Ingest {
             limits: Limits::default(),
             concurrency_per_host: 2,
             codec_timeout: Duration::from_secs(300),
+            default_timezone: jiff::tz::TimeZone::UTC,
             #[cfg(feature = "test-hooks")]
             test_delay: None,
             #[cfg(feature = "test-hooks")]
@@ -149,7 +154,7 @@ impl Ingest {
                 }
                 JobError::Retry { .. } => ("pending", None),
             };
-            sqlx::query!("UPDATE photos SET status=$3::text::photo_status,failure_reason=$4 WHERE id=$1 AND original_hash=$2 AND (derivative_plan IS DISTINCT FROM $5 OR status<>'ready')",photo_id.0,photo.original_hash,status,reason,marker).execute(&self.db).await.map_err(|_|retry("photo failure update failed"))?;
+            sqlx::query!("UPDATE photos SET status=$3::text::photo_status,failure_reason=$4 WHERE id=$1 AND original_hash=$2 AND status<>'ready'",photo_id.0,photo.original_hash,status,reason).execute(&self.db).await.map_err(|_|retry("photo failure update failed"))?;
         }
         result
     }
@@ -184,6 +189,7 @@ impl Ingest {
             &r.metadata.model,
             &r.metadata.lens,
             &r.metadata.taken_at,
+            &r.metadata.offset_time_original,
         ]
         .into_iter()
         .flatten()

@@ -72,6 +72,8 @@ pub struct Worker {
     pub codec_host_path: PathBuf,
     /// Codec wall-clock deadline in seconds, 1..=600, default 300.
     pub codec_timeout: u32,
+    /// IANA timezone for offset-less EXIF dates; defaults to UTC.
+    pub default_timezone: String,
     /// Threads per host, 1..=64, default two.
     pub vips_concurrency: u8,
     /// Optional structured pipeline plan; omitted uses architecture defaults.
@@ -89,6 +91,7 @@ impl Default for Worker {
             }),
             codec_host_path: PathBuf::from("/usr/local/bin/yhotos-codec-host"),
             codec_timeout: 300,
+            default_timezone: "UTC".into(),
             vips_concurrency: 2,
             variant_plan: None,
             local_plaintext_database: false,
@@ -207,10 +210,13 @@ impl Config {
                 || w.codec_timeout > 600
                 || !(1..=64).contains(&w.vips_concurrency)
                 || !w.codec_host_path.is_absolute()
-                || !w.metrics_listen.ip().is_loopback())
+                || !w.metrics_listen.ip().is_loopback()
+                || jiff::tz::TimeZone::get(&w.default_timezone).is_err())
         {
-            errors
-                .push("worker: invalid concurrency, timeout, codec path or metrics address".into());
+            errors.push(
+                "worker: invalid concurrency, timeout, codec path, metrics address or timezone"
+                    .into(),
+            );
         }
         if let Some(Some(addr)) = admin_listen
             && addr.ip().to_canonical().is_unspecified()
@@ -391,6 +397,7 @@ mod tests {
             concurrency: 4,
             codec_timeout: 120,
             vips_concurrency: 3,
+            default_timezone: "America/Toronto".into(),
             ..Worker::default()
         };
         let config =
@@ -398,7 +405,12 @@ mod tests {
         assert_eq!(config.worker.concurrency, 4);
         assert_eq!(config.worker.codec_timeout, 120);
         assert_eq!(config.worker.vips_concurrency, 3);
+        assert_eq!(config.worker.default_timezone, "America/Toronto");
         for bad in [
+            Worker {
+                default_timezone: "invalid/timezone".into(),
+                ..worker.clone()
+            },
             Worker {
                 concurrency: 0,
                 ..worker.clone()

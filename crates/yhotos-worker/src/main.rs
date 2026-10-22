@@ -54,6 +54,8 @@ async fn run() -> Result<()> {
     ingest.plan.validate()?;
     ingest.codec_timeout = Duration::from_secs(u64::from(config.worker.codec_timeout));
     ingest.concurrency_per_host = config.worker.vips_concurrency;
+    ingest.default_timezone = jiff::tz::TimeZone::get(&config.worker.default_timezone)
+        .map_err(|_| anyhow::anyhow!("invalid worker default timezone"))?;
     let queue = Queue::with_config(
         db.pool().clone(),
         QueueConfig {

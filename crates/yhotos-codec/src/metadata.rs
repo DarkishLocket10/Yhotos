@@ -18,8 +18,10 @@ pub struct Metadata {
     pub shutter: Option<f64>,
     /// ISO sensitivity.
     pub iso: Option<u32>,
-    /// EXIF capture date; no timezone is invented.
+    /// EXIF `DateTimeOriginal` wall-clock text, paired with `OffsetTimeOriginal`.
     pub taken_at: Option<String>,
+    /// EXIF `OffsetTimeOriginal`, such as +05:30; absent means an unknown timezone.
+    pub offset_time_original: Option<String>,
     /// Latitude and longitude in degrees.
     pub gps: Option<(f64, f64)>,
     /// EXIF orientation 1..=8.
@@ -172,6 +174,7 @@ pub(crate) fn from_image(image: &native::Image) -> Metadata {
             .as_deref()
             .and_then(|s| s.parse().ok()),
         taken_at: field("exif-ifd2-DateTimeOriginal"),
+        offset_time_original: field("exif-ifd2-OffsetTimeOriginal"),
         gps: lat.zip(lon),
         orientation: u8::try_from(image.orientation())
             .ok()

@@ -1,5 +1,7 @@
 #![forbid(unsafe_code)]
-//! One bounded JSON job per process. Production confinement is Linux plus mounts.
+//! One bounded JSON job per process. Linux confines filesystem access before decoding.
+#[cfg(target_os = "linux")]
+mod filesystem;
 #[cfg(target_os = "linux")]
 mod seccomp;
 use base64::Engine;
@@ -298,6 +300,20 @@ fn run() -> Result<(), Failure> {
         return Err(Failure(2, "memory limit not enforced"));
     }
     let (input, paths) = paths(&job)?;
+    #[cfg(target_os = "linux")]
+    {
+        yhotos_codec::sandbox::initialize()?;
+        filesystem::restrict(
+            &input,
+            &job.out_dir
+                .canonicalize()
+                .map_err(|_| Failure(2, "invalid output directory"))?,
+        )?;
+        #[cfg(debug_assertions)]
+        if std::env::args_os().any(|a| a == "--self-test-filesystem") {
+            return filesystem::probe(&input, &job.out_dir);
+        }
+    }
     let start = Instant::now();
     let id = yhotos_codec::identify(&input, &job.limits.codec())?;
     let identify_ms = start.elapsed().as_millis();

@@ -115,3 +115,12 @@ pub fn check_process_isolation(other: u32) -> Result<(), CodecError> {
     }
     Ok(())
 }
+
+/// Loads trusted native plugins before filesystem confinement, without opening an input.
+/// Call only during the host's single-threaded startup, before processing untrusted bytes.
+///
+/// # Errors
+/// Returns a typed error if native initialization fails.
+pub fn initialize() -> Result<(), CodecError> {
+    crate::native::init()
+}

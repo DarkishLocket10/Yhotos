@@ -63,9 +63,26 @@ path. `YHOTOS_WORKER__CODEC_TIMEOUT` is a wall-clock limit in seconds (default
 (`avif`, `jxl`, `jpeg`) and `scale2x`; names, uniqueness and the 32-output cap
 are checked before consuming jobs. The worker uses `Role::Worker` and verified
 database TLS, with an explicit loopback-only development opt-in
-`YHOTOS_WORKER__LOCAL_PLAINTEXT_DATABASE=true`. SIGTERM/SIGINT drains for up to
-29 seconds before cancelling and releasing remaining claims. Unimplemented ML, geo and video handlers defer for one hour
+`YHOTOS_WORKER__LOCAL_PLAINTEXT_DATABASE=true`. SIGTERM/SIGINT uses one 29-second shutdown budget for cancelling database waits,
+draining handlers and releasing remaining claims in a fenced batch. The last
+second is reserved for release; database unavailability returns a deadline error
+and stale-lock recovery remains the backstop. Unimplemented ML, geo and video handlers defer for one hour
 without exhausting their attempt allowance.
+
+`YHOTOS_WORKER__DEFAULT_TIMEZONE` is the IANA timezone used when EXIF
+`DateTimeOriginal` has no `OffsetTimeOriginal` (default `UTC`). The database
+keeps the original wall clock in `taken_at_local` and the interpreted instant in
+`taken_at`. An explicit EXIF offset always takes precedence. During daylight
+saving transitions, ambiguous local times choose the earlier instant and
+nonexistent times advance by the gap. Invalid zones are rejected at startup.
+
+Linux codec hosts require Landlock ABI v3 (Linux 6.2+) and enabled Landlock LSM.
+They fail closed if read/write/truncate confinement cannot be fully enforced.
+Trusted libvips/libheif plugins are initialized before confinement, without
+opening an image; the host checks that startup has retained only one thread.
+The decoder then has read access only to its input file and read/write access
+to regular files in its private output directory. Production containers should
+also mount only that input read-only and that output directory writable.
 
 Queue facade metrics are `yhotos_jobs_claimed_total`,
 `yhotos_jobs_completed_total`, `yhotos_jobs_failed_total` (all labelled `kind`),

@@ -181,7 +181,9 @@ fn corrupt_pixel_stream_exits_three_without_decoder_diagnostics() {
     bytes.extend([0xff, 0xd9]);
     let input = tmp.path().join("corrupt.jpg");
     std::fs::write(&input, bytes).unwrap();
-    let output = invoke(&job(&input, tmp.path()), &[]);
+    let out = tmp.path().join("out");
+    std::fs::create_dir(&out).unwrap();
+    let output = invoke(&job(&input, &out), &[]);
     assert_eq!(
         output.status.code(),
         Some(3),
@@ -208,4 +210,38 @@ fn seccomp_blocks_cross_process_signals_and_limits() {
     );
     assert_eq!(result.stdout, b"");
     assert_eq!(result.stderr, b"");
+}
+
+#[cfg(all(target_os = "linux", debug_assertions))]
+#[test]
+fn filesystem_confines_reads_writes_truncation_and_symlink_escape() {
+    let root = tempfile::tempdir().unwrap();
+    let out = root.path().join("out");
+    std::fs::create_dir(&out).unwrap();
+    let unrelated = root.path().join("unrelated");
+    std::fs::write(&unrelated, b"unrelated original").unwrap();
+    std::os::unix::fs::symlink(&unrelated, out.join("escape")).unwrap();
+    let result = invoke(
+        &job(&fixture("chart-srgb.png"), &out),
+        &["--self-test-filesystem"],
+    );
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(std::fs::read(&unrelated).unwrap(), b"unrelated original");
+    assert!(!root.path().join("created").exists());
+    assert_eq!(std::fs::metadata(out.join("allowed")).unwrap().len(), 5);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn filesystem_rejects_input_inside_writable_output() {
+    let root = tempfile::tempdir().unwrap();
+    let input = root.path().join("original.png");
+    std::fs::copy(fixture("chart-srgb.png"), &input).unwrap();
+    let result = invoke(&job(&input, root.path()), &[]);
+    assert_eq!(result.status.code(), Some(2));
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
 }

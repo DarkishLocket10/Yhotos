@@ -216,7 +216,7 @@ async fn shutdown_releases_running_claim_without_consuming_attempt(pool: PgPool)
         QueueConfig {
             concurrency: 1,
             poll_interval: Duration::from_secs(30),
-            shutdown_grace: Duration::from_millis(20),
+            shutdown_grace: Duration::from_millis(200),
         },
     )
     .unwrap();

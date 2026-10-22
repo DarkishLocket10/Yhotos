@@ -21,11 +21,16 @@ pub(crate) const UCHAR: i32 = ffi::VipsBandFormat_VIPS_FORMAT_UCHAR;
 pub(crate) const USHORT: i32 = ffi::VipsBandFormat_VIPS_FORMAT_USHORT;
 const END: *const std::ffi::c_char = ptr::null();
 
-fn init() -> Result<(), CodecError> {
+pub(crate) fn init() -> Result<(), CodecError> {
     static INIT: OnceLock<bool> = OnceLock::new();
     let ok = INIT.get_or_init(|| {
         // SAFETY: process-global initialization is serialized and its static name outlives the call.
         unsafe {
+            // SAFETY: null requests default initialization; no input is parsed.
+            // Plugins remain loaded for the lifetime of this one-job process.
+            if ffi::heif_init(ptr::null_mut()).code != 0 {
+                return false;
+            }
             let status = ffi::vips_init(c"yhotos-codec".as_ptr());
             ffi::vips_concurrency_set(2);
             ffi::vips_cache_set_max(0);

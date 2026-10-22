@@ -127,11 +127,20 @@ async fn real_host_chart_and_orientations_publish_and_rerun_without_changes(pool
         .chain((1..=8).map(|n| format!("orientation-{n}.jpg")))
         .chain(std::iter::once("exif-heavy.jpg".to_owned()))
     {
-        let (root, ingest, id) = setup(&pool, &name).await;
+        let (root, mut ingest, id) = setup(&pool, &name).await;
+        ingest.default_timezone = jiff::tz::TimeZone::get("America/Toronto").unwrap();
         ingest.ingest(id).await.unwrap();
         assert_ready(&pool, &ingest, id).await;
         if name == "exif-heavy.jpg" {
-            let row=sqlx::query!("SELECT camera_make,camera_model,lens,focal_mm,aperture,shutter,iso,gps_lat,gps_lon FROM photos WHERE id=$1",id.0).fetch_one(&pool).await.unwrap();
+            let row=sqlx::query!("SELECT camera_make,camera_model,lens,focal_mm,aperture,shutter,iso,gps_lat,gps_lon,taken_at,taken_at_local FROM photos WHERE id=$1",id.0).fetch_one(&pool).await.unwrap();
+            assert_eq!(
+                row.taken_at,
+                Some(time::macros::datetime!(2026-01-02 08:04:05 UTC))
+            );
+            assert_eq!(
+                row.taken_at_local,
+                Some(time::macros::datetime!(2026-01-02 03:04:05))
+            );
             assert_eq!(row.camera_make.as_deref(), Some("Yhotos"));
             assert_eq!(row.camera_model.as_deref(), Some("Fixture Camera"));
             assert_eq!(row.lens.as_deref(), Some("Synthetic 50mm"));
@@ -235,5 +244,84 @@ async fn output_replaced_after_host_exit_is_never_trusted(pool: PgPool) {
     .await
     .unwrap();
     assert_eq!(count.count, 0);
+    empty_tmp(root.path()).await;
+}
+
+// Rebuild only the EXIF APP1 segment of a committed JPEG. This deliberately
+// small TIFF contains DateTimeOriginal and OffsetTimeOriginal in its EXIF IFD.
+fn jpeg_with_capture_offset() -> Vec<u8> {
+    let source = std::fs::read(fixture("orientation-1.jpg")).unwrap();
+    let mut exif = b"Exif\0\0II\x2a\0\x08\0\0\0".to_vec();
+    exif.extend(1_u16.to_le_bytes());
+    for n in [0x8769_u16, 4] {
+        exif.extend(n.to_le_bytes());
+    }
+    for n in [1_u32, 26, 0] {
+        exif.extend(n.to_le_bytes());
+    }
+    exif.extend(2_u16.to_le_bytes());
+    for (tag, count, offset) in [(0x9003_u16, 20_u32, 56_u32), (0x9011, 7, 76)] {
+        exif.extend(tag.to_le_bytes());
+        exif.extend(2_u16.to_le_bytes());
+        exif.extend(count.to_le_bytes());
+        exif.extend(offset.to_le_bytes());
+    }
+    exif.extend(0_u32.to_le_bytes());
+    exif.extend(b"2026:01:02 03:04:05\0+05:30\0");
+    let mut jpeg = vec![0xff, 0xd8, 0xff, 0xe1];
+    jpeg.extend(u16::try_from(exif.len() + 2).unwrap().to_be_bytes());
+    jpeg.extend(exif);
+    let mut at = 2;
+    while at < source.len() {
+        assert_eq!(source[at], 0xff);
+        if source[at + 1] == 0xda {
+            jpeg.extend(&source[at..]);
+            break;
+        }
+        let length = usize::from(u16::from_be_bytes([source[at + 2], source[at + 3]]));
+        let end = at + 2 + length;
+        if source[at + 1] != 0xe1 || !source[at + 4..end].starts_with(b"Exif\0\0") {
+            jpeg.extend(&source[at..end]);
+        }
+        at = end;
+    }
+    jpeg
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn explicit_exif_capture_offset_is_stored_and_overrides_default_timezone(pool: PgPool) {
+    let (root, mut ingest, id) = setup(&pool, "orientation-1.jpg").await;
+    let bytes = jpeg_with_capture_offset();
+    let original = ingest
+        .store
+        .put_original(&bytes[..], 2 << 30)
+        .await
+        .unwrap();
+    sqlx::query!(
+        "UPDATE photos SET original_hash=$2,original_bytes=$3 WHERE id=$1",
+        id.0,
+        original.hash.to_string(),
+        i64::try_from(original.bytes).unwrap()
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    ingest.default_timezone = jiff::tz::TimeZone::get("America/Toronto").unwrap();
+    ingest.ingest(id).await.unwrap();
+    let row = sqlx::query!(
+        "SELECT taken_at,taken_at_local FROM photos WHERE id=$1",
+        id.0
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        row.taken_at,
+        Some(time::macros::datetime!(2026-01-01 21:34:05 UTC))
+    );
+    assert_eq!(
+        row.taken_at_local,
+        Some(time::macros::datetime!(2026-01-02 03:04:05))
+    );
     empty_tmp(root.path()).await;
 }

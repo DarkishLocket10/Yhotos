@@ -13,6 +13,7 @@ default = []
 admin = []
 
 [dependencies]
+jiff.workspace = true
 figment.workspace = true
 serde.workspace = true
 serde_json.workspace = true

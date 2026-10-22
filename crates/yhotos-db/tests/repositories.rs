@@ -776,12 +776,13 @@ async fn jobs_all_operations_retries_stale_and_notifications(pool: PgPool) {
         .await
         .unwrap();
     listener.listen("jobs").await.unwrap();
+    // Explicitly due despite small clock differences between the client and database.
     let j = jobs::enqueue(
         &mut conn,
         "ingest",
         &json!({"photo_id":PhotoId::new().to_string()}),
         1,
-        OffsetDateTime::now_utc(),
+        OffsetDateTime::now_utc() - Duration::minutes(1),
     )
     .await
     .unwrap();
@@ -863,7 +864,7 @@ async fn jobs_all_operations_retries_stale_and_notifications(pool: PgPool) {
         "ingest",
         &json!({}),
         2,
-        OffsetDateTime::now_utc(),
+        OffsetDateTime::now_utc() - Duration::minutes(1),
     )
     .await
     .unwrap();
@@ -898,7 +899,7 @@ async fn jobs_all_operations_retries_stale_and_notifications(pool: PgPool) {
         "ingest",
         &json!({}),
         0,
-        OffsetDateTime::now_utc(),
+        OffsetDateTime::now_utc() - Duration::minutes(1),
     )
     .await
     .unwrap();
@@ -933,7 +934,7 @@ async fn stale_workers_cannot_complete_or_fail_reclaimed_jobs(pool: PgPool) {
             "ingest",
             &json!({}),
             0,
-            OffsetDateTime::now_utc(),
+            OffsetDateTime::now_utc() - Duration::minutes(1),
         )
         .await
         .unwrap();

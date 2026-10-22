@@ -111,3 +111,9 @@ version = "=0.24.6"
 version = "=0.18.3"
 default-features = false
 features = ["http-listener"]
+
+[workspace.dependencies.landlock]
+version = "=0.4.7"
+
+[workspace.dependencies.jiff]
+version = "=0.2.28"
