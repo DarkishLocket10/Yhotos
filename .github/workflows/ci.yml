@@ -141,6 +141,11 @@ jobs:
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # Server tests (create-admin) write to the database, so it needs the schema.
+      - name: Install pinned SQLx CLI
+        run: cargo install sqlx-cli --version 0.9.0 --locked --no-default-features --features postgres,rustls
+      - name: Apply database migrations
+        run: cargo sqlx migrate run --source crates/yhotos-db/migrations
       - name: Test public build without admin routes
         run: cargo test -p yhotos-config -p yhotos-http -p yhotos-server --no-default-features
 
