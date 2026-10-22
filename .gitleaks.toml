@@ -1,0 +1,4 @@
+title = "Yhotos secret scanning"
+
+[extend]
+useDefault = true
