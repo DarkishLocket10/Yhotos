@@ -43,7 +43,9 @@ jobs:
         working-directory: web
         run: |
           npm ci
-          npm run build
+          npm run check
+      - name: Test offline gazetteer importer
+        run: python3 -m unittest discover -s deploy/geo -p 'test_*.py'
       - name: Test bundled islands
         run: node --test crates/yhotos-http/tests/passkey_redirect.mjs crates/yhotos-http/tests/upload.mjs
 
@@ -82,6 +84,8 @@ jobs:
         run: cargo install sqlx-cli --version 0.9.0 --locked --no-default-features --features postgres,rustls
       - name: Apply database migrations
         run: cargo sqlx migrate run --source crates/yhotos-db/migrations
+      - name: Test gazetteer import against PostgreSQL
+        run: python3 -m unittest discover -s deploy/geo -p 'test_*.py'
       - name: Test workspace
         run: cargo test --workspace --all-features
       - name: Test public build without admin routes

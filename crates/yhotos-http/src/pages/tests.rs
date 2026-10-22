@@ -194,7 +194,7 @@ async fn album_snapshots_anonymous_and_user_with_grant(pool: PgPool) {
     assert_eq!(anonymous.total, 2);
     insta::assert_snapshot!(
         "album_anonymous",
-        render_album(&anonymous, 1, PageSort::Taken, &context()).unwrap()
+        snapshot_html(render_album(&anonymous, 1, PageSort::Taken, &context()).unwrap())
     );
     let identity = SessionIdentity::User {
         id: f.user,
@@ -205,7 +205,7 @@ async fn album_snapshots_anonymous_and_user_with_grant(pool: PgPool) {
     assert_eq!(granted.total, 3);
     insta::assert_snapshot!(
         "album_granted",
-        render_album(&granted, 1, PageSort::Taken, &context()).unwrap()
+        snapshot_html(render_album(&granted, 1, PageSort::Taken, &context()).unwrap())
     );
     let response = f.get_as_user("/a/gallery").await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -249,10 +249,25 @@ async fn pagination_sorting_counts_and_private_cache(pool: PgPool) {
     }
     drop(conn);
     let page = body(f.get("/a/gallery?per_page=1000").await).await;
-    assert_eq!(page.matches("<img ").count(), 60);
+    assert_eq!(
+        page.split("</section>")
+            .next()
+            .unwrap()
+            .matches("<img ")
+            .count(),
+        60
+    );
     assert!(page.contains("Next page"));
     let second = body(f.get("/a/gallery?page=2&sort=manual").await).await;
-    assert_eq!(second.matches("<img ").count(), 1);
+    assert_eq!(
+        second
+            .split("</section>")
+            .next()
+            .unwrap()
+            .matches("<img ")
+            .count(),
+        1
+    );
     for suffix in [
         "?page=3",
         "?page=0",
@@ -392,7 +407,8 @@ async fn photos_have_sorted_neighbours_metadata_hdr_downloads_and_og(pool: PgPoo
     ] {
         assert!(html.contains(value), "{value}");
     }
-    assert!(!html.contains("prefetch"));
+    // Hover prefetch is an island (task 013); `<link rel="prefetch">` is never emitted.
+    assert!(!html.contains("rel=\"prefetch\""));
     let response = f.get(&format!("/p/{}?sort=manual", f.photos[1])).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert!(
@@ -457,8 +473,8 @@ async fn hdr_jpeg_only_representation_precedes_sdr_sources(pool: PgPool) {
         let fallback = picture.split("<img ").nth(1).unwrap();
         assert!(!fallback.contains(".hdr"));
     }
-    insta::assert_snapshot!("photo_hdr_jpeg", detail);
-    insta::assert_snapshot!("album_hdr_jpeg", grid);
+    insta::assert_snapshot!("photo_hdr_jpeg", snapshot_html(detail));
+    insta::assert_snapshot!("album_hdr_jpeg", snapshot_html(grid));
 }
 
 #[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
@@ -942,6 +958,26 @@ async fn query_counts_stay_within_page_budgets(pool: PgPool) {
         crate::files::tests::count_queries(f.get(&format!("/p/{}", f.photos[0]))).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(queries, 1);
+    let place = Uuid::now_v7();
+    sqlx::query!(
+        "INSERT INTO places(id,name,country,lat,lon) VALUES($1,'Query city','CA',43.65,-79.38)",
+        place
+    )
+    .execute(&f.state.pool)
+    .await
+    .unwrap();
+    sqlx::query!("UPDATE photos SET place_id=$1", place)
+        .execute(&f.state.pool)
+        .await
+        .unwrap();
+    for path in [
+        format!("/places/{place}"),
+        "/map/photos.json?lon=-79.38&lat=43.65".into(),
+    ] {
+        let (response, queries) = crate::files::tests::count_queries(f.get(&path)).await;
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        assert_eq!(queries, 1, "{path}");
+    }
 }
 #[test]
 fn grid_is_linear_contiguous_and_fills_each_row() {
@@ -1160,5 +1196,523 @@ async fn mobile_grid_and_cover_sources_are_capped_across_formats(pool: PgPool) {
             assert!(picture.contains("1280w"));
             assert!(picture.contains("2048w"));
         }
+    }
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn calendar_snapshots_dates_and_one_query_per_level(pool: PgPool) {
+    use yhotos_db::calendar::{self, Selection};
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            pool.connect_options()
+                .as_ref()
+                .clone()
+                .log_statements(log::LevelFilter::Debug),
+        )
+        .await
+        .unwrap();
+    let f = Fixture::new(pool, 3).await;
+    let mut conn = f.state.pool.acquire().await.unwrap();
+    sqlx::query!(
+        "UPDATE photos SET visibility='restricted' WHERE id=$1",
+        Uuid::from_u128(3)
+    )
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    sqlx::query!(
+        "UPDATE photos SET taken_at=NULL WHERE id=$1",
+        Uuid::from_u128(2)
+    )
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    drop(conn);
+    for (path, name) in [
+        ("/calendar", "calendar_years"),
+        ("/calendar/2026", "calendar_months"),
+        ("/calendar/2026/1", "calendar_days"),
+        ("/calendar/2026/5", "calendar_posted"),
+        ("/calendar/2026/1/1", "calendar_day"),
+    ] {
+        let (response, queries) = crate::files::tests::count_queries(f.get(path)).await;
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        assert_eq!(queries, 1, "{path}");
+        assert_geo_cache(&response, "calendar,visibility");
+        let selection = super::calendar::selection(path).unwrap();
+        let page = calendar::page(
+            &mut f.state.pool.acquire().await.unwrap(),
+            &yhotos_core::access::Principal::Anonymous,
+            selection,
+            1,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let html = super::render_calendar(&page, selection, 1, &context()).unwrap();
+        assert!(!html.contains("Photo 01"));
+        insta::assert_snapshot!(name, html);
+    }
+    for path in [
+        "/calendar/0",
+        "/calendar/10000",
+        "/calendar/2026/13",
+        "/calendar/2026/2/29",
+        "/calendar/2026/1/32",
+        "/calendar/x",
+        "/calendar/2026/1?page=2",
+        "/calendar?page=2",
+    ] {
+        assert_eq!(f.get(path).await.status(), StatusCode::NOT_FOUND, "{path}");
+    }
+    assert_eq!(
+        f.get("/calendar/2024/2/29").await.status(),
+        StatusCode::NOT_FOUND
+    );
+    assert!(Selection::new(Some(2024), Some(2), Some(29)).is_some());
+}
+
+fn assert_geo_cache(response: &axum::response::Response, tags: &str) {
+    assert_geo_cache_policy(
+        response,
+        tags,
+        "public, max-age=60, stale-while-revalidate=600",
+    );
+}
+
+fn assert_map_json_cache(response: &axum::response::Response) {
+    assert_geo_cache_policy(response, "map,visibility", "public, max-age=300");
+}
+
+fn assert_geo_cache_policy(response: &axum::response::Response, tags: &str, policy: &str) {
+    assert_eq!(response.headers()[header::CACHE_CONTROL], policy);
+    assert_eq!(response.headers()[header::VARY], "Cookie");
+    assert_eq!(response.headers()["cache-tag"], tags);
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn empty_aggregate_pages_keep_tags_and_calendar_sessions_are_private(pool: PgPool) {
+    let f = Fixture::new(pool, 0).await;
+    for (path, tags) in [
+        ("/map", "map,visibility"),
+        (
+            "/map/tiles.json?bbox=-80,43,-79,44&zoom=1",
+            "map,visibility",
+        ),
+        ("/calendar", "calendar,visibility"),
+    ] {
+        let response = f.get(path).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        if path.starts_with("/map/tiles.json") {
+            assert_map_json_cache(&response);
+        } else {
+            assert_geo_cache(&response, tags);
+        }
+        let response = f.get_as_user(path).await;
+        assert_eq!(
+            response.headers()[header::CACHE_CONTROL],
+            "private, no-store"
+        );
+        assert_eq!(response.headers()[header::VARY], "Cookie");
+    }
+}
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn map_fallback_csp_json_and_private_cache(pool: PgPool) {
+    let f = Fixture::new(pool, 3).await;
+    let mut conn = f.state.pool.acquire().await.unwrap();
+    let place = Uuid::from_u128(300);
+    sqlx::query!("INSERT INTO places(id,name,admin1,country,lat,lon) VALUES($1,'Toronto','Ontario','CA',43.65,-79.38)",place).execute(&mut *conn).await.unwrap();
+    sqlx::query!("UPDATE photos SET place_id=$1", place)
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    photos::set_visibility(
+        &mut conn,
+        &[PhotoId(Uuid::from_u128(3))],
+        Visibility::Restricted,
+    )
+    .await
+    .unwrap();
+    grants::grant_photo(&mut conn, PhotoId(Uuid::from_u128(3)), Grant::User(f.user))
+        .await
+        .unwrap();
+    drop(conn);
+    let response = f.get("/map").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_geo_cache(&response, "map,visibility");
+    let csp = response.headers()[header::CONTENT_SECURITY_POLICY]
+        .to_str()
+        .unwrap();
+    assert!(csp.contains("connect-src 'self' https://tiles.openfreemap.org"));
+    assert!(csp.contains("worker-src 'self'"));
+    assert!(!csp.contains("blob:"));
+    assert!(!csp.contains("unsafe-eval"));
+    let html = body(response).await;
+    // The worker URL is keyed on the tile origin and still receives the map CSP.
+    let worker = html
+        .split("data-worker=\"")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap()
+        .replace("&#38;", "&");
+    assert!(worker.contains("?tiles="), "{worker}");
+    let response = f.get(&worker).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response.headers()[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap()
+            .contains("connect-src 'self' https://tiles.openfreemap.org")
+    );
+    let href = html
+        .split("<li><a href=\"/places/")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap();
+    let href = format!("/places/{href}");
+    let response = f.get(&href).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_geo_cache(&response, &format!("places,place:{place},visibility"));
+    let place_html = body(response).await;
+    assert!(place_html.contains("href=\"/map\">Photo map</a>"));
+    assert!(place_html.contains("Toronto, Ontario, CA"));
+    assert_eq!(place_html.matches("class=\"cell\"").count(), 2);
+    assert!(place_html.contains(&format!("/p/{}?", f.photos[0])));
+    assert!(!place_html.contains(&format!("/p/{}?", f.photos[2])));
+    let photo_href = place_html
+        .split("href=\"/p/")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap();
+    assert_eq!(
+        f.get(&format!("/p/{photo_href}")).await.status(),
+        StatusCode::OK
+    );
+    let response = f.get_as_user(&href).await;
+    assert_eq!(
+        response.headers()[header::CACHE_CONTROL],
+        "private, no-store"
+    );
+    assert_eq!(body(response).await.matches("class=\"cell\"").count(), 3);
+    assert!(html.contains("2 photos"));
+    assert!(!html.contains("3 photos"));
+    assert!(html.contains("data-tiles="));
+    let path = "/map/tiles.json?bbox=-80,43,-79,44&zoom=1";
+    let response = f.get(path).await;
+    assert_map_json_cache(&response);
+    let json: serde_json::Value = serde_json::from_str(&body(response).await).unwrap();
+    assert_eq!(json["features"][0]["properties"]["count"], 2);
+    let response = f.get_as_user(path).await;
+    assert_eq!(
+        response.headers()[header::CACHE_CONTROL],
+        "private, no-store"
+    );
+    let json: serde_json::Value = serde_json::from_str(&body(response).await).unwrap();
+    assert_eq!(json["features"][0]["properties"]["count"], 3);
+    let response = f.get("/map/tiles.json?bbox=-80,43,-79,44&zoom=15").await;
+    let json: serde_json::Value = serde_json::from_str(&body(response).await).unwrap();
+    assert_eq!(json["features"].as_array().unwrap().len(), 1);
+    assert_eq!(json["features"][0]["properties"]["count"], 2);
+    assert_eq!(json["features"][0]["properties"]["terminal"], true);
+    let point = &json["features"][0]["geometry"]["coordinates"];
+    let chooser = format!("/map/photos.json?lon={}&lat={}", point[0], point[1]);
+    let response = f.get(&chooser).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_map_json_cache(&response);
+    let json: serde_json::Value = serde_json::from_str(&body(response).await).unwrap();
+    assert_eq!(json["total"], 2);
+    assert_eq!(json["photos"].as_array().unwrap().len(), 2);
+    assert!(
+        !json["photos"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["short_id"] == f.photos[2].to_string())
+    );
+    let response = f.get_as_user(&chooser).await;
+    assert_eq!(
+        response.headers()[header::CACHE_CONTROL],
+        "private, no-store"
+    );
+    let json: serde_json::Value = serde_json::from_str(&body(response).await).unwrap();
+    assert_eq!(json["total"], 3);
+    assert!(!body(f.get("/").await).await.contains("/static/map."));
+    assert!(
+        !f.get("/").await.headers()[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap()
+            .contains("openfreemap")
+    );
+    for path in [
+        "/map/tiles.json?bbox=NaN,0,1,1&zoom=1",
+        "/map/tiles.json?bbox=0,0,1,1&zoom=21",
+        "/map/tiles.json?bbox=-181,-90,181,90&zoom=0",
+    ] {
+        assert_eq!(f.get(path).await.status(), StatusCode::BAD_REQUEST);
+    }
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn calendar_month_grid_paginates_after_visibility_and_stays_under_budget(pool: PgPool) {
+    let f = Fixture::new(pool, 62).await;
+    let mut conn = f.state.pool.acquire().await.unwrap();
+    sqlx::query!("UPDATE photos SET taken_at='2026-01-01 00:00:00+00'")
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    photos::set_visibility(
+        &mut conn,
+        &[PhotoId(Uuid::from_u128(62))],
+        Visibility::Restricted,
+    )
+    .await
+    .unwrap();
+    drop(conn);
+    let first = body(f.get("/calendar/2026/1").await).await;
+    // One day cover plus sixty grid photos, with complete visible counts.
+    assert_eq!(first.matches("<img ").count(), 61);
+    assert!(first.contains("61 photos"));
+    assert!(first.contains("Next page"));
+    let mut compressed = GzEncoder::new(Vec::new(), Compression::default());
+    compressed.write_all(first.as_bytes()).unwrap();
+    assert!(compressed.finish().unwrap().len() < 30 * 1024);
+    let second = body(f.get("/calendar/2026/1?page=2").await).await;
+    assert_eq!(second.matches("<img ").count(), 2);
+    assert!(second.contains("Previous page"));
+    assert!(!second.contains("Next page"));
+    assert_eq!(
+        f.get("/calendar/2026/1?page=3").await.status(),
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn place_and_point_pages_paginate_visible_photos_and_hide_empty_places(pool: PgPool) {
+    let f = Fixture::new(pool, 62).await;
+    let mut conn = f.state.pool.acquire().await.unwrap();
+    let place = Uuid::now_v7();
+    let hidden = Uuid::now_v7();
+    sqlx::query!("INSERT INTO places(id,name,country,lat,lon) VALUES($1,'City <script>','CA',43.65,-79.38),($2,'Secret place','CA',43.65,-79.38)",place,hidden).execute(&mut *conn).await.unwrap();
+    sqlx::query!("UPDATE photos SET place_id=$1", place)
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    sqlx::query!(
+        "UPDATE photos SET visibility='restricted',place_id=$1 WHERE short_id=$2",
+        hidden,
+        f.photos[61].to_string()
+    )
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    drop(conn);
+    let href = format!("/places/{place}");
+    let html = body(f.get(&href).await).await;
+    assert_eq!(html.matches("class=\"cell\"").count(), 60);
+    assert!(html.contains("61 photos"));
+    assert!(html.contains("City &#60;script&#62;"));
+    assert!(!html.contains("City <script>"));
+    let mut compressed = GzEncoder::new(Vec::new(), Compression::default());
+    compressed.write_all(html.as_bytes()).unwrap();
+    assert!(compressed.finish().unwrap().len() < 30 * 1024);
+    assert!(html.contains(&format!("href=\"{href}?page=2\"")));
+    let second = body(f.get(&format!("{href}?page=2")).await).await;
+    assert_eq!(second.matches("class=\"cell\"").count(), 1);
+    assert!(second.contains(&format!("href=\"{href}?page=1\"")));
+    let point = "/map/photos.json?lon=-79.38&lat=43.65";
+    let response = f.get(point).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let first: serde_json::Value = serde_json::from_str(&body(response).await).unwrap();
+    let second: serde_json::Value =
+        serde_json::from_str(&body(f.get(&format!("{point}&page=2")).await).await).unwrap();
+    assert_eq!(first["total"], 61);
+    assert_eq!(first["photos"].as_array().unwrap().len(), 60);
+    assert_eq!(second["photos"].as_array().unwrap().len(), 1);
+    assert!(
+        !first["photos"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p == &second["photos"][0])
+    );
+    for path in [
+        format!("{href}?page=3"),
+        format!("{href}?page=0"),
+        format!("/places/{hidden}"),
+        format!("/places/{}", Uuid::now_v7()),
+        "/places/invalid".into(),
+        format!("{point}&page=3"),
+        format!("{point}&page=0"),
+        "/map/photos.json?lon=0&lat=0".into(),
+    ] {
+        let response = f.get(&path).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+        assert_eq!(body(response).await, body(f.get("/missing").await).await);
+    }
+    let fallback = body(f.get("/map").await).await;
+    assert!(!fallback.contains(&hidden.to_string()));
+    for path in [
+        "/map/photos.json?lon=NaN&lat=0",
+        "/map/photos.json?lon=0&lat=inf",
+        "/map/photos.json?lon=181&lat=0",
+        "/map/photos.json?lon=0&lat=90",
+    ] {
+        assert_eq!(
+            f.get(path).await.status(),
+            StatusCode::BAD_REQUEST,
+            "{path}"
+        );
+    }
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn api_visibility_pagination_and_private_state(pool: PgPool) {
+    let f = Fixture::new(pool, 61).await;
+    let mut conn = f.state.pool.acquire().await.unwrap();
+    photos::set_visibility(
+        &mut conn,
+        &[PhotoId(Uuid::from_u128(1))],
+        Visibility::Restricted,
+    )
+    .await
+    .unwrap();
+    drop(conn);
+    let restricted = f.get(&format!("/api/v1/photos/{}", f.photos[0])).await;
+    let missing = f
+        .get(&format!(
+            "/api/v1/photos/{}",
+            ShortId::from_photo_id(PhotoId::new())
+        ))
+        .await;
+    assert_eq!(restricted.status(), StatusCode::NOT_FOUND);
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    assert_eq!(body(restricted).await, body(missing).await);
+    let album = format!("/api/v1/albums/{}/photos", f.album);
+    let response = f.get(&album).await;
+    assert_eq!(
+        response.headers()[header::CACHE_CONTROL],
+        "public, max-age=60"
+    );
+    let data: serde_json::Value = serde_json::from_str(&body(response).await).unwrap();
+    assert_eq!(data["photos"].as_array().unwrap().len(), 60);
+    assert_eq!(data["next_page"], serde_json::Value::Null);
+    assert_eq!(
+        f.get(&format!("{album}?page=2")).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    assert!(
+        data["photos"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["caps"]["like"] == false)
+    );
+    let response = f
+        .get_as_user(&format!("/api/v1/photos/{}", f.photos[1]))
+        .await;
+    assert_eq!(
+        response.headers()[header::CACHE_CONTROL],
+        "private, no-store"
+    );
+    let data: serde_json::Value = serde_json::from_str(&body(response).await).unwrap();
+    assert_eq!(data["state"]["liked"], false);
+    assert!(data["state"].get("like_count").is_none());
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn api_like_unlike_and_concurrent_flags_are_idempotent(pool: PgPool) {
+    let f = Fixture::new(pool, 2).await;
+    let app = crate::public_router(f.state.clone());
+    let action = |method: &str, action: &str| {
+        let mut request = Fixture::request(&format!("/api/v1/photos/{}/{action}", f.photos[0]));
+        *request.method_mut() = method.parse().unwrap();
+        request
+            .headers_mut()
+            .insert("x-requested-with", "yhotos".parse().unwrap());
+        request
+            .headers_mut()
+            .insert("sec-fetch-site", "same-origin".parse().unwrap());
+        request
+            .headers_mut()
+            .insert(header::COOKIE, f.cookie.parse().unwrap());
+        request
+    };
+    for (method, liked) in [
+        ("POST", true),
+        ("POST", true),
+        ("DELETE", false),
+        ("DELETE", false),
+    ] {
+        let response = app.clone().oneshot(action(method, "like")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let data: serde_json::Value = serde_json::from_str(&body(response).await).unwrap();
+        assert_eq!(data["liked"], liked);
+        assert!(data.get("like_count").is_none());
+    }
+    let (first, second) = tokio::join!(
+        app.clone().oneshot(action("POST", "flag")),
+        app.clone().oneshot(action("POST", "flag"))
+    );
+    for response in [first.unwrap(), second.unwrap()] {
+        assert_eq!(response.status(), StatusCode::OK);
+        let data: serde_json::Value = serde_json::from_str(&body(response).await).unwrap();
+        assert_eq!(data["flagged"], true);
+    }
+    let flags = yhotos_db::flags::open_flags(&mut f.state.pool.acquire().await.unwrap(), 0)
+        .await
+        .unwrap();
+    assert_eq!(flags.len(), 1);
+    assert_eq!(flags[0].user_id, Some(f.user));
+    assert_eq!(
+        f.get_as_user(&format!("/p/{}", f.photos[1])).await.status(),
+        StatusCode::OK
+    );
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn map_place_list_paginates_after_visibility_and_stays_under_budget(pool: PgPool) {
+    let f = Fixture::new(pool, 410).await;
+    let mut conn = f.state.pool.acquire().await.unwrap();
+    // One distinct place per photo; the restricted photo's place must not be listed or counted.
+    sqlx::query!("INSERT INTO places(id,name,admin1,country,lat,lon) SELECT id,'Place '||lpad(sort_order::text,4,'0'),'ON','CA',43.65,-79.38 FROM photos")
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    sqlx::query!("UPDATE photos SET place_id=id")
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    photos::set_visibility(
+        &mut conn,
+        &[PhotoId(Uuid::from_u128(410))],
+        Visibility::Restricted,
+    )
+    .await
+    .unwrap();
+    drop(conn);
+    let first = body(f.get("/map").await).await;
+    assert_eq!(first.matches("<li><a href=\"/places/").count(), 200);
+    assert!(first.contains("rel=\"next\" href=\"/map?page=2\""));
+    assert!(!first.contains("rel=\"prev\""));
+    let mut compressed = GzEncoder::new(Vec::new(), Compression::default());
+    compressed.write_all(first.as_bytes()).unwrap();
+    assert!(compressed.finish().unwrap().len() < 30 * 1024);
+    let second = body(f.get("/map?page=2").await).await;
+    assert_eq!(second.matches("<li><a href=\"/places/").count(), 200);
+    let third = body(f.get("/map?page=3").await).await;
+    // 410 photos, one restricted: 409 visible places.
+    assert_eq!(third.matches("<li><a href=\"/places/").count(), 9);
+    assert!(third.contains("rel=\"prev\" href=\"/map?page=2\""));
+    assert!(!third.contains("rel=\"next\""));
+    assert!(!third.contains(&Uuid::from_u128(410).to_string()));
+    for path in ["/map?page=4", "/map?page=0", "/map?page=x"] {
+        assert_eq!(f.get(path).await.status(), StatusCode::NOT_FOUND, "{path}");
     }
 }

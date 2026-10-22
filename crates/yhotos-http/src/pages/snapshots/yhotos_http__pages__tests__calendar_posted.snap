@@ -1,0 +1,48 @@
+---
+source: crates/yhotos-http/src/pages/tests.rs
+expression: html
+---
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Photos from 2026-05 · Yhotos</title>
+<meta name="description" content="Browse photos by year, month and day">
+<link rel="stylesheet" href="/static/app.fixture.css">
+
+<script type="module" nonce="fixture-nonce" src="/static/thumbhash.fixture.js"></script>
+
+</head>
+<body><header class="site-header"><a href="/">Yhotos</a><span>Photo gallery</span><nav aria-label="Gallery"><a href="/map">Map</a> <a href="/calendar">Calendar</a></nav></header><main><nav aria-label="Calendar"><a href="/calendar">All years</a></nav><h1>Photos from 2026-05</h1><p>1 photos. Dates use UTC; photos without a capture date use their posted date.</p>
+<section class="calendar-grid" aria-label="Date groups"><a class="calendar-card" href="/calendar/2026/5/31"><picture>
+
+
+
+<source media="(max-width: 600px)" type="image/jxl" srcset="/i/f164205fdcd05ae1fb296713aed7a3c851a54b653a7d192431875e83b045308a/small.jxl 640w" sizes="(max-width: 600px) calc(100vw - 32px), 360px">
+<source media="(max-width: 600px)" type="image/avif" srcset="/i/b1a550371a9c3f719760d5b606cf0e23b6b1544ecf77d05227f3a33423aa2268/small.avif 640w" sizes="(max-width: 600px) calc(100vw - 32px), 360px">
+<source media="(max-width: 600px)" type="image/jpeg" srcset="/i/28c5872a55a7e9fa8d04af8583eec3df258cba7cc78c4b5916d09fc4bf931ae3/small.jpeg 640w" sizes="(max-width: 600px) calc(100vw - 32px), 360px">
+
+
+
+<source type="image/jxl" srcset="/i/f164205fdcd05ae1fb296713aed7a3c851a54b653a7d192431875e83b045308a/small.jxl 640w, /i/9a7129b6a4a4f10bd5eb1404fe569d9f12ee1147374eaed6451cbb0d1500c7e4/medium.jxl 1280w, /i/b7f5f8781a9aa593e7e5780d7db190f0527206051a3a6afb77c40f68d3e515e8/large.jxl 2048w" sizes="(max-width: 600px) calc(100vw - 32px), 360px">
+<source type="image/avif" srcset="/i/b1a550371a9c3f719760d5b606cf0e23b6b1544ecf77d05227f3a33423aa2268/small.avif 640w, /i/dddea048532a7231621ea492ddf09438d96d86482e32de0c60fccd7de385661c/medium.avif 1280w, /i/ccd3ed994194bf0568838d7f4a0790df319b50d50223c3e8e98522d2ea9bb3b4/large.avif 2048w" sizes="(max-width: 600px) calc(100vw - 32px), 360px">
+<img src="/i/37f87f33ef65612185943e0fffa399acd6138ce96884cf302d1abbd60e191d1f/medium.jpeg" srcset="/i/28c5872a55a7e9fa8d04af8583eec3df258cba7cc78c4b5916d09fc4bf931ae3/small.jpeg 640w, /i/37f87f33ef65612185943e0fffa399acd6138ce96884cf302d1abbd60e191d1f/medium.jpeg 1280w, /i/600c183ed7648d5fb90b923a4287fe24342a31009da7f0bba0ae3e2ab68ea5d1/large.jpeg 2048w" sizes="(max-width: 600px) calc(100vw - 32px), 360px" width="900" height="1200" loading="lazy" decoding="async" alt="Photo 02" data-thumbhash="AAgCBwAAAAAAAAAAAAAAAAAAAAAAAAAA">
+</picture><span>31 · 1 photos</span><span>1 use posted date</span></a></section>
+<section class="calendar-grid" aria-label="Photos"><a class="calendar-card" href="/p/aaaaaaaaaaac"><picture>
+
+
+
+<source media="(max-width: 600px)" type="image/jxl" srcset="/i/f164205fdcd05ae1fb296713aed7a3c851a54b653a7d192431875e83b045308a/small.jxl 640w" sizes="(max-width: 600px) calc(100vw - 32px), 360px">
+<source media="(max-width: 600px)" type="image/avif" srcset="/i/b1a550371a9c3f719760d5b606cf0e23b6b1544ecf77d05227f3a33423aa2268/small.avif 640w" sizes="(max-width: 600px) calc(100vw - 32px), 360px">
+<source media="(max-width: 600px)" type="image/jpeg" srcset="/i/28c5872a55a7e9fa8d04af8583eec3df258cba7cc78c4b5916d09fc4bf931ae3/small.jpeg 640w" sizes="(max-width: 600px) calc(100vw - 32px), 360px">
+
+
+
+<source type="image/jxl" srcset="/i/f164205fdcd05ae1fb296713aed7a3c851a54b653a7d192431875e83b045308a/small.jxl 640w, /i/9a7129b6a4a4f10bd5eb1404fe569d9f12ee1147374eaed6451cbb0d1500c7e4/medium.jxl 1280w, /i/b7f5f8781a9aa593e7e5780d7db190f0527206051a3a6afb77c40f68d3e515e8/large.jxl 2048w" sizes="(max-width: 600px) calc(100vw - 32px), 360px">
+<source type="image/avif" srcset="/i/b1a550371a9c3f719760d5b606cf0e23b6b1544ecf77d05227f3a33423aa2268/small.avif 640w, /i/dddea048532a7231621ea492ddf09438d96d86482e32de0c60fccd7de385661c/medium.avif 1280w, /i/ccd3ed994194bf0568838d7f4a0790df319b50d50223c3e8e98522d2ea9bb3b4/large.avif 2048w" sizes="(max-width: 600px) calc(100vw - 32px), 360px">
+<img src="/i/37f87f33ef65612185943e0fffa399acd6138ce96884cf302d1abbd60e191d1f/medium.jpeg" srcset="/i/28c5872a55a7e9fa8d04af8583eec3df258cba7cc78c4b5916d09fc4bf931ae3/small.jpeg 640w, /i/37f87f33ef65612185943e0fffa399acd6138ce96884cf302d1abbd60e191d1f/medium.jpeg 1280w, /i/600c183ed7648d5fb90b923a4287fe24342a31009da7f0bba0ae3e2ab68ea5d1/large.jpeg 2048w" sizes="(max-width: 600px) calc(100vw - 32px), 360px" width="900" height="1200" loading="eager" decoding="async" alt="Photo 02" data-thumbhash="AAgCBwAAAAAAAAAAAAAAAAAAAAAAAAAA">
+</picture><span>Posted date used</span></a></section>
+<nav class="pagination" aria-label="Pagination"><span>Page 1</span></nav>
+</main><footer>Yhotos photo gallery · Place data: <a href="https://www.geonames.org/">GeoNames</a> (<a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>)</footer></body>
+</html>

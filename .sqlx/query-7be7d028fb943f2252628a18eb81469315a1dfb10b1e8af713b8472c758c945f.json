@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH RECURSIVE identity AS (\n              SELECT $1::uuid AS user_id, $2::uuid[] AS groups, $3::bool AS admin,\n                     $4::uuid[] AS shared_albums, $5::uuid[] AS shared_photos\n            ), album_levels AS (\n              SELECT a.*, ARRAY[a.id] AS ids, a.slug::text AS path,\n                jsonb_build_array(jsonb_build_object('id',a.id,'title',a.title,'path',a.slug::text)) AS chain,\n                CASE WHEN a.visibility='restricted' THEN ARRAY[a.id] ELSE ARRAY[]::uuid[] END AS restricted_ids,\n                (a.visibility <> 'restricted' OR EXISTS (\n                  SELECT 1 FROM album_grants g WHERE g.album_id=a.id AND\n                   ((g.principal_kind='user' AND g.principal_id=i.user_id) OR\n                    (g.principal_kind='group' AND g.principal_id=ANY(i.groups))))) IS TRUE AS levels_pass\n              FROM albums a CROSS JOIN identity i WHERE a.parent_id IS NULL AND a.deleted_at IS NULL\n              UNION ALL\n              SELECT a.*, parent.ids || a.id, parent.path || '/' || a.slug::text,\n                parent.chain || jsonb_build_array(jsonb_build_object('id',a.id,'title',a.title,'path',parent.path || '/' || a.slug::text)),\n                parent.restricted_ids || CASE WHEN a.visibility='restricted' THEN ARRAY[a.id] ELSE ARRAY[]::uuid[] END,\n                parent.levels_pass AND (a.visibility <> 'restricted' OR EXISTS (\n                  SELECT 1 FROM album_grants g WHERE g.album_id=a.id AND\n                   ((g.principal_kind='user' AND g.principal_id=i.user_id) OR\n                    (g.principal_kind='group' AND g.principal_id=ANY(i.groups))))) IS TRUE\n              FROM albums a JOIN album_levels parent ON parent.id=a.parent_id CROSS JOIN identity i\n              WHERE a.deleted_at IS NULL AND NOT a.id=ANY(parent.ids)\n            ), visible_albums AS (\n              SELECT a.* FROM album_levels a CROSS JOIN identity i\n              WHERE i.admin OR (\n                ((i.user_id IS NOT NULL OR (cardinality(i.shared_albums)=0 AND cardinality(i.shared_photos)=0)) AND a.levels_pass)\n                OR EXISTS (SELECT FROM unnest(i.shared_albums) target\n                  WHERE target=ANY(a.ids) AND a.restricted_ids <@ ARRAY[target]))\n            ), visible_photos AS NOT MATERIALIZED (\n              SELECT p.*, ARRAY(SELECT target FROM unnest(i.shared_albums) target\n                WHERE p.visibility <> 'restricted' AND target=ANY(a.ids) AND a.restricted_ids <@ ARRAY[target]) AS shared_albums,\n                (i.admin OR (i.user_id IS NOT NULL AND a.levels_pass AND\n                (p.visibility <> 'restricted' OR EXISTS (SELECT FROM photo_grants g WHERE g.photo_id=p.id AND\n                  ((g.principal_kind='user' AND g.principal_id=i.user_id) OR\n                   (g.principal_kind='group' AND g.principal_id=ANY(i.groups))))))) AS account_view,\n                (p.id=ANY(i.shared_photos) AND cardinality(a.restricted_ids)=0) AS photo_link_view\n              FROM photos p JOIN album_levels a ON a.id=p.album_id CROSS JOIN identity i\n              WHERE p.deleted_at IS NULL AND (i.admin OR (\n                (a.levels_pass AND (i.user_id IS NOT NULL OR (cardinality(i.shared_albums)=0 AND cardinality(i.shared_photos)=0)) AND\n                  (p.visibility <> 'restricted' OR EXISTS (\n                    SELECT 1 FROM photo_grants g WHERE g.photo_id=p.id AND\n                     ((g.principal_kind='user' AND g.principal_id=i.user_id) OR\n                      (g.principal_kind='group' AND g.principal_id=ANY(i.groups))))))\n                OR (p.id=ANY(i.shared_photos) AND cardinality(a.restricted_ids)=0)\n                OR (p.visibility <> 'restricted' AND EXISTS (SELECT FROM unnest(i.shared_albums) target\n                  WHERE target=ANY(a.ids) AND a.restricted_ids <@ ARRAY[target]))))\n            ) , target AS (\n      SELECT target_kind,target_id FROM legacy_redirects WHERE pattern=ANY($6)\n      ORDER BY array_position($6,pattern) LIMIT 1\n    ) SELECT CASE WHEN t.target_kind='photo' THEN\n      (SELECT '/p/' || p.short_id FROM visible_photos p WHERE p.id=t.target_id)\n      ELSE (SELECT '/a/' || a.path FROM visible_albums a WHERE a.id=t.target_id)\n      END AS destination FROM target t",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "destination",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray",
+        "Bool",
+        "UuidArray",
+        "UuidArray",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "7be7d028fb943f2252628a18eb81469315a1dfb10b1e8af713b8472c758c945f"
+}

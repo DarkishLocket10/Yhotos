@@ -6,9 +6,9 @@ use std::{error::Error, hint::black_box, time::Instant};
 use yhotos_core::{AlbumId, PhotoId, ShortId, access::Principal};
 use yhotos_db::{
     albums::{self, AlbumPage},
-    photos::PageSort,
+    photos::{PageSort, PhotoPage},
 };
-use yhotos_http::pages::{PageContext, render_album};
+use yhotos_http::pages::{PageContext, render_album, render_photo};
 
 fn fixture() -> Result<AlbumPage, Box<dyn Error>> {
     let album = AlbumId::new();
@@ -106,6 +106,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     render_album(&page, 1, PageSort::Taken, &context)?;
     criterion.bench_function("pages/render_album/60", |b| {
         b.iter(|| black_box(render_album(black_box(&page), 1, PageSort::Taken, &context)));
+    });
+    let photo = PhotoPage {
+        photo: page.photos.first().ok_or("empty fixture")?.clone(),
+        chain: page.chain.clone(),
+        previous: None,
+        next: None,
+    };
+    criterion.bench_function("pages/render_photo/with_island", |b| {
+        b.iter(|| black_box(render_photo(black_box(&photo), PageSort::Taken, &context)));
     });
     let mut cropped = page.clone();
     for photo in &mut cropped.photos {
