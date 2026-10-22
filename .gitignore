@@ -26,3 +26,6 @@ dist/
 
 # Agent worktrees
 /.worktrees/
+
+# Agent run artefacts
+.agent-last-message.md

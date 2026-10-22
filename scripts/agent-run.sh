@@ -96,6 +96,7 @@ LAST_MSG="$WT/.agent-last-message.md"
 echo "running codex ($MODEL, effort $EFFORT) in $WT on $BRANCH"
 codex exec \
   -C "$WT" \
+  --add-dir "$REPO_ROOT/.git" \
   -m "$MODEL" \
   -c "model_reasoning_effort=\"$EFFORT\"" \
   -c 'approval_policy="never"' \
