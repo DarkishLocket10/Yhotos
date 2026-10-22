@@ -192,6 +192,12 @@ pixel decode. Adobe scalars and three-channel RDF sequences normalize to ISO
 log2 min/max boosts and headroom, gamma and offsets. Conflicting ISO/XMP values,
 zero denominators, nonfinite/out-of-range coefficients and unknown versions
 produce a fixed `hdr_skipped_reason`; they leave SDR processing available.
+Primary JPEG marker extents and the 16 MiB header budget are validated separately
+from optional MPF/auxiliary metadata. Invalid indices or auxiliary headers retain
+SDR ingest and record a skip reason; strict auxiliary bounds are checked again
+before gain-map pixel decode. Native libultrahdr builds must use
+`UHDR_WRITE_XMP=OFF` and `UHDR_WRITE_ISO=ON`: its XMP encoder rejects differing RGB
+coefficients. The dual-metadata writer adds the per-channel Adobe XMP afterward.
 HEIC Apple `auxC`/`auxl` associations, EXIF MakerNote 33/48 and the namespaced
 HDRGainMapVersion are validated before decoding the auxiliary item. Apple's
 Rec.709 samples and linear headroom multiplier are converted to an ISO log map.

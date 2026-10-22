@@ -84,7 +84,20 @@ pub(crate) fn inspect(path: &Path, limits: &Limits) -> Result<Kind, CodecError> 
         let mut end = [0; 2];
         file.read_exact(&mut end).map_err(|_| CodecError::Io)?;
         if end != [0xff, 0xd9] {
-            return Err(CodecError::Mismatch);
+            // In MPF files the final EOI belongs to an optional auxiliary, not
+            // the primary codestream. Validate the primary's complete header
+            // before leaving its pixel/EOI validation to the strict JPEG loader.
+            file.seek(SeekFrom::Start(2)).map_err(|_| CodecError::Io)?;
+            if jpeg_gain_headers(&mut file, 0, meta.len(), true, &mut (16 << 20))
+                .map_err(|error| match error {
+                    CodecError::Decode => CodecError::Mismatch,
+                    other => other,
+                })?
+                .images
+                .is_none()
+            {
+                return Err(CodecError::Mismatch);
+            }
         }
     }
     Ok(kind)
@@ -109,6 +122,12 @@ pub(crate) fn has_gain_signature(bytes: &[u8]) -> bool {
         .any(|s| bytes.windows(s.len()).any(|w| w == *s))
 }
 pub(crate) fn gain_map(path: &Path) -> Result<bool, CodecError> {
+    gain_map_probe(path)?
+}
+
+// Outer errors reject the primary container. Inner errors reject only optional
+// JPEG MPF/auxiliary data, after the complete primary header passed its bounds.
+pub(crate) fn gain_map_probe(path: &Path) -> Result<Result<bool, CodecError>, CodecError> {
     let mut file = File::open(path).map_err(|_| CodecError::Io)?;
     let mut magic = [0; 2];
     file.read_exact(&mut magic)
@@ -116,26 +135,34 @@ pub(crate) fn gain_map(path: &Path) -> Result<bool, CodecError> {
     if magic == [0xff, 0xd8] {
         let file_len = file.metadata().map_err(|_| CodecError::Io)?.len();
         let mut budget = 16 << 20;
-        let (mut found, images) = jpeg_gain_headers(&mut file, 0, file_len, true, &mut budget)?;
-        for (start, end) in images {
-            file.seek(SeekFrom::Start(end - 2))
-                .map_err(|_| CodecError::Io)?;
-            let mut eoi = [0; 2];
-            file.read_exact(&mut eoi).map_err(|_| CodecError::Decode)?;
-            if eoi != [0xff, 0xd9] {
-                return Err(CodecError::Decode);
+        let headers = jpeg_gain_headers(&mut file, 0, file_len, true, &mut budget)?;
+        return Ok((|| {
+            let mut found = headers.found;
+            for (start, end) in headers.images.transpose()?.unwrap_or_default() {
+                file.seek(SeekFrom::Start(end - 2))
+                    .map_err(|_| CodecError::Io)?;
+                let mut eoi = [0; 2];
+                file.read_exact(&mut eoi).map_err(|_| CodecError::Decode)?;
+                if eoi != [0xff, 0xd9] {
+                    return Err(CodecError::Decode);
+                }
+                if start != 0 {
+                    // Only APP1 XMP in indexed auxiliary JPEGs identifies an Apple
+                    // gain map. Never search scan bytes or the primary MPF table.
+                    found |= jpeg_gain_headers(&mut file, start, end, false, &mut budget)?.found;
+                }
             }
-            if start != 0 {
-                // Only APP1 XMP in indexed auxiliary JPEGs identifies an Apple
-                // gain map. Never search scan bytes or the primary MPF table.
-                found |= jpeg_gain_headers(&mut file, start, end, false, &mut budget)?.0;
-            }
-        }
-        return Ok(found);
+            Ok(found)
+        })());
     }
     // The shared BMFF walker seeks past pixel payloads and bounds metadata,
     // nesting, box counts and item references before interpreting gain maps.
-    crate::bmff::gain_map(file)
+    crate::bmff::gain_map(file).map(Ok)
+}
+
+struct JpegGainHeaders {
+    found: bool,
+    images: Option<Result<Vec<(u64, u64)>, CodecError>>,
 }
 
 // Scan bounded JPEG metadata ranges, without entering entropy data. A single
@@ -146,7 +173,7 @@ fn jpeg_gain_headers(
     end: u64,
     primary: bool,
     budget: &mut u64,
-) -> Result<(bool, Vec<(u64, u64)>), CodecError> {
+) -> Result<JpegGainHeaders, CodecError> {
     // The primary caller has already consumed and checked SOI. Auxiliary
     // ranges need their own seek and signature check.
     if !primary {
@@ -181,7 +208,7 @@ fn jpeg_gain_headers(
         }
         let marker = marker[1];
         if marker == 0xda || marker == 0xd9 {
-            return Ok((found, images.unwrap_or_default()));
+            return Ok(JpegGainHeaders { found, images });
         }
         if marker == 1 || (0xd0..=0xd7).contains(&marker) {
             continue;
@@ -204,10 +231,13 @@ fn jpeg_gain_headers(
         file.read_exact(&mut payload)
             .map_err(|_| CodecError::Decode)?;
         if primary && marker == 0xe2 && payload.starts_with(b"MPF\0") {
-            if images.is_some() {
-                return Err(CodecError::Decode);
-            }
-            images = Some(crate::mpf::images(&payload[4..], pos + 6, end)?);
+            // A bad index must not bypass the remaining primary-header checks
+            // or prevent decoding the SDR codestream. Never follow bad extents.
+            images = Some(if images.is_some() {
+                Err(CodecError::Decode)
+            } else {
+                crate::mpf::images(&payload[4..], pos + 6, end)
+            });
         }
         if primary && matches!(marker, 0xe1 | 0xe2) {
             let signatures: &[&[u8]] = &[

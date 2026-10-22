@@ -42,6 +42,7 @@ pub(super) fn restrict(input: &Path, out: &Path) -> Result<(), Failure> {
                 | AccessFs::ReadDir
                 | AccessFs::WriteFile
                 | AccessFs::MakeReg
+                | AccessFs::RemoveFile
                 | AccessFs::Truncate,
         ))
         .map_err(|_| unavailable())?
@@ -66,6 +67,15 @@ pub(super) fn probe(input: &Path, out: &Path) -> Result<(), Failure> {
         .map_err(|_| failed())?;
     file.set_len(5).map_err(|_| failed())?;
     File::open(out.join("allowed")).map_err(|_| failed())?;
+    // Failed optional encodes must be able to remove their reserved output,
+    // while the same syscall remains forbidden outside this private directory.
+    let disposable = out.join("disposable");
+    File::create(&disposable).map_err(|_| failed())?;
+    std::fs::remove_file(&disposable).map_err(|_| failed())?;
+    if !matches!(std::fs::remove_file(out.join("../unrelated")), Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied)
+    {
+        return Err(failed());
+    }
     // Paths and symlinks are planted by the parent test. This is real access,
     // performed after the exact same confinement used by the decoding path.
     if !denied(OpenOptions::new().write(true).open(input))

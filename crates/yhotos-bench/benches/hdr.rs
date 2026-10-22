@@ -32,6 +32,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         .measurement_time(Duration::from_secs(5))
         .configure_from_args();
     let mut failure = None;
+    criterion.bench_function("hdr/identify_jpeg_gain_map", |b| {
+        b.iter(|| yhotos_codec::identify(black_box(&input), &Limits::default()));
+    });
     for (variant, edge, quality) in [
         ("medium", 1280, 90),
         ("large", 2048, 99),

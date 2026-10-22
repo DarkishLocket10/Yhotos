@@ -33,6 +33,7 @@ pub(super) fn apply() -> Result<(), ()> {
         libc::SYS_fcntl,
         libc::SYS_fsync,
         libc::SYS_ftruncate,
+        libc::SYS_unlinkat,
         // Startup installs a deny-by-default filesystem policy. These calls can
         // only further restrict rights; a compromised decoder cannot relax it.
         libc::SYS_landlock_create_ruleset,
@@ -85,6 +86,7 @@ pub(super) fn apply() -> Result<(), ()> {
         libc::SYS_lstat,
         libc::SYS_access,
         libc::SYS_readlink,
+        libc::SYS_unlink,
         libc::SYS_arch_prctl,
         libc::SYS_alarm,
     ] {

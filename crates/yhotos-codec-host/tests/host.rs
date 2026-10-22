@@ -395,6 +395,7 @@ fn ordinary_sources_have_no_hdr_outputs_or_photo_skip_reason() {
     assert_eq!(std::fs::read_dir(out.path()).unwrap().count(), 6);
 }
 #[test]
+#[allow(clippy::too_many_lines)] // Keep malformed inputs beside their shared SDR/report contract.
 fn malformed_gain_metadata_never_fails_an_sdr_ingest() {
     let iso = std::fs::read(hdr_fixture("iso.jpg")).unwrap();
     let adobe = std::fs::read(hdr_fixture("adobe.jpg")).unwrap();
@@ -412,6 +413,38 @@ fn malformed_gain_metadata_never_fails_an_sdr_ingest() {
         bytes[at + offset] = value;
         cases.push((name, bytes));
     }
+    // This fixture's big-endian MPF has its two-entry table at TIFF offset 50.
+    let tiff = iso.windows(4).position(|b| b == b"MPF\0").unwrap() + 4;
+    assert_eq!(&iso[tiff..tiff + 2], b"MM");
+    let entry = tiff + 50 + 16;
+    let auxiliary =
+        tiff + u32::from_be_bytes(iso[entry + 8..entry + 12].try_into().unwrap()) as usize;
+    for (name, field, value) in [
+        ("mpf_zero_offset", entry + 8, 0),
+        ("mpf_overlapping_offset", entry + 8, 1),
+        ("mpf_outside_offset", entry + 8, u32::MAX),
+        ("mpf_outside_size", entry + 4, u32::MAX),
+        ("mpf_table_offset", tiff + 8 + 2 + 24 + 8, u32::MAX),
+        ("mpf_image_count", tiff + 8 + 2 + 12 + 8, 65),
+    ] {
+        let mut bytes = iso.clone();
+        bytes[field..field + 4].copy_from_slice(&value.to_be_bytes());
+        cases.push((name, bytes));
+    }
+    for (name, offset, value) in [
+        ("auxiliary_soi", auxiliary, 0),
+        ("auxiliary_marker", auxiliary + 2, 0),
+        ("auxiliary_segment_length", auxiliary + 4, 255),
+        ("auxiliary_eoi", iso.len() - 1, 0),
+    ] {
+        let mut bytes = iso.clone();
+        bytes[offset] = value;
+        cases.push((name, bytes));
+    }
+    let mut bytes = iso.clone();
+    bytes[entry + 8..entry + 12].copy_from_slice(&0_u32.to_be_bytes());
+    *bytes.last_mut().unwrap() = 0;
+    cases.push(("mpf_zero_offset_and_auxiliary_eoi", bytes));
     for (name, pattern, last) in [
         ("adobe_version", b"hdrgm:Version=\"1.0\"".as_slice(), b'2'),
         ("adobe_gamma", b"hdrgm:Gamma=\"1\"".as_slice(), b'0'),
@@ -457,8 +490,25 @@ fn malformed_gain_metadata_never_fails_an_sdr_ingest() {
             String::from_utf8_lossy(&result.stderr)
         );
         let report: Value = serde_json::from_slice(&result.stdout).unwrap();
+        assert!(
+            report["identity"]["has_gain_map"].as_bool().unwrap(),
+            "{name}"
+        );
         assert!(!report["hdr_skipped_reason"].is_null(), "{name}: {report}");
         assert_eq!(report["outputs"].as_array().unwrap().len(), 6, "{name}");
+        assert!(
+            report["outputs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|o| Path::new(o["name"].as_str().unwrap()).extension() != Some("hdr".as_ref())),
+            "{name}: {report}"
+        );
+        assert_eq!(
+            report["skipped_outputs"].as_array().unwrap().len(),
+            7,
+            "{name}"
+        );
         assert_eq!(std::fs::read_dir(out.path()).unwrap().count(), 6, "{name}");
     }
 }

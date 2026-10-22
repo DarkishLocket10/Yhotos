@@ -196,7 +196,9 @@ pub fn identify(path: &Path, limits: &Limits) -> Result<Identity, CodecError> {
     let has_gain_map = if matches!(kind, Kind::Heif | Kind::Avif) {
         false // The native loader's bounded BMFF preflight also checks gain maps.
     } else {
-        headers::gain_map(path)?
+        // Invalid optional JPEG data still requests extraction so decode can
+        // report its fixed skip reason. Primary-header errors remain fatal.
+        headers::gain_map_probe(path)?.unwrap_or(true)
     };
     let image = native::Image::load(path, &kind)?;
     let compression = image.string("heif-compression");

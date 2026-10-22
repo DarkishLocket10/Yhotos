@@ -230,6 +230,9 @@ pub(crate) fn extract(path: &Path, id: &Identity, limits: &Limits) -> Result<Gai
     let bytes = read(path, limits)?;
     let (image, metadata) = match id.kind {
         Kind::Jpeg => {
+            // Repeat strict auxiliary preflight before native gain pixel decode.
+            // Identification permits these errors only to preserve SDR ingest.
+            crate::headers::gain_map(path)?;
             let gain = crate::hdr_jpeg::extract(&bytes)?;
             (
                 native::Image::gain_jpeg(gain.image, limits, id.orientation)?,
@@ -709,6 +712,95 @@ mod tests {
                     assert!(
                         (actual - expected).abs() <= 0.01 + 0.04 * expected,
                         "{name}/{edge}: {actual} vs {expected}"
+                    );
+                }
+            }
+        }
+    }
+    #[test]
+    fn differing_rgb_coefficients_survive_jpeg_encoding_and_reference_decode() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = std::fs::read(fixture("iso.jpg")).unwrap();
+        let mut metadata = crate::hdr_jpeg::extract(&original).unwrap().metadata;
+        metadata.min = [0.0, 0.125, 0.25];
+        metadata.max = [1.0, 2.0, 3.0];
+        metadata.gamma = [1.0, 1.25, 1.5];
+        metadata.base_offset = [0.01, 0.02, 0.03];
+        metadata.alternate_offset = [0.02, 0.03, 0.04];
+        metadata.alternate_headroom = 3.0;
+        // Build a valid input without the native encoder, so this test also
+        // catches builds whose XMP writer rejects differing RGB coefficients.
+        let input = crate::hdr_jpeg::dual(&original, &metadata).unwrap();
+        let expected_luma = reference_luma(&input);
+        let path = dir.path().join("input.jpg");
+        std::fs::write(&path, input).unwrap();
+        let id = crate::identify(&path, &Limits::default()).unwrap();
+        let working = crate::decode(&path, &id, &Limits::default()).unwrap();
+        assert!(working.has_gain_map(), "{:?}", working.hdr_skipped_reason());
+        let opts = crate::EncodeOpts {
+            keep_icc: true,
+            strip_metadata: true,
+        };
+        for edge in [48, 1280, 2048, 3200] {
+            let resized = crate::resize(
+                &working,
+                crate::ResizeSpec {
+                    long_edge: edge,
+                    square: false,
+                },
+            )
+            .unwrap();
+            let encoder = crate::Encode::Jpeg {
+                quality: 99,
+                progressive: true,
+                chroma_subsampling: false,
+                hdr: true,
+            };
+            let sdr = dir.path().join("sdr.jpg");
+            let (_, base) =
+                crate::encode_sdr_cached(&resized, encoder.sdr(), opts, &sdr, 16 << 20).unwrap();
+            let base = base.unwrap();
+            for reuse in [false, true] {
+                let hdr = dir.path().join("hdr.jpg");
+                if reuse {
+                    crate::encode_reusing_sdr(&resized, encoder, opts, &hdr, &base).unwrap();
+                } else {
+                    crate::encode(&resized, encoder, opts, &hdr).unwrap();
+                }
+                let bytes = std::fs::read(&hdr).unwrap();
+                assert!(bytes.windows(9).any(|b| b == b"<rdf:Seq>"));
+                // Extraction checks that both ISO and Adobe metadata agree.
+                crate::hdr_jpeg::extract(&bytes).unwrap();
+                let decoded = Decoder::probe(&bytes, &Limits::default())
+                    .unwrap()
+                    .metadata()
+                    .unwrap();
+                for (actual, expected) in [
+                    (decoded.min, metadata.min),
+                    (decoded.max, metadata.max),
+                    (decoded.gamma, metadata.gamma),
+                    (decoded.base_offset, metadata.base_offset),
+                    (decoded.alternate_offset, metadata.alternate_offset),
+                    (
+                        [decoded.base_headroom, decoded.alternate_headroom, 0.0],
+                        [metadata.base_headroom, metadata.alternate_headroom, 0.0],
+                    ),
+                ] {
+                    for (a, b) in actual.into_iter().zip(expected) {
+                        assert!((a - b).abs() < 0.0001, "{edge}/{reuse}: {a} vs {b}");
+                    }
+                }
+                let sdr_image = native::Image::load(&sdr, &Kind::Jpeg).unwrap();
+                let fallback = native::Image::load(&hdr, &Kind::Jpeg).unwrap();
+                assert_eq!(sdr_image.pixels().unwrap(), fallback.pixels().unwrap());
+                assert_eq!(
+                    sdr_image.blob("icc-profile-data"),
+                    fallback.blob("icc-profile-data")
+                );
+                for (actual, expected) in reference_luma(&bytes).iter().zip(&expected_luma) {
+                    assert!(
+                        (actual - expected).abs() <= 0.01 + 0.04 * expected,
+                        "{edge}/{reuse}: {actual} vs {expected}"
                     );
                 }
             }

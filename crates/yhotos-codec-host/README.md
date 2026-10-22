@@ -43,6 +43,9 @@ files visible, a read-only runtime filesystem, no network, dropped capabilities,
 and no-new-privileges. The host does not create that mount namespace itself.
 System libraries and codec plugins must be visible read-only. The worker must
 also verify the output hashes and sizes before moving them to storage.
+Landlock permits removing files only inside the private output directory, so
+skipped optional HDR encodes can clean up their reserved files. Input files and
+paths outside that directory remain protected from deletion.
 
 Linux validation:
 
