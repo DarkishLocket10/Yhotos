@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id,user_id as \"user_id: _\",admin,created_at,last_seen_at,expires_at,reauth_at,mfa_at,ip_hash,ua_class,token_hash FROM sessions WHERE user_id=$1 ORDER BY created_at DESC",
+  "query": "SELECT id,user_id as \"user_id!: _\",admin,created_at,last_seen_at,expires_at,reauth_at,mfa_at,ip_hash,ua_class,token_hash FROM sessions WHERE user_id=$1 ORDER BY created_at DESC",
   "describe": {
     "columns": [
       {
@@ -16,7 +16,7 @@
       },
       {
         "ordinal": 1,
-        "name": "user_id: _",
+        "name": "user_id!: _",
         "type_info": "Uuid",
         "origin": {
           "Table": {
@@ -132,7 +132,7 @@
     },
     "nullable": [
       false,
-      false,
+      true,
       false,
       false,
       false,
@@ -144,5 +144,5 @@
       false
     ]
   },
-  "hash": "55c1619e9be5a84dc37cbe8eecc853377c420a8a435633fc55f312d44cda7c55"
+  "hash": "873c770d9025f4c82259f042d7deb70eecc0cb3c3657e99d7ef1884305e08c74"
 }

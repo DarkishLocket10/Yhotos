@@ -229,7 +229,17 @@ pub async fn home(
     conn: &mut PgConnection,
     principal: &yhotos_core::access::Principal<'_>,
 ) -> Result<Vec<AlbumCard>, DbError> {
-    let bindings = crate::access_sql::visible_photos(principal);
+    home_for(conn, &crate::access_sql::visible_photos(principal)).await
+}
+
+/// Fetches a visibility-filtered page for the union of independently verified principals.
+///
+/// # Errors
+/// Returns invalid pagination, malformed metadata or a database failure.
+pub async fn home_for(
+    conn: &mut PgConnection,
+    bindings: &crate::access_sql::Bindings,
+) -> Result<Vec<AlbumCard>, DbError> {
     let row = crate::visible_page_query!(r#",
       summaries AS (
         SELECT a.id,a.title,a.description,a.path,a.sort_order,
@@ -258,42 +268,40 @@ pub async fn page(
     page: u32,
     sort: crate::photos::PageSort,
 ) -> Result<Option<AlbumPage>, DbError> {
+    page_for(
+        conn,
+        &crate::access_sql::visible_photos(principal),
+        path,
+        page,
+        sort,
+    )
+    .await
+}
+
+/// Fetches a visibility-filtered page for the union of independently verified principals.
+///
+/// # Errors
+/// Returns invalid pagination, malformed metadata or a database failure.
+pub async fn page_for(
+    conn: &mut PgConnection,
+    bindings: &crate::access_sql::Bindings,
+    path: &[Slug],
+    page: u32,
+    sort: crate::photos::PageSort,
+) -> Result<Option<AlbumPage>, DbError> {
     let offset = page.checked_sub(1).ok_or(DbError::InvalidInput)?;
     let offset = i64::from(offset) * 60;
     let path = path.iter().map(Slug::as_str).collect::<Vec<_>>().join("/");
-    let bindings = crate::access_sql::visible_photos(principal);
-    let row = crate::visible_page_query!(r#",
-      selected AS (SELECT * FROM visible_albums WHERE path=$6),
-      summaries AS (
-        SELECT a.id,a.title,a.description,a.path,a.sort_order,
-          (SELECT count(*) FROM visible_photos p WHERE p.album_id=a.id) AS count,
-          (SELECT to_jsonb(p) || jsonb_build_object('thumbhash',encode(p.placeholder,'base64'),
-            'derivatives',coalesce((SELECT jsonb_agg(jsonb_build_object(
-              'variant',d.variant,'format',d.format,'hdr',d.hdr,'hash',d.hash,'w',d.width,'h',d.height)
-              ORDER BY d.width,d.format,d.hdr) FROM derivatives d WHERE d.photo_id=p.id),'[]'::jsonb))
-           FROM visible_photos p WHERE p.album_id=a.id OR p.id=a.cover_photo_id
-           ORDER BY (p.id=a.cover_photo_id) DESC NULLS LAST,p.sort_order,p.id LIMIT 1) AS cover
-        FROM visible_albums a WHERE a.id=(SELECT id FROM selected) OR a.parent_id=(SELECT id FROM selected)
-      ), ordered AS (
-        SELECT p.*,row_number() OVER (ORDER BY
-          CASE WHEN $8='taken' THEN coalesce(taken_at,posted_at) END DESC,
-          CASE WHEN $8='posted' THEN posted_at END DESC,
-          CASE WHEN $8='name' THEN title END COLLATE "C" ASC,
-          CASE WHEN $8='manual' THEN sort_order END ASC, id ASC) AS position
-        FROM visible_photos p WHERE p.album_id=(SELECT id FROM selected)
-      ), slice AS (
-        SELECT * FROM ordered ORDER BY position LIMIT 60 OFFSET $7
-      ) SELECT jsonb_build_object(
-        'album',(SELECT to_jsonb(s) FROM summaries s WHERE s.id=a.id), 'chain',a.chain,
-        'children',coalesce((SELECT jsonb_agg(to_jsonb(s) ORDER BY s.sort_order,s.id) FROM summaries s WHERE s.id<>a.id),'[]'::jsonb),
-        'total',(SELECT count(*) FROM ordered),
-        'photos',coalesce((SELECT jsonb_agg(to_jsonb(p) || jsonb_build_object('thumbhash',encode(p.placeholder,'base64'),
-          'derivatives',coalesce((SELECT jsonb_agg(jsonb_build_object(
-            'variant',d.variant,'format',d.format,'hdr',d.hdr,'hash',d.hash,'w',d.width,'h',d.height)
-            ORDER BY d.width,d.format,d.hdr) FROM derivatives d WHERE d.photo_id=p.id),'[]'::jsonb)) ORDER BY p.position)
-          FROM slice p),'[]'::jsonb)) AS "payload!" FROM selected a
-      WHERE $7=0 OR EXISTS (SELECT 1 FROM slice)
-    "#, bindings, path, offset, sort.as_str()).fetch_optional(conn).await?;
+    let row = crate::gallery_page_query!(
+        r#"SELECT payload AS "payload!" FROM album_payload"#,
+        bindings,
+        offset,
+        sort.as_str(),
+        Some(path),
+        None::<String>
+    )
+    .fetch_optional(conn)
+    .await?;
     row.map(|r| serde_json::from_value(r.payload).map_err(|_| DbError::InvalidInput))
         .transpose()
 }

@@ -7,7 +7,8 @@ use uuid::Uuid;
 use yhotos_core::{AlbumId, PhotoId, ShareLinkId, UserId};
 
 /// Closed values accepted by the database enum.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, sqlx::Type)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, sqlx::Type, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 #[sqlx(type_name = "target_kind", rename_all = "lowercase")]
 pub enum TargetKind {
     /// Album value.
@@ -37,6 +38,8 @@ pub struct ShareLinkRow {
     pub target_id: Uuid,
     /// Stored passphrase hash.
     pub passphrase_hash: Option<String>,
+    /// Monotonic version invalidating every grant on a passphrase change.
+    pub passphrase_version: i64,
     /// Stored expires at.
     pub expires_at: Option<OffsetDateTime>,
     /// Stored allow view.
@@ -69,7 +72,7 @@ impl From<ShareLinkRow> for yhotos_core::access::ShareTarget {
     }
 }
 /// Link capabilities, each checked by the caller per action.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, serde::Deserialize)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "four capabilities can be granted independently"
@@ -113,7 +116,7 @@ pub async fn create(conn: &mut PgConnection, link: &NewShareLink) -> Result<Shar
         .passphrase_hash
         .as_ref()
         .map(secrecy::ExposeSecret::expose_secret);
-    Ok(sqlx::query_as!(ShareLinkRow,r#"INSERT INTO share_links(id,token_hash,target_kind,target_id,passphrase_hash,expires_at,allow_view,allow_download,allow_like,allow_flag,created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id as "id: _", created_at, updated_at, token_hash, target_kind as "target_kind: _", target_id, passphrase_hash, expires_at, allow_view, allow_download, allow_like, allow_flag, revoked_at, created_by as "created_by: _""#, ShareLinkId::new() as _, &link.token_hash[..], kind as _, target_id, passphrase_hash, link.expires_at, link.flags.view, link.flags.download, link.flags.like, link.flags.flag, link.created_by as _).fetch_one(conn).await?)
+    Ok(sqlx::query_as!(ShareLinkRow,r#"INSERT INTO share_links(id,token_hash,target_kind,target_id,passphrase_hash,expires_at,allow_view,allow_download,allow_like,allow_flag,created_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id as "id: _", created_at, updated_at, token_hash, target_kind as "target_kind: _", target_id, passphrase_hash, passphrase_version, expires_at, allow_view, allow_download, allow_like, allow_flag, revoked_at, created_by as "created_by: _""#, ShareLinkId::new() as _, &link.token_hash[..], kind as _, target_id, passphrase_hash, link.expires_at, link.flags.view, link.flags.download, link.flags.like, link.flags.flag, link.created_by as _).fetch_one(conn).await?)
 }
 
 /// Returns only non-revoked links; caller must check expiry, passphrase and capabilities.
@@ -124,7 +127,7 @@ pub async fn get_by_token_hash(
     conn: &mut PgConnection,
     hash: &[u8; 32],
 ) -> Result<Option<ShareLinkRow>, DbError> {
-    Ok(sqlx::query_as!(ShareLinkRow,r#"SELECT id as "id: _", created_at, updated_at, token_hash, target_kind as "target_kind: _", target_id, passphrase_hash, expires_at, allow_view, allow_download, allow_like, allow_flag, revoked_at, created_by as "created_by: _" FROM share_links WHERE token_hash=$1 AND revoked_at IS NULL"#, &hash[..]).fetch_optional(conn).await?)
+    Ok(sqlx::query_as!(ShareLinkRow,r#"SELECT id as "id: _", created_at, updated_at, token_hash, target_kind as "target_kind: _", target_id, passphrase_hash, passphrase_version, expires_at, allow_view, allow_download, allow_like, allow_flag, revoked_at, created_by as "created_by: _" FROM share_links WHERE token_hash=$1 AND revoked_at IS NULL"#, &hash[..]).fetch_optional(conn).await?)
 }
 
 /// Replaces the four independent capabilities without changing the link target.
@@ -207,4 +210,367 @@ pub struct ShareLinkStats {
 /// Returns invalid input or a database constraint/connection failure.
 pub async fn stats(conn: &mut PgConnection, id: ShareLinkId) -> Result<ShareLinkStats, DbError> {
     Ok(sqlx::query_as!(ShareLinkStats,r#"SELECT count(*) AS "opens!", count(DISTINCT visitor_hash) AS "unique_visitors!", min(opened_at) AS first_open, max(opened_at) AS last_open, coalesce((SELECT jsonb_object_agg(country,opens) FROM (SELECT country,count(*) AS opens FROM share_link_opens WHERE share_link_id=$1 AND country IS NOT NULL GROUP BY country) c),'{}'::jsonb) AS "countries!" FROM share_link_opens WHERE share_link_id=$1"#, id as _).fetch_one(conn).await?)
+}
+
+/// A link and the same visibility-filtered page used by ordinary gallery routes.
+pub struct Landing {
+    /// Current link metadata, containing no bearer.
+    pub link: ShareLinkRow,
+    /// Album or single-photo display data, validated by the shared page renderer.
+    pub page: LandingPage,
+    /// Serialized payload size used to bound the digest-only cache.
+    pub bytes: usize,
+}
+
+/// A page obtained with the link principal, before template rendering.
+pub enum LandingPage {
+    /// Sixty direct photos and visible child albums under the target.
+    Album(crate::albums::AlbumPage),
+    /// Only the target photo; its containing album is not listable through this scope.
+    Photo(crate::photos::PhotoPage),
+}
+
+/// Fetches link metadata and its page in one checked statement, filtering before LIMIT.
+///
+/// # Errors
+/// Rejects page zero and returns database or malformed stored metadata errors.
+pub async fn landing(
+    c: &mut PgConnection,
+    hash: &[u8; 32],
+    page: u32,
+    sort: crate::photos::PageSort,
+) -> Result<Option<Landing>, DbError> {
+    let offset = i64::from(page.checked_sub(1).ok_or(DbError::InvalidInput)?) * 60;
+    let row = crate::gallery_page_query!(r#"WITH RECURSIVE shared_link AS (
+        SELECT * FROM share_links WHERE token_hash=$10 AND revoked_at IS NULL
+          AND allow_view AND (expires_at IS NULL OR expires_at>clock_timestamp())
+      ), identity AS (
+        SELECT $1::uuid AS user_id, $2::uuid[] AS groups, $3::bool AS admin,
+          $4::uuid[] || CASE WHEN target_kind='album' THEN ARRAY[target_id] ELSE ARRAY[]::uuid[] END AS shared_albums,
+          $5::uuid[] || CASE WHEN target_kind='photo' THEN ARRAY[target_id] ELSE ARRAY[]::uuid[] END AS shared_photos
+        FROM shared_link
+      )"#; r#"SELECT s.id,s.created_at,s.updated_at,s.token_hash,
+        s.target_kind::text AS "target_kind!",s.target_id,s.passphrase_hash,s.passphrase_version,s.expires_at,
+        s.allow_view,s.allow_download,s.allow_like,s.allow_flag,s.revoked_at,s.created_by,
+        CASE WHEN s.target_kind='album' THEN (SELECT payload FROM album_payload)
+          ELSE (SELECT payload FROM photo_payload) END AS payload
+        FROM shared_link s"#;
+        [None::<uuid::Uuid>, &[] as &[uuid::Uuid], false,
+         &[] as &[uuid::Uuid], &[] as &[uuid::Uuid], offset, sort.as_str(),
+         None::<String>, None::<String>, &hash[..]]
+    ).fetch_optional(c).await?;
+    let Some(row) = row else { return Ok(None) };
+    let link = ShareLinkRow {
+        id: ShareLinkId(row.id),
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+        token_hash: row.token_hash,
+        target_kind: match row.target_kind.as_str() {
+            "album" => TargetKind::Album,
+            "photo" => TargetKind::Photo,
+            _ => return Err(DbError::InvalidInput),
+        },
+        target_id: row.target_id,
+        passphrase_hash: row.passphrase_hash,
+        passphrase_version: row.passphrase_version,
+        expires_at: row.expires_at,
+        allow_view: row.allow_view,
+        allow_download: row.allow_download,
+        allow_like: row.allow_like,
+        allow_flag: row.allow_flag,
+        revoked_at: row.revoked_at,
+        created_by: UserId(row.created_by),
+    };
+    let Some(payload) = row.payload else {
+        return Ok(None);
+    };
+    let bytes = payload.to_string().len();
+    let page = match link.target_kind {
+        TargetKind::Album => {
+            LandingPage::Album(serde_json::from_value(payload).map_err(|_| DbError::InvalidInput)?)
+        }
+        TargetKind::Photo => {
+            LandingPage::Photo(serde_json::from_value(payload).map_err(|_| DbError::InvalidInput)?)
+        }
+    };
+    Ok(Some(Landing { link, page, bytes }))
+}
+
+/// Loads one photo with full access metadata, never authorizing by id alone.
+///
+/// # Errors
+/// Returns a database statement or connection failure.
+pub async fn photo_context(
+    c: &mut PgConnection,
+    id: PhotoId,
+) -> Result<serde_json::Value, DbError> {
+    Ok(sqlx::query_scalar!(
+        r#"SELECT share_target_photos('photo',$1) as "photos!""#,
+        id as _
+    )
+    .fetch_one(c)
+    .await?)
+}
+
+/// Validated scope metadata, independent of any gallery page or sort order.
+#[derive(Clone, serde::Deserialize)]
+pub struct SessionLink {
+    /// Exact link whose capabilities apply to this scope.
+    pub link_id: ShareLinkId,
+    /// Album or single-photo scope.
+    pub target_kind: TargetKind,
+    /// Target identifier, never an authorization by itself.
+    pub target_id: Uuid,
+    /// UTC Unix expiry microseconds, preserving PostgreSQL timestamp precision.
+    pub expires_at: Option<i64>,
+    /// Passphrase version that authorized this membership.
+    pub passphrase_version: i64,
+    /// UTC Unix microseconds of the last coalesced membership refresh.
+    pub unlocked_at: i64,
+    /// Capabilities remain attached to their own link.
+    pub flags: LinkFlags,
+}
+fn timestamp_micros(t: OffsetDateTime) -> i64 {
+    t.unix_timestamp() * 1_000_000 + i64::from(t.microsecond())
+}
+impl From<&ShareLinkRow> for SessionLink {
+    fn from(link: &ShareLinkRow) -> Self {
+        Self {
+            link_id: link.id,
+            target_kind: link.target_kind,
+            target_id: link.target_id,
+            expires_at: link.expires_at.map(timestamp_micros),
+            passphrase_version: link.passphrase_version,
+            unlocked_at: timestamp_micros(OffsetDateTime::now_utc()),
+            flags: LinkFlags {
+                view: link.allow_view,
+                download: link.allow_download,
+                like: link.allow_like,
+                flag: link.allow_flag,
+            },
+        }
+    }
+}
+/// A hashed public share session and at most fifty independently unlocked links.
+#[derive(Clone)]
+pub struct LinkSession {
+    /// Session row id, never supplied by the cookie.
+    pub id: Uuid,
+    /// Stored digest, compared in constant time by the caller.
+    pub token_hash: Vec<u8>,
+    /// Scope and capabilities, with no gallery payload.
+    pub links: Vec<SessionLink>,
+    /// Hard session expiry, rechecked even on cached loads.
+    pub expires_at: OffsetDateTime,
+    /// Absolute start, checked even on cached loads.
+    pub created_at: OffsetDateTime,
+    /// Coalesced activity, checked even on cached loads.
+    pub last_seen_at: OffsetDateTime,
+}
+
+/// Resolves a public share session and its live scopes in one lightweight statement.
+/// Prunes expired/revoked grants and coalesces activity writes to five minutes.
+/// Account and admin bearers never match; no gallery/photo query is executed.
+///
+/// # Errors
+/// Returns a database statement, connection or malformed stored metadata failure.
+pub async fn load_session(
+    c: &mut PgConnection,
+    hash: &[u8; 32],
+) -> Result<Option<LinkSession>, DbError> {
+    let row = sqlx::query!(r#"WITH current_session AS (
+ SELECT * FROM sessions WHERE token_hash=$1 AND is_share AND user_id IS NULL AND NOT admin
+ AND expires_at>clock_timestamp() AND created_at<=last_seen_at AND created_at<=clock_timestamp()
+ AND last_seen_at>clock_timestamp()-interval '14 days' AND created_at>clock_timestamp()-interval '90 days'
+), touched AS (
+ UPDATE sessions SET last_seen_at=clock_timestamp() WHERE id IN (SELECT id FROM current_session)
+ AND last_seen_at<=clock_timestamp()-interval '5 minutes' RETURNING last_seen_at
+), pruned AS (
+ DELETE FROM share_session_links sl USING share_links l,current_session s
+ WHERE sl.session_id=s.id AND sl.share_link_id=l.id
+ AND (l.revoked_at IS NOT NULL OR NOT l.allow_view OR l.expires_at<=clock_timestamp() OR sl.passphrase_version<>l.passphrase_version)
+)
+ SELECT s.id,s.token_hash,s.expires_at,s.created_at,
+ coalesce((SELECT last_seen_at FROM touched),s.last_seen_at) as "last_seen_at!",
+ coalesce((SELECT jsonb_agg(jsonb_build_object(
+ 'link_id',l.id,'target_kind',l.target_kind,'target_id',l.target_id,
+ 'expires_at',(extract(epoch FROM l.expires_at)*1000000)::bigint,
+ 'passphrase_version',sl.passphrase_version,'unlocked_at',(extract(epoch FROM sl.unlocked_at)*1000000)::bigint,
+ 'flags',jsonb_build_object('view',l.allow_view,'download',l.allow_download,'like',l.allow_like,'flag',l.allow_flag)
+ ) ORDER BY sl.unlocked_at DESC,sl.share_link_id DESC)
+ FROM share_session_links sl JOIN share_links l ON l.id=sl.share_link_id
+ WHERE sl.session_id=s.id AND sl.passphrase_version=l.passphrase_version AND l.revoked_at IS NULL AND l.allow_view
+ AND (l.expires_at IS NULL OR l.expires_at>clock_timestamp())),'[]'::jsonb) as "links!"
+ FROM current_session s"#, &hash[..]).fetch_optional(c).await?;
+    row.map(|row| {
+        let links: Vec<SessionLink> =
+            serde_json::from_value(row.links).map_err(|_| DbError::InvalidInput)?;
+        if links.len() > 50 {
+            return Err(DbError::InvalidInput);
+        }
+        Ok(LinkSession {
+            id: row.id,
+            token_hash: row.token_hash,
+            links,
+            expires_at: row.expires_at,
+            created_at: row.created_at,
+            last_seen_at: row.last_seen_at,
+        })
+    })
+    .transpose()
+}
+
+/// Re-reads a live link under a lock held through verification and grant insertion.
+/// Public callers can lock links without acquiring permission to edit them.
+///
+/// # Errors
+/// Returns a database statement or connection failure.
+pub async fn lock_for_unlock(
+    c: &mut PgConnection,
+    id: ShareLinkId,
+) -> Result<Option<ShareLinkRow>, DbError> {
+    Ok(sqlx::query_as!(ShareLinkRow, r#"SELECT id as "id!: _",created_at as "created_at!",updated_at as "updated_at!",token_hash as "token_hash!",target_kind as "target_kind!: _",target_id as "target_id!",passphrase_hash,passphrase_version as "passphrase_version!",expires_at,allow_view as "allow_view!",allow_download as "allow_download!",allow_like as "allow_like!",allow_flag as "allow_flag!",revoked_at,created_by as "created_by!: _" FROM share_unlock_link($1)"#,id as _).fetch_optional(c).await?)
+}
+
+/// Records an open and refreshes only an existing, current-version grant, at
+/// most once per minute, in one statement. Never inserts a missing membership.
+///
+/// # Errors
+/// Returns a database statement or connection failure.
+pub async fn record_open_with_recency(
+    c: &mut PgConnection,
+    session: Uuid,
+    link: ShareLinkId,
+    version: i64,
+    visitor: &[u8; 32],
+) -> Result<(), DbError> {
+    sqlx::query!(
+        r#"WITH refreshed AS (
+ UPDATE share_session_links sl SET unlocked_at=clock_timestamp()
+ FROM share_links l WHERE sl.session_id=$1 AND sl.share_link_id=$2
+ AND l.id=sl.share_link_id AND sl.passphrase_version=$3 AND l.passphrase_version=$3
+ AND l.revoked_at IS NULL AND l.allow_view
+ AND (l.expires_at IS NULL OR l.expires_at>clock_timestamp())
+ AND sl.unlocked_at<=clock_timestamp()-interval '1 minute'
+ ) INSERT INTO share_link_opens(id,share_link_id,visitor_hash,country,city)
+ VALUES($4,$2,$5,NULL,NULL)"#,
+        session,
+        link as _,
+        version,
+        Uuid::now_v7(),
+        &visitor[..]
+    )
+    .execute(c)
+    .await?;
+    Ok(())
+}
+
+/// Adds a grant at the verified passphrase version. Protected links require the
+/// caller to verify the current hash under `lock_for_unlock` in this transaction.
+/// The transaction locks the link against passphrase changes, then serializes LRU
+/// eviction on the session row. The database enforces the fifty-member bound.
+///
+/// # Errors
+/// Returns a database statement or connection failure.
+pub async fn unlock_session_link(
+    c: &mut PgConnection,
+    session: Uuid,
+    link: &ShareLinkRow,
+) -> Result<bool, DbError> {
+    Ok(sqlx::query!(
+        r#"INSERT INTO share_session_links(session_id,share_link_id,passphrase_version)
+ SELECT $1,id,passphrase_version FROM share_session_link($2,$3)
+ ON CONFLICT (session_id,share_link_id) DO UPDATE SET unlocked_at=EXCLUDED.unlocked_at,passphrase_version=EXCLUDED.passphrase_version"#,
+        session,
+        link.id as _,
+        link.passphrase_version
+    )
+    .execute(c)
+    .await?
+    .rows_affected()
+        == 1)
+}
+
+/// Creates a public share bearer with its first grant at the verified passphrase version.
+/// Session lifetime is independent of each member link's individual expiry.
+///
+/// # Errors
+/// Returns a database statement or connection failure.
+pub async fn create_session(
+    c: &mut PgConnection,
+    link: &ShareLinkRow,
+    hash: &[u8; 32],
+    ip_hash: &[u8],
+    ua: &str,
+) -> Result<Option<LinkSession>, DbError> {
+    let row = sqlx::query!(
+        r#"INSERT INTO sessions(id,user_id,is_share,token_hash,expires_at,ip_hash,ua_class)
+ SELECT $1,NULL,true,$3,clock_timestamp()+interval '90 days',$4,$5 FROM share_session_link($2,$6)
+ RETURNING id,token_hash,expires_at,created_at,last_seen_at"#,
+        Uuid::now_v7(),
+        link.id as _,
+        &hash[..],
+        ip_hash,
+        ua,
+        link.passphrase_version
+    )
+    .fetch_optional(&mut *c)
+    .await?;
+    let Some(row) = row else { return Ok(None) };
+    if !unlock_session_link(c, row.id, link).await? {
+        return Ok(None);
+    }
+    Ok(Some(LinkSession {
+        id: row.id,
+        token_hash: row.token_hash,
+        links: vec![SessionLink::from(link)],
+        expires_at: row.expires_at,
+        created_at: row.created_at,
+        last_seen_at: row.last_seen_at,
+    }))
+}
+
+/// Validates that a new target exists and is not in trash.
+///
+/// # Errors
+/// Returns a database statement or connection failure.
+pub async fn target_exists(
+    c: &mut PgConnection,
+    target: yhotos_core::access::ShareTarget,
+) -> Result<bool, DbError> {
+    let (kind, id) = match target {
+        yhotos_core::access::ShareTarget::Album(id) => (TargetKind::Album, id.0),
+        yhotos_core::access::ShareTarget::Photo(id) => (TargetKind::Photo, id.0),
+    };
+    Ok(sqlx::query_scalar!(r#"SELECT CASE WHEN $1::target_kind='album' THEN EXISTS(SELECT FROM albums WHERE id=$2 AND deleted_at IS NULL) ELSE EXISTS(SELECT FROM photos WHERE id=$2 AND deleted_at IS NULL) END as "exists!""#,kind as _,id).fetch_one(c).await?)
+}
+
+/// Locks one admin-editable link. Caller holds the transaction until changes commit.
+///
+/// # Errors
+/// Returns a database statement or connection failure.
+pub async fn get_for_update(
+    c: &mut PgConnection,
+    id: ShareLinkId,
+) -> Result<Option<ShareLinkRow>, DbError> {
+    Ok(sqlx::query_as!(ShareLinkRow,r#"SELECT id as "id: _",created_at,updated_at,token_hash,target_kind as "target_kind: _",target_id,passphrase_hash,passphrase_version,expires_at,allow_view,allow_download,allow_like,allow_flag,revoked_at,created_by as "created_by: _" FROM share_links WHERE id=$1 FOR UPDATE"#,id as _).fetch_optional(c).await?)
+}
+
+/// Changes the passphrase hash; a trigger removes this link from every unlocked set.
+///
+/// # Errors
+/// Returns a database statement or connection failure.
+pub async fn set_passphrase(
+    c: &mut PgConnection,
+    id: ShareLinkId,
+    hash: Option<&str>,
+) -> Result<(), DbError> {
+    sqlx::query!(
+        "UPDATE share_links SET passphrase_hash=$2 WHERE id=$1",
+        id as _,
+        hash
+    )
+    .execute(c)
+    .await?;
+    Ok(())
 }

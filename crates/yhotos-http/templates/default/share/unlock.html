@@ -1,0 +1,7 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Unlock shared photos</title></head>
+<body><main><h1>Unlock shared photos</h1>
+{% if failed %}<p role="alert">Unable to unlock. Check the passphrase or try again later.</p>{% endif %}
+<form method="post"><input type="hidden" name="_csrf" value="{{ csrf }}">
+<label>Passphrase <input type="password" name="passphrase" autocomplete="current-password"></label>
+<button type="submit">Unlock</button></form></main></body></html>

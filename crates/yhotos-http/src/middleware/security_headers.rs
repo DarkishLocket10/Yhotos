@@ -70,6 +70,7 @@ pub(crate) async fn secure(mut request: Request, next: Next) -> Response {
     let path = request.uri().path();
     let auth_page =
         path.starts_with("/login") || path.starts_with("/u/") || path.starts_with("/admin/");
+    let share_page = path.starts_with("/s/");
     let nonce = Nonce::generate();
     let policy = nonce.as_ref().ok().and_then(|value| value.policy().ok());
     let mut response = match nonce {
@@ -130,6 +131,16 @@ pub(crate) async fn secure(mut request: Request, next: Next) -> Response {
         response
             .headers_mut()
             .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
+    if share_page {
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("private, no-store"),
+        );
+        response.headers_mut().insert(
+            header::REFERRER_POLICY,
+            HeaderValue::from_static("no-referrer"),
+        );
     }
     response
 }

@@ -134,13 +134,19 @@ async fn grant_matrix_catalog_and_forbidden_statements(pool: PgPool) {
                     "pending_login",
                     "pending_webauthn",
                     "auth_lockout",
+                    "share_session_links",
                 ]
                 .contains(&row.table.as_str());
                 (allowed, allowed, allowed, allowed)
             }
             "yhotos_public"
-                if ["pending_login", "pending_webauthn", "auth_lockout"]
-                    .contains(&row.table.as_str()) =>
+                if [
+                    "pending_login",
+                    "pending_webauthn",
+                    "auth_lockout",
+                    "share_session_links",
+                ]
+                .contains(&row.table.as_str()) =>
             {
                 (true, true, true, true)
             }

@@ -2,11 +2,14 @@
 pub mod grid;
 mod view;
 pub use view::{PageContext, render_album, render_home, render_photo};
+pub(crate) use view::{PhotoControls, render_scoped_photo};
 
 use crate::{
     AppState,
     error::HttpError,
+    middleware::csrf::CsrfToken,
     middleware::{security_headers::Nonce, session::SessionIdentity},
+    share::Links,
     static_assets,
 };
 use askama::Template;
@@ -29,7 +32,7 @@ pub(crate) struct Options {
     sort: Option<String>,
 }
 impl Options {
-    fn number(&self) -> Result<u32, HttpError> {
+    pub(crate) fn number(&self) -> Result<u32, HttpError> {
         self.page
             .as_deref()
             .unwrap_or("1")
@@ -38,7 +41,7 @@ impl Options {
             .filter(|n| *n > 0)
             .ok_or(HttpError::NotFound)
     }
-    fn sort(&self) -> PageSort {
+    pub(crate) fn sort(&self) -> PageSort {
         PageSort::parse(self.sort.as_deref().unwrap_or("taken"))
     }
 }
@@ -71,10 +74,17 @@ pub(crate) async fn privacy(
     }
     response
 }
+fn bindings(identity: &SessionIdentity, links: &Links) -> yhotos_db::access_sql::Bindings {
+    yhotos_db::access_sql::visible_photos(&identity.principal())
+        .with_links(links.0.iter().filter(|l| l.caps.view).map(|l| l.target))
+}
 fn db_error(error: yhotos_db::DbError) -> HttpError {
     HttpError::Internal(error.into())
 }
-fn context<'a>(nonce: &'a str, state: &'a AppState) -> Result<PageContext<'a>, HttpError> {
+pub(crate) fn context<'a>(
+    nonce: &'a str,
+    state: &'a AppState,
+) -> Result<PageContext<'a>, HttpError> {
     Ok(PageContext {
         nonce,
         stylesheet: static_assets::stylesheet_url()?,
@@ -114,6 +124,7 @@ pub(crate) async fn home(
     State(state): State<AppState>,
     Extension(nonce): Extension<Nonce>,
     Extension(identity): Extension<SessionIdentity>,
+    Extension(links): Extension<Links>,
     headers: HeaderMap,
 ) -> Result<Response, HttpError> {
     let mut conn = state
@@ -121,7 +132,7 @@ pub(crate) async fn home(
         .acquire()
         .await
         .map_err(|e| HttpError::Internal(e.into()))?;
-    let rows = albums::home(&mut conn, &identity.principal())
+    let rows = albums::home_for(&mut conn, &bindings(&identity, &links))
         .await
         .map_err(db_error)?;
     let nonce = nonce.to_string();
@@ -137,6 +148,7 @@ pub(crate) async fn album(
     State(state): State<AppState>,
     Extension(nonce): Extension<Nonce>,
     Extension(identity): Extension<SessionIdentity>,
+    Extension(links): Extension<Links>,
     Path(path): Path<String>,
     Query(options): Query<Options>,
     headers: HeaderMap,
@@ -148,9 +160,9 @@ pub(crate) async fn album(
         .acquire()
         .await
         .map_err(|e| HttpError::Internal(e.into()))?;
-    let row = albums::page(
+    let row = albums::page_for(
         &mut conn,
-        &identity.principal(),
+        &bindings(&identity, &links),
         &path,
         number,
         options.sort(),
@@ -171,6 +183,7 @@ pub(crate) async fn photo(
     State(state): State<AppState>,
     Extension(nonce): Extension<Nonce>,
     Extension(identity): Extension<SessionIdentity>,
+    Extension(links): Extension<Links>,
     Path(id): Path<String>,
     Query(options): Query<Options>,
     headers: HeaderMap,
@@ -181,18 +194,55 @@ pub(crate) async fn photo(
         .acquire()
         .await
         .map_err(|e| HttpError::Internal(e.into()))?;
-    let row = photos::page(&mut conn, &identity.principal(), &id, options.sort())
+    let mut row = photos::page_for(&mut conn, &bindings(&identity, &links), &id, options.sort())
         .await
         .map_err(db_error)?
         .ok_or(HttpError::NotFound)?;
     let nonce = nonce.to_string();
-    let html = render_photo(&row, options.sort(), &context(&nonce, &state)?)?;
-    cached(
+    let csrf = CsrfToken::for_page(&headers)?;
+    let context = context(&nonce, &state)?;
+    let html = if links.0.is_empty() {
+        render_photo(&row, options.sort(), &context)?
+    } else {
+        let covering: Vec<_> = links
+            .0
+            .iter()
+            .filter(|link| match link.target {
+                yhotos_core::access::ShareTarget::Photo(id) => id == row.photo.id,
+                yhotos_core::access::ShareTarget::Album(id) => {
+                    row.photo.shared_albums.contains(&id)
+                }
+            })
+            .collect();
+        if !row.photo.account_view
+            && covering
+                .iter()
+                .all(|l| matches!(l.target, yhotos_core::access::ShareTarget::Photo(_)))
+        {
+            row.chain.clear();
+        }
+        render_scoped_photo(
+            &row,
+            options.sort(),
+            &context,
+            PhotoControls {
+                csrf: csrf.form_value(),
+                download: row.photo.account_view || covering.iter().any(|l| l.caps.download),
+                like: row.photo.account_view || covering.iter().any(|l| l.caps.like),
+                flag: row.photo.account_view || covering.iter().any(|l| l.caps.flag),
+            },
+        )?
+    };
+    let mut response = cached(
         html,
         &headers,
         &identity,
         &format!("album:{},photo:{}", row.photo.album_id, row.photo.id),
-    )
+    )?;
+    if !links.0.is_empty() {
+        crate::auth::set_cookie(&mut response, csrf.cookie(false)?);
+    }
+    Ok(response)
 }
 fn positive_id(value: &str) -> bool {
     !value.is_empty()

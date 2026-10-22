@@ -27,6 +27,7 @@ use yhotos_db::{Db, sessions};
 
 /// Shared cryptographic configuration and bounded, thirty-second session cache.
 pub struct Auth {
+    pub(crate) shares: crate::share::cache::Shares,
     public_db: Arc<Db>,
     admin_db: Option<Arc<Db>>,
     cache: Cache<Vec<u8>, Arc<Mutex<SessionEntry>>>,
@@ -108,6 +109,7 @@ impl Auth {
         }
         let listener = sessions::Invalidations::connect(&public_db).await?;
         let auth = Arc::new(Self {
+            shares: crate::share::cache::Shares::new(),
             public_db,
             admin_db,
             cache: Cache::builder()
@@ -144,7 +146,11 @@ impl Auth {
     pub(crate) fn invalidate_user(&self, id: yhotos_core::UserId) {
         self.evict(Some(&sessions::Invalidation::User(id)));
     }
+    pub(crate) fn caching(&self) -> bool {
+        self.cache_ready.load(std::sync::atomic::Ordering::SeqCst)
+    }
     fn evict(&self, target: Option<&sessions::Invalidation>) {
+        self.shares.invalidate();
         for (_, entry) in &self.cache {
             let mut entry = entry
                 .lock()
@@ -154,6 +160,7 @@ impl Auth {
             let matches = entry.loaded.as_ref().is_none_or(|s| match target {
                 Some(sessions::Invalidation::Session(id)) => s.session.id == *id,
                 Some(sessions::Invalidation::User(id)) => s.session.user_id == *id,
+                Some(sessions::Invalidation::Link(_)) => false,
                 None => true,
             });
             if matches {

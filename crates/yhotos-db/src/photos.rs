@@ -589,7 +589,7 @@ pub(crate) async fn file_owners(
 }
 
 /// Fixed public sort choices; unknown external values fall back to date taken.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum PageSort {
     /// Most recent capture first, with posted date for missing capture dates.
     #[default]
@@ -644,6 +644,12 @@ pub struct PageDerivative {
 /// Only page-relevant metadata; no grants, secrets or internal paths are rendered.
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct PagePhoto {
+    /// Whether the account independently authorizes this photo, without a link.
+    #[serde(default)]
+    pub account_view: bool,
+    /// Independently covering album links, excluding restricted descendant levels.
+    #[serde(default)]
+    pub shared_albums: Vec<AlbumId>,
     /// Photo cache tag identity.
     pub id: PhotoId,
     /// Canonical public lookup key.
@@ -718,26 +724,36 @@ pub async fn page(
     short_id: &ShortId,
     sort: PageSort,
 ) -> Result<Option<PhotoPage>, DbError> {
-    let bindings = crate::access_sql::visible_photos(principal);
+    page_for(
+        conn,
+        &crate::access_sql::visible_photos(principal),
+        short_id,
+        sort,
+    )
+    .await
+}
+
+/// Fetches a visibility-filtered page for the union of independently verified principals.
+///
+/// # Errors
+/// Returns invalid pagination, malformed metadata or a database failure.
+pub async fn page_for(
+    conn: &mut PgConnection,
+    bindings: &crate::access_sql::Bindings,
+    short_id: &ShortId,
+    sort: PageSort,
+) -> Result<Option<PhotoPage>, DbError> {
     let key = short_id.to_string();
-    let row = crate::visible_page_query!(r#",
-      ordered AS (
-        SELECT p.*, lag(short_id) OVER ordering AS previous, lead(short_id) OVER ordering AS next
-        FROM visible_photos p
-        WHERE p.album_id=(SELECT album_id FROM visible_photos WHERE short_id=$6)
-        WINDOW ordering AS (ORDER BY
-          CASE WHEN $7='taken' THEN coalesce(taken_at,posted_at) END DESC,
-          CASE WHEN $7='posted' THEN posted_at END DESC,
-          CASE WHEN $7='name' THEN title END COLLATE "C" ASC,
-          CASE WHEN $7='manual' THEN sort_order END ASC, id ASC)
-      ) SELECT jsonb_build_object(
-        'photo', to_jsonb(p) || jsonb_build_object('thumbhash',encode(p.placeholder,'base64'),
-          'derivatives',coalesce((SELECT jsonb_agg(jsonb_build_object(
-            'variant',d.variant,'format',d.format,'hdr',d.hdr,'hash',d.hash,'w',d.width,'h',d.height)
-            ORDER BY d.width,d.format,d.hdr) FROM derivatives d WHERE d.photo_id=p.id),'[]'::jsonb)),
-        'chain', a.chain, 'previous',p.previous,'next',p.next) AS "payload!"
-      FROM ordered p JOIN album_levels a ON a.id=p.album_id WHERE p.short_id=$6
-    "#, bindings, key, sort.as_str()).fetch_optional(conn).await?;
+    let row = crate::gallery_page_query!(
+        r#"SELECT payload AS "payload!" FROM photo_payload"#,
+        bindings,
+        0_i64,
+        sort.as_str(),
+        None::<String>,
+        Some(key)
+    )
+    .fetch_optional(conn)
+    .await?;
     row.map(|r| serde_json::from_value(r.payload).map_err(|_| DbError::InvalidInput))
         .transpose()
 }

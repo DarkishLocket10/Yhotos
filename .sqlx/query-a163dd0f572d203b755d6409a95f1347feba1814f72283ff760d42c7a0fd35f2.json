@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH refreshed AS (\n UPDATE share_session_links sl SET unlocked_at=clock_timestamp()\n FROM share_links l WHERE sl.session_id=$1 AND sl.share_link_id=$2\n AND l.id=sl.share_link_id AND sl.passphrase_version=$3 AND l.passphrase_version=$3\n AND l.revoked_at IS NULL AND l.allow_view\n AND (l.expires_at IS NULL OR l.expires_at>clock_timestamp())\n AND sl.unlocked_at<=clock_timestamp()-interval '1 minute'\n ) INSERT INTO share_link_opens(id,share_link_id,visitor_hash,country,city)\n VALUES($4,$2,$5,NULL,NULL)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Int8",
+        "Uuid",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a163dd0f572d203b755d6409a95f1347feba1814f72283ff760d42c7a0fd35f2"
+}

@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT sl.passphrase_version,l.passphrase_version AS current_version FROM share_session_links sl JOIN share_links l ON l.id=sl.share_link_id WHERE l.id=$1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "passphrase_version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "share_session_links",
+            "name": "passphrase_version"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "current_version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "passphrase_version"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "12147fa7e5d4c21ef860b2650d37c44e2dbec300d2b10d551d26d2e73ab39b1c"
+}
