@@ -46,6 +46,11 @@ struct Credentials {
 pub(crate) fn failed() -> Response {
     (StatusCode::UNAUTHORIZED, "Sign in failed").into_response()
 }
+/// Whole seconds a client must wait, rounded up so the header never undercounts and an
+/// exact lockout of N seconds reports N, not N + 1.
+fn retry_after(remaining: std::time::Duration) -> u64 {
+    (remaining.as_secs() + u64::from(remaining.subsec_nanos() > 0)).max(1)
+}
 fn locked(seconds: u64) -> Response {
     (
         StatusCode::TOO_MANY_REQUESTS,
@@ -139,9 +144,9 @@ pub(crate) async fn check_password(
                 &json!({"username":username,"ip_hash":network,"outcome":"locked"}),
             )
             .await?;
-            return Ok(PasswordCheck::Refused(locked(
-                until.0.saturating_sub(now()).as_secs() + 1,
-            )));
+            return Ok(PasswordCheck::Refused(locked(retry_after(
+                until.0.saturating_sub(now()),
+            ))));
         }
         locks.push(lock);
     }
@@ -171,7 +176,7 @@ pub(crate) async fn check_password(
         for (key, mut lock) in keys.iter().zip(locks) {
             lock.record_failure(now(), lockout_policy());
             if let Err(until) = lock.check(now()) {
-                retry = Some(until.0.saturating_sub(now()).as_secs() + 1);
+                retry = Some(retry_after(until.0.saturating_sub(now())));
             }
             sessions::lockout_set(c, key, &serde_json::to_value(lock)?).await?;
         }
@@ -556,7 +561,7 @@ async fn finish(
             .await?;
             lock.check(now())
                 .err()
-                .map(|until| until.0.saturating_sub(now()).as_secs() + 1)
+                .map(|until| retry_after(until.0.saturating_sub(now())))
         } else {
             None
         };
@@ -594,7 +599,7 @@ pub(crate) async fn passkey_start(
         .await?
         .ok_or(HttpError::BadRequest)?;
     if let Err(until) = mfa_lockout(&user)?.check(now()) {
-        return Ok(locked(until.0.saturating_sub(now()).as_secs() + 1));
+        return Ok(locked(retry_after(until.0.saturating_sub(now()))));
     }
     let rp = a.rp_id(&state)?;
     let methods = mfa::list(&mut tx, p.user_id).await?;
@@ -651,7 +656,21 @@ async fn check_mfa_lockout(
             &json!({"username":user.username,"ip_hash":network,"outcome":"mfa_locked"}),
         )
         .await?;
-        return Ok(Some(locked(until.0.saturating_sub(now()).as_secs() + 1)));
+        return Ok(Some(locked(retry_after(until.0.saturating_sub(now())))));
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod retry_after_tests {
+    use super::retry_after;
+    use std::time::Duration;
+
+    #[test]
+    fn rounds_up_and_never_undercounts() {
+        assert_eq!(retry_after(Duration::from_secs(30)), 30);
+        assert_eq!(retry_after(Duration::from_millis(29_001)), 30);
+        assert_eq!(retry_after(Duration::from_millis(30_001)), 31);
+        assert_eq!(retry_after(Duration::ZERO), 1);
+    }
 }
