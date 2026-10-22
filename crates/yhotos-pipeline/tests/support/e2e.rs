@@ -9,6 +9,8 @@ use yhotos_db::{albums, photos};
 use yhotos_pipeline::{Ingest, JobError, TestPause, VariantPlan};
 use yhotos_storage::{ContentHash, DerivativeKey, Store};
 
+mod fidelity;
+
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../fixtures/images")
@@ -171,6 +173,19 @@ async fn real_host_chart_and_orientations_publish_and_rerun_without_changes(pool
         assert_eq!(first.derivative_plan, second.derivative_plan);
         assert_eq!(before, count_files(root.path()));
         assert_ready(&pool, &ingest, id).await;
+    }
+}
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn packed_png_depths_complete_the_production_ingest(pool: PgPool) {
+    for bits in [1, 2, 4] {
+        let name = format!("{bits}bit.png");
+        let identity =
+            yhotos_codec::identify(&fixture(&name), &yhotos_codec::Limits::default()).unwrap();
+        assert_eq!(identity.bits, bits);
+        let (root, ingest, id) = setup(&pool, &name).await;
+        ingest.ingest(id).await.unwrap();
+        assert_ready(&pool, &ingest, id).await;
+        empty_tmp(root.path()).await;
     }
 }
 #[sqlx::test(migrations = "../yhotos-db/migrations")]

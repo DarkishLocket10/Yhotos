@@ -30,3 +30,4 @@ yhotos-core = { path = "../yhotos-core" }
 tempfile.workspace = true
 base64.workspace = true
 nix.workspace = true
+blake3.workspace = true

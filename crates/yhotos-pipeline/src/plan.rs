@@ -23,6 +23,24 @@ impl Format {
         }
     }
     pub(crate) fn encode(self) -> serde_json::Value {
+        // All existing defaults pass the production-plan fidelity gates, so
+        // retain AVIF Q60/speed6, JXL distance1/effort7 and progressive JPEG
+        // Q90/4:4:4. Full-resolution local 8x8 SSIM vs an independent linear
+        // thumbnail of fixtures/images/photo.jpg (libvips 8.18.7):
+        // variant  | AVIF bytes/SSIM   | JXL bytes/SSIM    | JPEG bytes/SSIM
+        // thumb    |   7603/0.980006   |  14741/0.990502   |  22472/0.979364
+        // thumb2x  |  17616/0.981469   |  38290/0.990469   |  63871/0.977494
+        // small    |  15027/0.982941   |  31830/0.990923   |  52478/0.980660
+        // small2x  |  37968/0.983699   |  88095/0.992482   | 158388/0.980878
+        // medium   |  37968/0.983699   |  88095/0.992482   | 158388/0.980878
+        // medium2x |  54073/0.986437   | 107632/0.994964   | 157509/0.984792
+        // large    |  54073/0.986437   | 107632/0.994964   | 157509/0.984792
+        // xlarge   |  54073/0.986437   | 107632/0.994964   |       -
+        // The 1600x1236 photograph is never upscaled; thumb variants crop first.
+        // P3 chart through the same plan: worst mean/max deltaE2000 by format
+        // AVIF 0.2086/0.5862, JXL 0.1683/0.4760, JPEG 0.4301/1.8245.
+        // AVIF/JXL keep ICC for every variant. The pipeline test remeasures all
+        // outputs and enforces the unchanged gates in docs/performance.md.
         match self {
             Self::Avif => serde_json::json!({"Avif":{"quality":60,"speed":6,"hdr":false}}),
             Self::Jxl => serde_json::json!({"Jxl":{"distance":1.0,"effort":7,"hdr":false}}),

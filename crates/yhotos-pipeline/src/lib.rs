@@ -171,8 +171,7 @@ impl Ingest {
                 .and_then(|n| n.checked_mul(u64::from(id.pages)))
                 .is_none_or(|n| n > self.limits.max_pixels)
             || !(1..=8).contains(&id.orientation)
-            || !matches!(id.bits, 8 | 10 | 12 | 16 | 32)
-            || matches!(id.kind, protocol::Kind::Unknown)
+            || !id.kind.accepts_bits(id.bits)
             || r.dominant_colors.is_empty()
             || r.dominant_colors.len() > 16
         {

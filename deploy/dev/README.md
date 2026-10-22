@@ -65,8 +65,10 @@ are checked before consuming jobs. The worker uses `Role::Worker` and verified
 database TLS, with an explicit loopback-only development opt-in
 `YHOTOS_WORKER__LOCAL_PLAINTEXT_DATABASE=true`. SIGTERM/SIGINT starts one absolute
 29-second deadline for cancelling database waits, draining handlers, releasing
-remaining claims in a fenced batch and closing the connection pool. The last
-second is reserved for release and pool closure; pool closure cannot extend the
+remaining claims in a fenced batch, closing the connection pool and shutting
+down the explicitly owned Tokio runtime. Runtime shutdown uses only the
+remaining deadline so a blocking storage publication lock cannot delay exit.
+The last second is reserved for release and pool closure; pool closure cannot extend the
 deadline even when a cancelled query is still blocked in Postgres. Database
 unavailability returns a deadline error and stale-lock recovery remains the
 backstop. Unimplemented ML, geo and video handlers defer for one hour without

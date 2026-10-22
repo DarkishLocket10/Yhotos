@@ -19,6 +19,9 @@ files lets Linux tests exercise high-bit-depth decode and JXL round trips with
 decoder-only libheif installations, without CLI encoder/version dependencies.
 
 `float.tif` is the chart converted to linear floating scRGB for decode benchmarks.
+`1bit.png`, `2bit.png` and `4bit.png` are 32x32 packed grayscale patterns
+written through the generator's libvips bindings. Pipeline tests identify their
+original sample depths and ingest each through the complete default plan.
 `gain-map.avif` is a 32x32 base plus a 16x16 gain image encoded locally with
 libavif 1.4.1. It contains a valid `tmap` derived image and `dimg` item references,
 with no gain-map text signatures. The inline C generator in

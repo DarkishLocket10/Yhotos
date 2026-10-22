@@ -49,6 +49,20 @@ pub(crate) enum Kind {
     Raw(String),
     Unknown,
 }
+impl Kind {
+    // These are container sample depths, not the decoded working-image depth.
+    // TIFF/JXL's 32-bit depths include floating-point samples.
+    pub(crate) fn accepts_bits(&self, bits: u8) -> bool {
+        match self {
+            Self::Png => matches!(bits, 1 | 2 | 4 | 8 | 16),
+            Self::Jpeg => matches!(bits, 8 | 12),
+            Self::Heif | Self::Avif => matches!(bits, 8 | 10 | 12),
+            Self::Tiff | Self::Jxl | Self::Raw(_) => (1..=32).contains(&bits),
+            Self::Webp => bits == 8,
+            Self::Unknown => false,
+        }
+    }
+}
 #[derive(Deserialize)]
 pub(crate) struct Identity {
     pub kind: Kind,
@@ -72,4 +86,28 @@ pub(crate) struct Metadata {
     pub gps: Option<(f64, f64)>,
     pub taken_at: Option<String>,
     pub offset_time_original: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Kind;
+
+    #[test]
+    fn report_depths_are_validated_for_each_container() {
+        for bits in 0..=u8::MAX {
+            for (kind, valid) in [
+                (Kind::Png, [1, 2, 4, 8, 16].contains(&bits)),
+                (Kind::Jpeg, [8, 12].contains(&bits)),
+                (Kind::Heif, [8, 10, 12].contains(&bits)),
+                (Kind::Avif, [8, 10, 12].contains(&bits)),
+                (Kind::Tiff, bits > 0 && bits <= 32),
+                (Kind::Jxl, bits > 0 && bits <= 32),
+                (Kind::Raw("fixture".into()), bits > 0 && bits <= 32),
+                (Kind::Webp, bits == 8),
+                (Kind::Unknown, false),
+            ] {
+                assert_eq!(kind.accepts_bits(bits), valid, "depth {bits}");
+            }
+        }
+    }
 }

@@ -4,9 +4,24 @@ use anyhow::{Context, Result};
 use std::time::Duration;
 use yhotos_jobs::{JobKind, Queue, QueueConfig};
 
-#[tokio::main]
-async fn main() -> std::process::ExitCode {
-    match run().await {
+fn main() -> std::process::ExitCode {
+    let Ok(runtime) = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    else {
+        eprintln!("worker runtime startup failed");
+        return std::process::ExitCode::FAILURE;
+    };
+    let mut deadline = None;
+    let result = runtime.block_on(run(&mut deadline));
+    // Aborting an async storage call cannot stop its spawn_blocking closure.
+    // Runtime drop waits forever for those closures (for example flock during
+    // publication). Include runtime shutdown in the signal's original budget.
+    let remaining = deadline.map_or(Duration::ZERO, |end: std::time::Instant| {
+        end.saturating_duration_since(std::time::Instant::now())
+    });
+    runtime.shutdown_timeout(remaining);
+    match result {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
@@ -14,7 +29,7 @@ async fn main() -> std::process::ExitCode {
         }
     }
 }
-async fn run() -> Result<()> {
+async fn run(process_deadline: &mut Option<std::time::Instant>) -> Result<()> {
     let config = yhotos_config::Config::from_env()?;
     install_metrics(config.worker.metrics_listen)?;
     tracing_subscriber::fmt()
@@ -102,6 +117,7 @@ async fn run() -> Result<()> {
             (result, deadline)
         },
     };
+    *process_deadline = Some(deadline.into_std());
     let _ = tokio::time::timeout_at(deadline, db.pool().close()).await;
     result?;
     Ok(())

@@ -47,6 +47,14 @@ with tempfile.TemporaryDirectory() as tmp:
         for j,(op,arg) in enumerate(ops):
             out=t/f'o-{orient}-{j}.v';v(op,src,out,arg);src=out
         annotated(src,str(dest/f'orientation-{orient}.jpg')+'[Q=100]',ints={'orientation':orient})
+    # Exercise packed PNG sample depths through our existing libvips bindings.
+    # Exact gray levels avoid palette quantization or dithering differences.
+    for bits in [1,2,4]:
+        levels=(1<<bits)-1
+        source=t/f'{bits}bit.pgm'
+        source.write_bytes(b'P5\n32 32\n255\n'+bytes(
+            ((x//2+y//2)%(levels+1))*255//levels for y in range(32) for x in range(32)))
+        annotated(source,str(dest/f'{bits}bit.png')+f'[bitdepth={bits}]')
     (t/'alpha.svg').write_text(svg.replace('fill="rgb(115, 82, 68)"','fill-opacity="0.25" fill="rgb(115, 82, 68)"'))
     v('copy',t/'alpha.svg',dest/'alpha.png')
     v('linear',dest/'chart-srgb.png',t/'16.v','257','0')
