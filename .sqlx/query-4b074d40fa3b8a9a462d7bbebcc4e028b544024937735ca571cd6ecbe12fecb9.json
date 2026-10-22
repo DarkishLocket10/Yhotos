@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE photos SET original_hash=$2, original_name=$3, original_bytes=$4, mime=$5, kind=$6 WHERE id=$1",
+  "query": "UPDATE photos SET original_hash=$2, original_name=$3, original_bytes=$4, mime=$5, kind=$6,status='pending',failure_reason=NULL,derivative_plan=NULL WHERE id=$1",
   "describe": {
     "columns": [],
     "parameters": {
@@ -26,5 +26,5 @@
     },
     "nullable": []
   },
-  "hash": "2d5a8e88e73b450dfbcc518a446fab2733d31c9175961c2d839fd79d80590e76"
+  "hash": "4b074d40fa3b8a9a462d7bbebcc4e028b544024937735ca571cd6ecbe12fecb9"
 }

@@ -242,7 +242,9 @@ impl Ingest {
             .map_err(|_| retry("ingest transaction failed"))?;
         let changed=sqlx::query!("UPDATE photos SET width=$3,height=$4,orientation=$5,is_hdr=$6,has_gain_map=$6,icc_name=$7,camera_make=$8,camera_model=$9,lens=$10,focal_mm=$11,aperture=$12,shutter=$13,iso=$14,gps_lat=$15,gps_lon=$16,taken_at=coalesce($17,taken_at),dominant_colors=$18,placeholder=$19,kind=CASE WHEN $20 THEN 'raw'::media_kind ELSE kind END,status='ready',failure_reason=NULL,derivative_plan=$21,taken_at_local=coalesce($22,taken_at_local) WHERE id=$1 AND original_hash=$2 AND deleted_at IS NULL", photo.0,original,width,height,i32::from(id.orientation),id.has_gain_map,id.icc_desc,m.make,m.model,m.lens,m.focal_mm,m.aperture,shutter,iso,lat,lon,taken,&colors,placeholder,raw,marker,taken_local).execute(&mut *tx).await.map_err(|_|retry("photo publication failed"))?.rows_affected();
         if changed != 1 {
-            return Err(retry("original changed during ingest"));
+            // Replacement superseded this original. Its independently queued
+            // ingest owns the current photo; the obsolete job is complete.
+            return Ok(());
         }
         // Remove only obsolete plan entries; upsert preserves identities of retained entries.
         sqlx::query!("DELETE FROM derivatives WHERE photo_id=$1 AND (hdr OR (variant,format) NOT IN (SELECT * FROM UNNEST($2::text[],$3::text[])))",photo.0,&variants,&formats).execute(&mut *tx).await.map_err(|_|retry("derivative cleanup failed"))?;

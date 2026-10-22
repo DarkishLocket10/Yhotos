@@ -97,7 +97,13 @@ async fn production_plan_meets_photograph_and_p3_fidelity_gates(pool: PgPool) {
                 row.variant, row.format, row.width, row.height, row.bytes
             );
             if !(score.is_finite()
-                && score >= threshold(edge)
+                && score
+                    >= threshold(edge)
+                        + if cfg!(target_os = "macos") {
+                            0.002
+                        } else {
+                            0.0
+                        }
                 && mean.is_finite()
                 && mean < 1.0
                 && max.is_finite()

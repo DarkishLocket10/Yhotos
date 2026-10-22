@@ -74,6 +74,14 @@ unavailability returns a deadline error and stale-lock recovery remains the
 backstop. Unimplemented ML, geo and video handlers defer for one hour without
 exhausting their attempt allowance.
 
+Ingest envelopes carry `{ photo_id, original_hash }`, with a canonical BLAKE3
+digest. Deduplication includes both fields. `photos::replace_original` resets
+publication and atomically enqueues the new hash through the same dedupe
+primitive as `Queue`; a running job for the old hash cannot suppress it.
+Publication, failure and stale-lock recovery check the job's original hash
+before changing the photo. A delayed old envelope completes without processing
+the replacement.
+
 `YHOTOS_WORKER__DEFAULT_TIMEZONE` is the IANA timezone used when EXIF
 `DateTimeOriginal` has no `OffsetTimeOriginal` (default `UTC`). The database
 keeps the original wall clock in `taken_at_local` and the interpreted instant in
@@ -101,6 +109,9 @@ export as histogram buckets, sum and count.
 host against the dev database. The host-package harness gives Cargo access to
 `CARGO_BIN_EXE_yhotos-codec-host`; the test bodies live in the pipeline crate.
 CI runs these tests inside `Dockerfile.codec` with its pgvector service.
+Successful codec CI logs include the per-variant fidelity scores and bytes.
+The macOS fidelity test requires SSIM at least 0.002 above the documented gates;
+Linux retains the documented gates to account for its different AV1 build.
 `test-hooks` enables an explicit bounded child-delay environment variable and
 an in-process parent verification barrier; production builds omit both hooks.
 

@@ -15,6 +15,7 @@ use yhotos_jobs::{
 fn ingest() -> Job {
     Job::Ingest {
         photo_id: PhotoId::new(),
+        original_hash: "a".repeat(64).parse().unwrap(),
     }
 }
 fn queue(pool: PgPool) -> Queue {

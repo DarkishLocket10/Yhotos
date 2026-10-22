@@ -4785,6 +4785,7 @@ dependencies = [
 name = "yhotos-codec-host"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "base64 0.23.1",
  "blake3",
  "jiff",
@@ -4797,10 +4798,12 @@ dependencies = [
  "tempfile",
  "time",
  "tokio",
+ "tokio-util",
  "uuid",
  "yhotos-codec",
  "yhotos-core",
  "yhotos-db",
+ "yhotos-jobs",
  "yhotos-pipeline",
  "yhotos-storage",
 ]
@@ -4903,6 +4906,7 @@ dependencies = [
  "uuid",
  "yhotos-core",
  "yhotos-db",
+ "yhotos-storage",
 ]
 
 [[package]]

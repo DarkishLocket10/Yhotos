@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE jobs SET locked_at=now()-interval '12 minutes',attempts=CASE WHEN $2 THEN max_attempts ELSE attempts END WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "17b5eb77dbf21c86179f1f958201eca8cb26aa9d05071287be3ad66ef6e6185d"
+}

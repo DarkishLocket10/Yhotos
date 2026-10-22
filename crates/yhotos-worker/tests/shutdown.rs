@@ -93,7 +93,14 @@ async fn sigterm_during_ingest(pool: PgPool, block: Block) {
     };
     std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o700)).unwrap();
     let job = Queue::new(pool.clone())
-        .enqueue(Job::Ingest { photo_id: photo.id }, 0, None)
+        .enqueue(
+            Job::Ingest {
+                photo_id: photo.id,
+                original_hash: original.hash,
+            },
+            0,
+            None,
+        )
         .await
         .unwrap();
     let mut child = spawn_worker(&pool, root.path(), &host);

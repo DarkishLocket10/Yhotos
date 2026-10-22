@@ -22,6 +22,9 @@ landlock.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+async-trait.workspace = true
+tokio-util = { workspace = true, features = ["rt"] }
+yhotos-jobs = { path = "../yhotos-jobs" }
 jiff.workspace = true
 time = { workspace = true, features = ["macros"] }
 

@@ -73,7 +73,14 @@ async fn outer_timeout_cleans_photo_for_retry_and_final_failure_and_preserves_re
         .await
         .unwrap();
         let id = queue
-            .enqueue(Job::Ingest { photo_id }, 0, None)
+            .enqueue(
+                Job::Ingest {
+                    photo_id,
+                    original_hash: "a".repeat(64).parse().unwrap(),
+                },
+                0,
+                None,
+            )
             .await
             .unwrap();
         sqlx::query!(
@@ -133,7 +140,14 @@ async fn final_stale_ingest_fails_photo_but_keeps_successful_publication(pool: P
         .await
         .unwrap();
         let id = queue
-            .enqueue(Job::Ingest { photo_id }, 0, None)
+            .enqueue(
+                Job::Ingest {
+                    photo_id,
+                    original_hash: "a".repeat(64).parse().unwrap(),
+                },
+                0,
+                None,
+            )
             .await
             .unwrap();
         sqlx::query!("UPDATE jobs SET attempts=max_attempts,locked_by='dead worker',locked_at=now()-interval '12 minutes' WHERE id=$1",id.0).execute(&pool).await.unwrap();
@@ -168,7 +182,14 @@ async fn failure_is_sanitized_and_old_claim_cannot_change_photo(pool: PgPool) {
     let photo_id = photo(&pool).await;
     let queue = Queue::new(pool.clone());
     queue
-        .enqueue(Job::Ingest { photo_id }, 0, None)
+        .enqueue(
+            Job::Ingest {
+                photo_id,
+                original_hash: "a".repeat(64).parse().unwrap(),
+            },
+            0,
+            None,
+        )
         .await
         .unwrap();
     let (_, token) = jobs::claim(&mut pool.acquire().await.unwrap(), "one", &["ingest"])
@@ -205,6 +226,105 @@ async fn failure_is_sanitized_and_old_claim_cannot_change_photo(pool: PgPool) {
 }
 
 #[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn replacement_survives_old_retry_fatal_timeout_and_stale_recovery(pool: PgPool) {
+    let photo_id = photo(&pool).await;
+    let queue = Queue::new(pool.clone());
+    for outcome in ["retry", "fatal", "timeout", "stale", "final stale"] {
+        sqlx::query!("DELETE FROM jobs")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query!("UPDATE photos SET original_hash=$2,status='processing',failure_reason=NULL WHERE id=$1",photo_id.0,"a".repeat(64)).execute(&pool).await.unwrap();
+        let old_job = Job::Ingest {
+            photo_id,
+            original_hash: "a".repeat(64).parse().unwrap(),
+        };
+        let old = queue.enqueue(old_job.clone(), 0, None).await.unwrap();
+        let (row, token) = jobs::claim(
+            &mut pool.acquire().await.unwrap(),
+            "old original",
+            &["ingest"],
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(queue.enqueue(old_job, 0, None).await.unwrap(), old);
+        sqlx::query!(
+            "UPDATE photos SET original_hash=$2,status='processing' WHERE id=$1",
+            photo_id.0,
+            "b".repeat(64)
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let before = sqlx::query!("SELECT updated_at FROM photos WHERE id=$1", photo_id.0)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let new = queue
+            .enqueue(
+                Job::Ingest {
+                    photo_id,
+                    original_hash: "b".repeat(64).parse().unwrap(),
+                },
+                0,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_ne!(old, new);
+        match outcome {
+            "retry" => queue
+                .finish(
+                    &token,
+                    Err(JobError::Retry {
+                        after: Duration::ZERO,
+                        reason: "old retry".into(),
+                    }),
+                )
+                .await
+                .unwrap(),
+            "fatal" => queue
+                .finish(&token, Err(JobError::Fatal("old failure".into())))
+                .await
+                .unwrap(),
+            "timeout" => queue
+                .run_claim(
+                    &row,
+                    &token,
+                    &Hang,
+                    &JobCtx {
+                        queue: queue.clone(),
+                        shutdown: CancellationToken::new(),
+                    },
+                    Duration::from_millis(10),
+                )
+                .await
+                .unwrap(),
+            _ => {
+                sqlx::query!("UPDATE jobs SET locked_at=now()-interval '12 minutes',attempts=CASE WHEN $2 THEN max_attempts ELSE attempts END WHERE id=$1",old.0,outcome=="final stale").execute(&pool).await.unwrap();
+                queue.sweep_stale(&[JobKind::Ingest]).await.unwrap();
+            }
+        }
+        status(&pool, photo_id, "processing", None).await;
+        let after = sqlx::query!("SELECT updated_at FROM photos WHERE id=$1", photo_id.0)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(before.updated_at, after.updated_at);
+        let new_row = sqlx::query!(
+            "SELECT attempts,locked_by,finished_at FROM jobs WHERE id=$1",
+            new.0
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(new_row.attempts, 0);
+        assert!(new_row.locked_by.is_none() && new_row.finished_at.is_none());
+    }
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
 async fn shutdown_interrupts_blocked_claim_without_leaking_a_claim(pool: PgPool) {
     let queue = Queue::with_config(
         pool.clone(),
@@ -219,6 +339,7 @@ async fn shutdown_interrupts_blocked_claim_without_leaking_a_claim(pool: PgPool)
         .enqueue(
             Job::Ingest {
                 photo_id: PhotoId::new(),
+                original_hash: "a".repeat(64).parse().unwrap(),
             },
             0,
             None,
@@ -335,6 +456,7 @@ async fn shutdown_release_obeys_same_deadline_when_database_is_blocked(pool: PgP
         .enqueue(
             Job::Ingest {
                 photo_id: PhotoId::new(),
+                original_hash: "a".repeat(64).parse().unwrap(),
             },
             0,
             None,

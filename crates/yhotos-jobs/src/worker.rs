@@ -271,6 +271,7 @@ impl Queue {
                             failure_reason=CASE WHEN changed.finished_at IS NULL THEN NULL ELSE $4 END
                         FROM changed WHERE changed.kind='ingest'
                             AND photos.id=CASE WHEN pg_input_is_valid(changed.payload->>'photo_id','uuid') THEN (changed.payload->>'photo_id')::uuid END
+                            AND photos.original_hash=changed.payload->>'original_hash'
                             AND photos.status<>'ready' AND photos.deleted_at IS NULL
                     "#, token.job_id.0,token.worker_id,token.attempt,reason,after.as_secs_f64(),fatal).execute(&mut *conn).await?;
                 }
@@ -316,6 +317,7 @@ impl Queue {
                     failure_reason=CASE WHEN changed.finished_at IS NULL THEN NULL ELSE 'worker lock expired' END
                 FROM changed WHERE changed.kind='ingest'
                     AND photos.id=CASE WHEN pg_input_is_valid(changed.payload->>'photo_id','uuid') THEN (changed.payload->>'photo_id')::uuid END
+                    AND photos.original_hash=changed.payload->>'original_hash'
                     AND photos.status<>'ready' AND photos.deleted_at IS NULL
             "#,name,cutoff).execute(&self.pool).await?;
         }

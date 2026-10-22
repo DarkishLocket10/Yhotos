@@ -83,22 +83,35 @@ impl Ingest {
     /// # Errors
     /// Returns safe retry/fatal outcomes and records failed photo status on fatal errors.
     pub async fn ingest_attempt(&self, photo_id: PhotoId, attempt: i32) -> Result<(), JobError> {
-        self.ingest_with_priority(photo_id, attempt, 0).await
+        self.ingest_with_priority(photo_id, None, attempt, 0).await
     }
     async fn ingest_with_priority(
         &self,
         photo_id: PhotoId,
+        expected_hash: Option<&ContentHash>,
         attempt: i32,
         priority: i16,
     ) -> Result<(), JobError> {
         let followup_priority = i32::from(priority) - 1;
         let photo = sqlx::query!("SELECT original_hash,original_bytes,kind::text AS \"kind!\",status::text AS \"status!\",derivative_plan FROM photos WHERE id=$1 AND deleted_at IS NULL",photo_id.0).fetch_optional(&self.db).await.map_err(|_|retry("photo lookup failed"))?.ok_or_else(||JobError::Fatal("photo unavailable".into()))?;
+        let hash: ContentHash = photo
+            .original_hash
+            .parse()
+            .map_err(|_| JobError::Fatal("invalid original hash".into()))?;
+        // A delayed or retried job must never start work on its replacement.
+        if expected_hash.is_some_and(|expected| *expected != hash) {
+            return Ok(());
+        }
         if photo.kind == "video" {
             let mut tx = self
                 .db
                 .begin()
                 .await
                 .map_err(|_| retry("video enqueue failed"))?;
+            // Serialize video routing against replacement too.
+            if sqlx::query!("SELECT id FROM photos WHERE id=$1 AND original_hash=$2 AND deleted_at IS NULL FOR UPDATE",photo_id.0,photo.original_hash).fetch_optional(&mut *tx).await.map_err(|_|retry("photo lookup failed"))?.is_none() {
+                return Ok(());
+            }
             Queue::enqueue_in(
                 &mut tx,
                 &Job::VideoTranscode { photo_id },
@@ -112,10 +125,6 @@ impl Ingest {
                 .map_err(|_| retry("video enqueue failed"))?;
             return Ok(());
         }
-        let hash: ContentHash = photo
-            .original_hash
-            .parse()
-            .map_err(|_| JobError::Fatal("invalid original hash".into()))?;
         let (plan_hash, outputs) = self.plan.expand()?;
         let marker = blake3::hash(format!("{hash}:{plan_hash}").as_bytes())
             .to_hex()
@@ -128,7 +137,9 @@ impl Ingest {
         }
         let result = async {
             if self.concurrency_per_host==0 || self.codec_timeout.is_zero() || self.codec_timeout>Duration::from_secs(600) || self.limits.max_pixels==0 || self.limits.max_dim==0 || self.limits.max_bytes==0 || u64::try_from(photo.original_bytes).map_or(true,|n|n>self.limits.max_bytes) { return Err(JobError::Fatal("invalid ingest limits".into())); }
-            sqlx::query!("UPDATE photos SET status='processing',failure_reason=NULL WHERE id=$1 AND original_hash=$2",photo_id.0,photo.original_hash).execute(&self.db).await.map_err(|_|retry("photo update failed"))?;
+            if sqlx::query!("UPDATE photos SET status='processing',failure_reason=NULL WHERE id=$1 AND original_hash=$2 AND deleted_at IS NULL",photo_id.0,photo.original_hash).execute(&self.db).await.map_err(|_|retry("photo update failed"))?.rows_affected() == 0 {
+                return Ok(());
+            }
             // Validate storage symlinks through the storage API before handing the typed
             // original path to the host, which canonicalizes and checks the regular file.
             let original = self.store.open_read(Area::Originals,&hash,None).await.map_err(|_|retry("original unavailable"))?;
@@ -225,10 +236,13 @@ impl Ingest {
 impl JobHandler for Ingest {
     async fn handle(&self, row: &JobRow, _: &JobCtx) -> Result<(), JobError> {
         match Job::from_row(row).map_err(|_| JobError::Fatal("invalid job payload".into()))? {
-            Job::Ingest { photo_id } => {
+            Job::Ingest {
+                photo_id,
+                original_hash,
+            } => {
                 let priority = i16::try_from(row.priority)
                     .map_err(|_| JobError::Fatal("invalid ingest priority".into()))?;
-                self.ingest_with_priority(photo_id, row.attempts, priority)
+                self.ingest_with_priority(photo_id, Some(&original_hash), row.attempts, priority)
                     .await
             }
             _ => Err(JobError::Retry {

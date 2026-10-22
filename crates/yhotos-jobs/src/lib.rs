@@ -10,6 +10,7 @@ use sqlx::{PgConnection, PgPool};
 use std::time::Duration;
 use time::{Date, OffsetDateTime};
 use yhotos_core::{JobId, PhotoId};
+use yhotos_storage::ContentHash;
 
 macro_rules! kinds {
     ($($name:ident => $wire:literal),+ $(,)?) => {
@@ -46,6 +47,9 @@ pub enum Job {
     Ingest {
         /// Existing photo identifier.
         photo_id: PhotoId,
+        /// Immutable original this job may process; also part of the dedupe key.
+        #[serde(with = "original_hash")]
+        original_hash: ContentHash,
     },
     /// Generate semantic embedding.
     #[serde(rename = "ml.embed")]
@@ -241,19 +245,37 @@ impl Queue {
             .cloned()
             .unwrap_or(serde_json::Value::Null);
         let kind = job.kind().as_str();
-        let lock = format!("{kind}:{payload}");
-        sqlx::query!("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", lock)
-            .execute(&mut *conn)
-            .await?;
-        if let Some(row) = sqlx::query!("SELECT id FROM jobs WHERE kind=$1 AND payload=$2 AND finished_at IS NULL ORDER BY id LIMIT 1", kind, payload).fetch_optional(&mut *conn).await? {
-            return Ok(JobId(row.id));
-        }
-        let id = JobId::new();
-        sqlx::query!("INSERT INTO jobs(id,kind,payload,priority,run_after,max_attempts) VALUES($1,$2,$3,$4,coalesce($5,now()),$6)", id.0, kind, payload, priority, run_after, job.kind().max_attempts()).execute(&mut *conn).await?;
-        sqlx::query!("SELECT pg_notify('jobs','')")
-            .execute(conn)
-            .await?;
-        Ok(id)
+        Ok(yhotos_db::jobs::enqueue_unique(
+            conn,
+            kind,
+            &payload,
+            priority,
+            run_after,
+            job.kind().max_attempts(),
+        )
+        .await?)
+    }
+}
+
+// Keep the wire digest a canonical string while validating database bytes into
+// the storage layer's typed hash before a handler can use them.
+mod original_hash {
+    use super::ContentHash;
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    pub(super) fn serialize<S: Serializer>(
+        hash: &ContentHash,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(hash)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<ContentHash, D::Error> {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(|_| D::Error::custom("invalid original hash"))
     }
 }
 
@@ -265,7 +287,10 @@ mod tests {
     fn every_payload_round_trips_and_unknown_input_is_rejected() {
         let photo_id = PhotoId::new();
         let jobs = vec![
-            Job::Ingest { photo_id },
+            Job::Ingest {
+                photo_id,
+                original_hash: "a".repeat(64).parse().unwrap(),
+            },
             Job::MlEmbed { photo_id },
             Job::MlFaces { photo_id },
             Job::MlOcr { photo_id },
@@ -297,6 +322,14 @@ mod tests {
             )
             .is_err()
         );
+        for hash in ["../private".into(), "A".repeat(64), "a".repeat(63)] {
+            assert!(
+                serde_json::from_value::<Job>(serde_json::json!({
+                    "kind":"ingest", "payload":{"photo_id": photo_id, "original_hash": hash}
+                }))
+                .is_err()
+            );
+        }
         assert_eq!(JobKind::Ingest.timeout(), Duration::from_mins(10));
         assert_eq!(JobKind::Gc.timeout(), Duration::from_hours(1));
         assert_eq!(JobKind::Zip.timeout(), Duration::from_mins(30));

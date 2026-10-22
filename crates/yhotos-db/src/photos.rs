@@ -406,6 +406,7 @@ pub async fn purge_deleted_before(
 
 /// Replaces original metadata without changing the photo URL or interactions.
 /// Removes stale derivatives, video, tags and ML data in the same transaction.
+/// Resets publication and enqueues ingest for the new hash even if an older ingest is running.
 ///
 /// # Errors
 /// Returns constraint or connection failures; no partial replacement is committed.
@@ -417,7 +418,7 @@ pub async fn replace_original(
 ) -> Result<(), DbError> {
     use sqlx::Connection;
     let mut tx = conn.begin().await?;
-    sqlx::query!("UPDATE photos SET original_hash=$2, original_name=$3, original_bytes=$4, mime=$5, kind=$6 WHERE id=$1", id as _, original.original_hash, original.original_name, original.original_bytes, original.mime, original.kind as _).execute(&mut *tx).await?;
+    sqlx::query!("UPDATE photos SET original_hash=$2, original_name=$3, original_bytes=$4, mime=$5, kind=$6,status='pending',failure_reason=NULL,derivative_plan=NULL WHERE id=$1", id as _, original.original_hash, original.original_name, original.original_bytes, original.mime, original.kind as _).execute(&mut *tx).await?;
     update_metadata(&mut tx, id, metadata).await?;
     sqlx::query!("DELETE FROM derivatives WHERE photo_id=$1", id as _)
         .execute(&mut *tx)
@@ -439,6 +440,15 @@ pub async fn replace_original(
         id as _
     )
     .execute(&mut *tx)
+    .await?;
+    crate::jobs::enqueue_unique(
+        &mut tx,
+        "ingest",
+        &serde_json::json!({"photo_id": id, "original_hash": original.original_hash}),
+        0,
+        None,
+        3,
+    )
     .await?;
     tx.commit().await?;
     Ok(())

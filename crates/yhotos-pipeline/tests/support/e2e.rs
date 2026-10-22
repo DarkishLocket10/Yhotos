@@ -4,8 +4,10 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use tokio_util::sync::CancellationToken;
 use yhotos_core::{PhotoId, Slug, access::Visibility};
 use yhotos_db::{albums, photos};
+use yhotos_jobs::{Job, JobCtx, JobHandler, JobKind, JobRow, Queue, QueueConfig};
 use yhotos_pipeline::{Ingest, JobError, TestPause, VariantPlan};
 use yhotos_storage::{ContentHash, DerivativeKey, Store};
 
@@ -260,6 +262,258 @@ async fn output_replaced_after_host_exit_is_never_trusted(pool: PgPool) {
     .unwrap();
     assert_eq!(count.count, 0);
     empty_tmp(root.path()).await;
+}
+
+async fn ingest_job(pool: &PgPool, photo_id: PhotoId) -> Job {
+    let row = sqlx::query!("SELECT original_hash FROM photos WHERE id=$1", photo_id.0)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    Job::Ingest {
+        photo_id,
+        original_hash: row.original_hash.parse().unwrap(),
+    }
+}
+
+async fn replace(pool: &PgPool, ingest: &Ingest, id: PhotoId) -> Job {
+    let input = tokio::fs::File::open(fixture("orientation-6.jpg"))
+        .await
+        .unwrap();
+    let original = ingest.store.put_original(input, 2 << 30).await.unwrap();
+    let album = sqlx::query!("SELECT album_id FROM photos WHERE id=$1", id.0)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    photos::replace_original(
+        &mut pool.acquire().await.unwrap(),
+        id,
+        &photos::NewPhoto {
+            album_id: yhotos_core::AlbumId(album.album_id),
+            title: "Replacement".into(),
+            original_hash: original.hash.to_string(),
+            original_name: "replacement.jpg".into(),
+            original_bytes: i64::try_from(original.bytes).unwrap(),
+            mime: "image/jpeg".into(),
+            kind: photos::MediaKind::Image,
+        },
+        &photos::PhotoMetadata {
+            title: "Replacement".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    Job::Ingest {
+        photo_id: id,
+        original_hash: original.hash,
+    }
+}
+
+async fn assert_replacement_pending(pool: &PgPool, id: PhotoId, job: &Job) {
+    let photo = sqlx::query!("SELECT status::text AS \"status!\",failure_reason,derivative_plan,(SELECT count(*) FROM derivatives WHERE photo_id=$1) AS \"count!\" FROM photos WHERE id=$1",id.0).fetch_one(pool).await.unwrap();
+    assert_eq!(photo.status, "pending");
+    assert!(photo.failure_reason.is_none() && photo.derivative_plan.is_none());
+    assert_eq!(photo.count, 0);
+    let value = serde_json::to_value(job).unwrap();
+    let rows = sqlx::query!(
+        "SELECT attempts,locked_by,finished_at FROM jobs WHERE kind='ingest' AND payload=$1",
+        value["payload"]
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].attempts, 0);
+    assert!(rows[0].locked_by.is_none() && rows[0].finished_at.is_none());
+}
+
+struct AfterPublication {
+    ingest: Ingest,
+    published: tokio::sync::mpsc::Sender<()>,
+    resume: Arc<tokio::sync::Notify>,
+    fail: bool,
+}
+#[async_trait::async_trait]
+impl JobHandler for AfterPublication {
+    async fn handle(&self, row: &JobRow, ctx: &JobCtx) -> Result<(), JobError> {
+        self.ingest.handle(row, ctx).await?;
+        self.published.send(()).await.unwrap();
+        self.resume.notified().await;
+        if self.fail {
+            Err(JobError::Fatal("completion failed".into()))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn replacement_between_publication_and_completion_survives_old_success_and_failure(
+    pool: PgPool,
+) {
+    for fail in [false, true] {
+        let (root, ingest, id) = setup(&pool, "chart-srgb.png").await;
+        let queue = Queue::with_config(
+            pool.clone(),
+            QueueConfig {
+                concurrency: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let old_job = ingest_job(&pool, id).await;
+        let old = queue.enqueue(old_job.clone(), 0, None).await.unwrap();
+        let (published, mut ready) = tokio::sync::mpsc::channel(1);
+        let resume = Arc::new(tokio::sync::Notify::new());
+        let handler = AfterPublication {
+            ingest: ingest.clone(),
+            published,
+            resume: resume.clone(),
+            fail,
+        };
+        let shutdown = CancellationToken::new();
+        let cancel = shutdown.clone();
+        let worker = tokio::spawn(async move {
+            queue
+                .run_worker("replacement", &[JobKind::Ingest], handler, cancel)
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(30), ready.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ready(&pool, &ingest, id).await;
+        let new_job = replace(&pool, &ingest, id).await;
+        let new = Queue::new(pool.clone())
+            .enqueue(new_job.clone(), 0, None)
+            .await
+            .unwrap();
+        assert_ne!(old, new);
+        let running = sqlx::query!("SELECT locked_by,finished_at FROM jobs WHERE id=$1", old.0)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert!(running.locked_by.is_some() && running.finished_at.is_none());
+        assert_replacement_pending(&pool, id, &new_job).await;
+        let before = sqlx::query!("SELECT updated_at FROM photos WHERE id=$1", id.0)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        shutdown.cancel();
+        resume.notify_one();
+        worker.await.unwrap().unwrap();
+        assert_replacement_pending(&pool, id, &new_job).await;
+        let after = sqlx::query!("SELECT updated_at FROM photos WHERE id=$1", id.0)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(before.updated_at, after.updated_at);
+        let old_row = sqlx::query!("SELECT finished_at,error FROM jobs WHERE id=$1", old.0)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert!(old_row.finished_at.is_some());
+        assert_eq!(old_row.error.is_some(), fail);
+        // Even an explicitly delayed old envelope is a no-op for the replacement.
+        let (row, token) = yhotos_db::jobs::claim(
+            &mut pool.acquire().await.unwrap(),
+            "new original",
+            &["ingest"],
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(row.id, new);
+        let mut stale = row.clone();
+        stale.payload = serde_json::to_value(old_job).unwrap()["payload"].clone();
+        let ctx = JobCtx {
+            queue: Queue::new(pool.clone()),
+            shutdown: CancellationToken::new(),
+        };
+        ingest.handle(&stale, &ctx).await.unwrap();
+        assert_replacement_status_pending(&pool, id).await;
+        ingest.handle(&row, &ctx).await.unwrap();
+        yhotos_db::jobs::complete(&mut pool.acquire().await.unwrap(), &token)
+            .await
+            .unwrap();
+        assert_ready(&pool, &ingest, id).await;
+        empty_tmp(root.path()).await;
+    }
+}
+
+async fn assert_replacement_status_pending(pool: &PgPool, id: PhotoId) {
+    let row = sqlx::query!(
+        "SELECT status::text AS \"status!\",failure_reason FROM photos WHERE id=$1",
+        id.0
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(row.status, "pending");
+    assert!(row.failure_reason.is_none());
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn replacement_before_publication_survives_old_publication_and_verification_failure(
+    pool: PgPool,
+) {
+    for corrupt in [false, true] {
+        let (root, mut ingest, id) = setup(&pool, "chart-srgb.png").await;
+        let (exited, mut rx) = tokio::sync::mpsc::channel(1);
+        let pause = Arc::new(TestPause {
+            exited,
+            resume: tokio::sync::Notify::new(),
+        });
+        ingest.test_pause = Some(pause.clone());
+        let old_job = ingest_job(&pool, id).await;
+        let queue = Queue::with_config(
+            pool.clone(),
+            QueueConfig {
+                concurrency: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let old = queue.enqueue(old_job, 0, None).await.unwrap();
+        let handler = ingest.clone();
+        let shutdown = CancellationToken::new();
+        let cancel = shutdown.clone();
+        let worker = tokio::spawn(async move {
+            queue
+                .run_worker("before publication", &[JobKind::Ingest], handler, cancel)
+                .await
+        });
+        let dir = tokio::time::timeout(Duration::from_secs(30), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let new_job = replace(&pool, &ingest, id).await;
+        if corrupt {
+            let path = dir.join("thumb.avif");
+            let mut bytes = tokio::fs::read(&path).await.unwrap();
+            bytes[0] ^= 1;
+            tokio::fs::write(path, bytes).await.unwrap();
+        }
+        shutdown.cancel();
+        pause.resume.notify_one();
+        worker.await.unwrap().unwrap();
+        assert_replacement_pending(&pool, id, &new_job).await;
+        let row = sqlx::query!("SELECT finished_at,error FROM jobs WHERE id=$1", old.0)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert!(row.finished_at.is_some());
+        assert_eq!(row.error.is_some(), corrupt);
+        empty_tmp(root.path()).await;
+        // Leave no earlier replacement job for the next loop's worker to claim.
+        sqlx::query!(
+            "DELETE FROM jobs WHERE payload->>'photo_id'=$1",
+            id.to_string()
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
 }
 
 // Rebuild only the EXIF APP1 segment of a committed JPEG. This deliberately
