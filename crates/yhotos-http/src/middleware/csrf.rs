@@ -125,6 +125,9 @@ pub(crate) async fn protect(
     if content_type.split(';').next() == Some("application/json")
         || request.uri().path().starts_with("/api/")
         || request.uri().path().starts_with("/admin/api/")
+        || cfg!(feature = "admin")
+            && (request.uri().path() == "/admin/upload"
+                || request.uri().path().starts_with("/admin/upload/"))
     {
         let audience = request.extensions().get::<crate::auth::Audience>().copied();
         let Some(url) = audience.and_then(|a| a.base_url(&state)) else {

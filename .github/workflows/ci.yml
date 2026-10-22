@@ -41,8 +41,8 @@ jobs:
         run: |
           npm ci
           npm run check
-      - name: Test bundled passkey redirects
-        run: node --test crates/yhotos-http/tests/passkey_redirect.mjs
+      - name: Test bundled islands
+        run: node --test crates/yhotos-http/tests/passkey_redirect.mjs crates/yhotos-http/tests/upload.mjs
 
   test:
     runs-on: ubuntu-24.04

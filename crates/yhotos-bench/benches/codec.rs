@@ -210,8 +210,8 @@ fn cr3_preview() -> Vec<u8> {
     let jpeg = std::fs::read(path).unwrap();
     let mut record = vec![0; 4];
     record.extend(1u16.to_be_bytes());
-    record.extend(u16::try_from(id.width).unwrap().to_be_bytes());
-    record.extend(u16::try_from(id.height).unwrap().to_be_bytes());
+    record.extend(u16::try_from(id.width.unwrap()).unwrap().to_be_bytes());
+    record.extend(u16::try_from(id.height.unwrap()).unwrap().to_be_bytes());
     record.extend(1u16.to_be_bytes());
     record.extend(u32::try_from(jpeg.len()).unwrap().to_be_bytes());
     record.extend(jpeg);

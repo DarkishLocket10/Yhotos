@@ -47,6 +47,7 @@ pub(crate) enum Kind {
     Jxl,
     Webp,
     Raw(String),
+    Video { container: VideoContainer },
     Unknown,
 }
 impl Kind {
@@ -59,15 +60,15 @@ impl Kind {
             Self::Heif | Self::Avif => matches!(bits, 8 | 10 | 12),
             Self::Tiff | Self::Jxl | Self::Raw(_) => (1..=32).contains(&bits),
             Self::Webp => bits == 8,
-            Self::Unknown => false,
+            Self::Unknown | Self::Video { .. } => false,
         }
     }
 }
 #[derive(Deserialize)]
 pub(crate) struct Identity {
     pub kind: Kind,
-    pub width: u32,
-    pub height: u32,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
     pub orientation: u8,
     pub bits: u8,
     pub pages: u32,
@@ -110,4 +111,10 @@ mod tests {
             }
         }
     }
+}
+
+#[derive(Deserialize)]
+pub(crate) enum VideoContainer {
+    Mp4,
+    Mov,
 }

@@ -99,6 +99,7 @@ async fn run(process_deadline: &mut Option<std::time::Instant>) -> Result<()> {
             JobKind::MlTags,
             JobKind::GeoReverse,
             JobKind::VideoTranscode,
+            JobKind::Gc,
         ],
         ingest,
         async {
@@ -108,7 +109,10 @@ async fn run(process_deadline: &mut Option<std::time::Instant>) -> Result<()> {
         },
     );
     tokio::pin!(run);
+    let sweep_schedule = schedule_upload_sweep(&queue);
+    tokio::pin!(sweep_schedule);
     let (result, deadline) = tokio::select! {
+        ()=&mut sweep_schedule => return Err(anyhow::anyhow!("upload sweep scheduler stopped")),
         result=&mut run => (result, tokio::time::Instant::now() + shutdown_grace),
         ()=signal => {
             // One deadline starts at the signal, including queue cleanup and
@@ -125,6 +129,16 @@ async fn run(process_deadline: &mut Option<std::time::Instant>) -> Result<()> {
     let _ = tokio::time::timeout_at(deadline, db.pool().close()).await;
     result?;
     Ok(())
+}
+
+async fn schedule_upload_sweep(queue: &Queue) {
+    let mut interval = tokio::time::interval(Duration::from_hours(1));
+    loop {
+        interval.tick().await;
+        if queue.enqueue(yhotos_jobs::Job::Gc, 0, None).await.is_err() {
+            tracing::warn!("upload sweep scheduling failed");
+        }
+    }
 }
 
 fn install_metrics(address: std::net::SocketAddr) -> Result<()> {

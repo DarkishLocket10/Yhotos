@@ -1,52 +1,52 @@
 {
   "db_name": "PostgreSQL",
+  "query": "SELECT attempts,locked_by,finished_at FROM jobs WHERE id=$1",
   "describe": {
     "columns": [
       {
-        "name": "attempts",
         "ordinal": 0,
+        "name": "attempts",
+        "type_info": "Int4",
         "origin": {
           "Table": {
-            "name": "attempts",
-            "table": "jobs"
+            "table": "jobs",
+            "name": "attempts"
           }
-        },
-        "type_info": "Int4"
+        }
       },
       {
-        "name": "locked_by",
         "ordinal": 1,
+        "name": "locked_by",
+        "type_info": "Text",
         "origin": {
           "Table": {
-            "name": "locked_by",
-            "table": "jobs"
+            "table": "jobs",
+            "name": "locked_by"
           }
-        },
-        "type_info": "Text"
+        }
       },
       {
-        "name": "finished_at",
         "ordinal": 2,
+        "name": "finished_at",
+        "type_info": "Timestamptz",
         "origin": {
           "Table": {
-            "name": "finished_at",
-            "table": "jobs"
+            "table": "jobs",
+            "name": "finished_at"
           }
-        },
-        "type_info": "Timestamptz"
+        }
       }
-    ],
-    "nullable": [
-      false,
-      true,
-      true
     ],
     "parameters": {
       "Left": [
         "Uuid"
       ]
-    }
+    },
+    "nullable": [
+      false,
+      true,
+      true
+    ]
   },
-  "hash": "51f642c260eafe3b60c09e0f2b9ff0915f87b4aa264f1af1102a7875bddbe1bb",
-  "query": "SELECT attempts,locked_by,finished_at FROM jobs WHERE id=$1"
+  "hash": "51f642c260eafe3b60c09e0f2b9ff0915f87b4aa264f1af1102a7875bddbe1bb"
 }

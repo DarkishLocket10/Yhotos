@@ -10,11 +10,13 @@ workspace = true
 
 [features]
 default = []
-admin = ["yhotos-config/admin"]
+admin = ["yhotos-config/admin", "dep:yhotos-pipeline", "dep:yhotos-jobs"]
 # Enables only an explicit test constructor; Auth::new retains production costs.
 test-util = ["yhotos-auth/test-util"]
 
 [dependencies]
+yhotos-pipeline = { path = "../yhotos-pipeline", optional = true }
+yhotos-jobs = { path = "../yhotos-jobs", optional = true }
 yhotos-config = { path = "../yhotos-config" }
 yhotos-core = { path = "../yhotos-core" }
 yhotos-db = { path = "../yhotos-db" }
