@@ -66,6 +66,7 @@ time = "=0.3.55"
 log = "=0.4.34"
 moka = { version = "=0.12.15", features = ["sync"] }
 qrcode = { version = "=0.14.1", default-features = false, features = ["svg"] }
+unicode-normalization = "=0.1.26"
 
 [profile.release]
 lto = "fat"

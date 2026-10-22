@@ -161,14 +161,11 @@ async fn create_admin(args: &[String]) -> Result<()> {
     let [command, flag, username] = args else {
         anyhow::bail!("usage: yhotos-server create-admin --username NAME");
     };
-    if command != "create-admin"
-        || flag != "--username"
-        || username.is_empty()
-        || username.len() > 80
-        || username.chars().any(char::is_control)
-    {
+    if command != "create-admin" || flag != "--username" {
         anyhow::bail!("usage: yhotos-server create-admin --username NAME");
     }
+    let username = yhotos_db::users::normalize_username(username)
+        .map_err(|_| anyhow::anyhow!("invalid username"))?;
     let url = SecretString::from(
         std::env::var("YHOTOS_DATABASE_URL_ADMIN")
             .map_err(|_| anyhow::anyhow!("YHOTOS_DATABASE_URL_ADMIN required"))?,
@@ -177,14 +174,14 @@ async fn create_admin(args: &[String]) -> Result<()> {
         .await
         .map_err(|_| anyhow::anyhow!("could not connect administrative database"))?;
     let password = yhotos_auth::generate_temp_password();
-    yhotos_auth::check_password_policy(&password, username)?;
+    yhotos_auth::check_password_policy(&password, &username)?;
     let hash = yhotos_auth::hash_password(&password)?;
     let mut c = db
         .pool()
         .acquire()
         .await
         .map_err(|_| anyhow::anyhow!("could not connect administrative database"))?;
-    yhotos_db::users::create_admin(&mut c, username, &SecretString::from(hash.as_str()))
+    yhotos_db::users::create_admin(&mut c, &username, &SecretString::from(hash.as_str()))
         .await
         .map_err(|_| anyhow::anyhow!("could not create administrative account"))?;
     // This explicit CLI is the only intentional credential output. Never trace it.

@@ -3666,6 +3666,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "unicode-normalization",
  "uuid",
  "yhotos-core",
 ]

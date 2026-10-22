@@ -1,12 +1,12 @@
 use super::{
-    AppState, Audience, Auth, ExposeSecret, HeaderMap, HttpError, IntoResponse, Response,
+    AppState, Audience, Auth, ExposeSecret, HttpError, IntoResponse, Request, Response,
     SecretString, login, now, redirect, required, sessions, set_cookie, ua, views,
 };
 use super::{HeaderValue, PgConnection, Token, TokenKind};
 use crate::middleware::session::Current;
 use axum::{
     Extension, Form, Json,
-    extract::{Path, State},
+    extract::{FromRequest, Path, State},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -60,25 +60,44 @@ pub(crate) async fn password(
     State(state): State<AppState>,
     Extension(a): Extension<Audience>,
     current: Current,
-    headers: HeaderMap,
-    Form(input): Form<PasswordChange>,
+    request: Request,
 ) -> Result<Response, HttpError> {
     let auth = required(&state)?;
     let mut tx = auth.db(a)?.pool().begin().await?;
-    users::lock_auth(&mut tx, current.0.session.user_id).await?;
-    let user = users::get_by_id(&mut tx, current.0.session.user_id)
-        .await?
-        .ok_or(HttpError::NotFound)?;
-    if !user.must_change_password
-        && !login::verify(
+    let network = super::ip(&state, &request)?;
+    let agent = ua(request.headers());
+    let Form(input) = Form::<PasswordChange>::from_request(request, &state)
+        .await
+        .map_err(|_| HttpError::BadRequest)?;
+    let user = if current.0.must_change_password {
+        users::lock_auth(&mut tx, current.0.session.user_id).await?;
+        let user = users::get_by_id(&mut tx, current.0.session.user_id)
+            .await?
+            .ok_or(HttpError::NotFound)?;
+        // A concurrent password change must not turn a stale setup session into
+        // a way to bypass current-password verification.
+        if !user.must_change_password || user.disabled_at.is_some() {
+            return Ok(login::failed());
+        }
+        user
+    } else {
+        match login::check_password(
+            &mut tx,
             auth,
+            a,
+            login::PasswordTarget::Account(current.0.session.user_id),
             input.current_password,
-            Some(user.password_hash.clone()),
+            &network,
         )
         .await?
-    {
-        return Ok(login::failed());
-    }
+        {
+            login::PasswordCheck::Accepted(user) => user,
+            login::PasswordCheck::Refused(response) => {
+                tx.commit().await?;
+                return Ok(response);
+            }
+        }
+    };
     let new = input.new_password;
     let username = user.username.clone();
     let permit = auth
@@ -122,8 +141,8 @@ pub(crate) async fn password(
         &state,
         &changed,
         None,
-        &current.0.session.ip_hash,
-        ua(&headers),
+        &network,
+        agent,
         None,
         current.0.session.mfa_at,
         None,
@@ -166,17 +185,32 @@ pub(crate) async fn reauth(
     State(state): State<AppState>,
     Extension(a): Extension<Audience>,
     current: Current,
-    Form(input): Form<Reauth>,
+    request: Request,
 ) -> Result<Response, HttpError> {
     let auth = required(&state)?;
-    let mut c = auth.db(a)?.pool().acquire().await?;
-    let user = users::get_by_id(&mut c, current.0.session.user_id)
-        .await?
-        .ok_or(HttpError::NotFound)?;
-    if !login::verify(auth, input.password, Some(user.password_hash)).await? {
-        return Ok(login::failed());
-    }
-    sessions::reauthenticate(&mut c, current.0.session.id, user.id).await?;
+    let network = super::ip(&state, &request)?;
+    let Form(input) = Form::<Reauth>::from_request(request, &state)
+        .await
+        .map_err(|_| HttpError::BadRequest)?;
+    let mut tx = auth.db(a)?.pool().begin().await?;
+    let user = match login::check_password(
+        &mut tx,
+        auth,
+        a,
+        login::PasswordTarget::Account(current.0.session.user_id),
+        input.password,
+        &network,
+    )
+    .await?
+    {
+        login::PasswordCheck::Accepted(user) => user,
+        login::PasswordCheck::Refused(response) => {
+            tx.commit().await?;
+            return Ok(response);
+        }
+    };
+    sessions::reauthenticate(&mut tx, current.0.session.id, user.id).await?;
+    tx.commit().await?;
     auth.invalidate(current.0.session.id);
     Ok(redirect(a.security()))
 }
@@ -220,27 +254,40 @@ pub(crate) fn open_totp(auth: &Auth, id: Uuid, sealed: &[u8]) -> Result<totp::Se
         .map_err(|_| HttpError::BadRequest)?;
     Ok(totp::Secret::from_bytes(bytes))
 }
+async fn enrollment_methods(
+    c: &mut PgConnection,
+    current: &Current,
+) -> Result<Vec<mfa::Method>, HttpError> {
+    let methods = mfa::list(c, current.0.session.user_id).await?;
+    if !methods.is_empty() && current.0.session.mfa_at.is_none() {
+        return Err(HttpError::Authentication);
+    }
+    Ok(methods)
+}
 pub(crate) async fn totp_form(
     State(state): State<AppState>,
     Extension(a): Extension<Audience>,
     current: Current,
 ) -> Result<Response, HttpError> {
     let auth = required(&state)?;
-    let mut c = auth.db(a)?.pool().acquire().await?;
-    let user = users::get_by_id(&mut c, current.0.session.user_id)
+    let mut tx = auth.db(a)?.pool().begin().await?;
+    users::lock_auth(&mut tx, current.0.session.user_id).await?;
+    enrollment_methods(&mut tx, &current).await?;
+    let user = users::get_by_id(&mut tx, current.0.session.user_id)
         .await?
         .ok_or(HttpError::NotFound)?;
     let secret = totp::generate_secret();
     let id = Uuid::now_v7();
     let sealed = auth.keys.seal(id.as_bytes(), secret.expose_secret())?;
     sessions::ceremony_put(
-        &mut c,
+        &mut tx,
         current.0.session.id,
         user.id,
         "totp",
         &serde_json::to_value(TotpEnrollment { id, sealed })?,
     )
     .await?;
+    tx.commit().await?;
     let uri = totp::provisioning_uri("Yhotos", &user.username, &secret);
     let qr = qrcode::QrCode::new(uri.expose_secret())
         .map_err(|_| HttpError::BadRequest)?
@@ -262,6 +309,7 @@ pub(crate) async fn totp_finish(
     let auth = required(&state)?;
     let mut tx = auth.db(a)?.pool().begin().await?;
     users::lock_auth(&mut tx, current.0.session.user_id).await?;
+    enrollment_methods(&mut tx, &current).await?;
     let value = sessions::ceremony_take(
         &mut tx,
         current.0.session.id,
@@ -311,11 +359,12 @@ pub(crate) async fn passkey_start(
     current: Current,
 ) -> Result<Response, HttpError> {
     let auth = required(&state)?;
-    let mut c = auth.db(a)?.pool().acquire().await?;
-    let user = users::get_by_id(&mut c, current.0.session.user_id)
+    let mut tx = auth.db(a)?.pool().begin().await?;
+    users::lock_auth(&mut tx, current.0.session.user_id).await?;
+    let user = users::get_by_id(&mut tx, current.0.session.user_id)
         .await?
         .ok_or(HttpError::NotFound)?;
-    let methods = mfa::list(&mut c, user.id).await?;
+    let methods = enrollment_methods(&mut tx, &current).await?;
     let rp = a.rp_id(&state)?;
     let excluded = methods
         .iter()
@@ -326,13 +375,14 @@ pub(crate) async fn passkey_start(
         auth.passkeys(a)?
             .start_registration(user.id.0, &user.username, &excluded, a.0)?;
     sessions::ceremony_put(
-        &mut c,
+        &mut tx,
         current.0.session.id,
         user.id,
         "register",
         &serde_json::to_value(ceremony)?,
     )
     .await?;
+    tx.commit().await?;
     Ok(Json(challenge).into_response())
 }
 pub(crate) async fn passkey_finish(
@@ -368,6 +418,7 @@ pub(crate) async fn passkey_finish(
     drop(c);
     let mut tx = auth.db(a)?.pool().begin().await?;
     users::lock_auth(&mut tx, current.0.session.user_id).await?;
+    enrollment_methods(&mut tx, &current).await?;
     mfa::add(&mut tx, current.0.session.user_id, &method).await?;
     audit::write(
         &mut tx,

@@ -175,12 +175,13 @@ fn sigterm_and_sigint_exit_cleanly() {
 async fn create_admin_prints_one_policy_compliant_temporary_password() {
     use secrecy::{ExposeSecret, SecretString};
     let url = std::env::var("DATABASE_URL").unwrap();
-    let username = uuid::Uuid::now_v7().to_string();
+    let username = format!("é-{}", uuid::Uuid::now_v7());
+    let input = format!(" \u{2003}e\u{301}-{} \t", username.trim_start_matches("é-"));
     let output = Command::new(env!("CARGO_BIN_EXE_yhotos-server"))
         .env_clear()
         .env("YHOTOS_DATABASE_URL_ADMIN", &url)
         .env("YHOTOS_DATABASE_TLS", "disable")
-        .args(["create-admin", "--username", &username])
+        .args(["create-admin", "--username", &input])
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -212,6 +213,42 @@ async fn create_admin_prints_one_policy_compliant_temporary_password() {
         )
         .unwrap()
     );
+    assert_eq!(user.username, username);
+    drop(c);
+    // Exercise the actual CLI-to-HTTP boundary with both composed and padded,
+    // decomposed spellings. A created account must always be able to sign in.
+    let dir = tempfile::tempdir().unwrap();
+    let public = address("127.0.0.1");
+    let mut cmd = command(dir.path(), public, address("127.0.0.2"));
+    cmd.env("YHOTOS_RATE_LIMITS__CHEAP_PER_MIN", "100");
+    let mut server = Server {
+        child: cmd.spawn().unwrap(),
+    };
+    ready(&mut server, public);
+    for spelling in [&username, &input] {
+        let form = get(public, "/login");
+        let csrf = form
+            .lines()
+            .find_map(|line| line.strip_prefix("set-cookie: __Host-yhotos-csrf="))
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap();
+        let body = format!(
+            "_csrf={csrf}&username={}&password={}",
+            form_encode(spelling),
+            form_encode(password.expose_secret())
+        );
+        let mut socket = TcpStream::connect(public).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        write!(socket, "POST /login HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/x-www-form-urlencoded\r\nCookie: __Host-yhotos-csrf={csrf}\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
+        let mut response = String::new();
+        socket.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 303"));
+        assert!(response.contains("location: /u/password"));
+    }
 }
 
 #[tokio::test]
@@ -299,4 +336,35 @@ async fn startup_uses_separate_restricted_login_roles() {
         .fetch_one(&mut *connection)
         .await
         .unwrap();
+}
+
+fn form_encode(value: &str) -> String {
+    use std::fmt::Write;
+    value.bytes().fold(String::new(), |mut encoded, byte| {
+        write!(&mut encoded, "%{byte:02X}").unwrap();
+        encoded
+    })
+}
+
+#[test]
+fn create_admin_rejects_empty_whitespace_and_oversized_usernames() {
+    for username in [String::new(), " \t\n\u{2003}".into(), "x".repeat(65)] {
+        let output = Command::new(env!("CARGO_BIN_EXE_yhotos-server"))
+            .env_clear()
+            .args(["create-admin", "--username", &username])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        #[allow(
+            clippy::assert_is_empty,
+            reason = "never print an accidentally generated password on failure"
+        )]
+        {
+            assert!(output.stdout.is_empty());
+        }
+        assert_eq!(
+            String::from_utf8(output.stderr).unwrap().trim(),
+            "invalid username"
+        );
+    }
 }

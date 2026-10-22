@@ -53,7 +53,7 @@ fn locked(seconds: u64) -> Response {
     )
         .into_response()
 }
-pub(crate) async fn verify(
+async fn verify(
     auth: &Auth,
     password: SecretString,
     hash: Option<String>,
@@ -77,10 +77,113 @@ pub(crate) async fn verify(
     .await
     .map_err(|_| HttpError::Internal(anyhow::anyhow!("password verification unavailable")))
 }
-#[allow(
-    clippy::too_many_lines,
-    reason = "keep the serialized password transaction and its audit outcomes together"
-)]
+pub(crate) enum PasswordTarget<'a> {
+    Username(&'a str),
+    Account(yhotos_core::UserId),
+}
+pub(crate) enum PasswordCheck {
+    Accepted(users::UserRow),
+    Refused(Response),
+}
+// Every password check shares account/IP state and lock ordering, including
+// session reauthentication used by MFA removal. Callers commit refusals too.
+#[allow(clippy::too_many_lines)]
+pub(crate) async fn check_password(
+    c: &mut PgConnection,
+    auth: &Auth,
+    a: Audience,
+    target: PasswordTarget<'_>,
+    password: SecretString,
+    network: &[u8; 32],
+) -> Result<PasswordCheck, HttpError> {
+    let mut user = match target {
+        PasswordTarget::Username(username) => users::get_by_username(c, username).await?,
+        PasswordTarget::Account(id) => users::get_by_id(c, id).await?,
+    };
+    let username = user.as_ref().map_or_else(
+        || match target {
+            PasswordTarget::Username(name) => name.to_owned(),
+            PasswordTarget::Account(_) => String::new(),
+        },
+        |u| u.username.clone(),
+    );
+    // Let citext perform case folding. Account IDs bind known-user lockouts
+    // across every spelling accepted by the database, including Unicode.
+    let account_key = user.as_ref().map_or_else(
+        || auth.fingerprint("username", username.to_lowercase()),
+        |u| auth.fingerprint("account", u.id.0.as_bytes()),
+    );
+    let mut keys = [
+        account_key.to_vec(),
+        auth.fingerprint("ip-lock", network).to_vec(),
+    ];
+    keys.sort();
+    // Acquire these before the account auth lock on every password endpoint.
+    // Bounded Argon2 work runs on the blocking pool while both rows are locked.
+    let mut locks = Vec::new();
+    for key in &keys {
+        let value = sessions::lockout_get(c, key).await?;
+        let lock: LockoutState = if value == json!({}) {
+            LockoutState::default()
+        } else {
+            serde_json::from_value(value).map_err(|_| HttpError::BadRequest)?
+        };
+        if let Err(until) = lock.check(now()) {
+            audit::write(
+                c,
+                None,
+                "login.failure",
+                None,
+                &json!({"username":username,"ip_hash":network,"outcome":"locked"}),
+            )
+            .await?;
+            return Ok(PasswordCheck::Refused(locked(
+                until.0.saturating_sub(now()).as_secs() + 1,
+            )));
+        }
+        locks.push(lock);
+    }
+    if let Some(found) = &user {
+        users::lock_auth(c, found.id).await?;
+        user = users::get_by_id(c, found.id).await?;
+    }
+    if let Some(user) = &user
+        && let Some(response) = check_mfa_lockout(c, user, network).await?
+    {
+        return Ok(PasswordCheck::Refused(response));
+    }
+    let valid = verify(
+        auth,
+        password,
+        user.as_ref().map(|u| u.password_hash.clone()),
+    )
+    .await?;
+    if let Some(user) = user.filter(|u| valid && u.disabled_at.is_none() && (!a.0 || u.is_admin)) {
+        for (key, mut lock) in keys.iter().zip(locks) {
+            lock.record_success();
+            sessions::lockout_set(c, key, &serde_json::to_value(lock)?).await?;
+        }
+        Ok(PasswordCheck::Accepted(user))
+    } else {
+        let mut retry = None;
+        for (key, mut lock) in keys.iter().zip(locks) {
+            lock.record_failure(now(), lockout_policy());
+            if let Err(until) = lock.check(now()) {
+                retry = Some(until.0.saturating_sub(now()).as_secs() + 1);
+            }
+            sessions::lockout_set(c, key, &serde_json::to_value(lock)?).await?;
+        }
+        audit::write(
+            c,
+            None,
+            "login.failure",
+            None,
+            &json!({"username":username,"ip_hash":network,"outcome":"failed"}),
+        )
+        .await?;
+        Ok(PasswordCheck::Refused(retry.map_or_else(failed, locked)))
+    }
+}
 pub(crate) async fn password(
     State(state): State<AppState>,
     Extension(a): Extension<Audience>,
@@ -93,138 +196,80 @@ pub(crate) async fn password(
     let Form(input) = Form::<Credentials>::from_request(request, &state)
         .await
         .map_err(|_| HttpError::BadRequest)?;
-    let username = input.username.trim().to_owned();
-    if username.is_empty() || username.len() > 80 || username.chars().any(char::is_control) {
+    let Ok(username) = users::normalize_username(&input.username) else {
         return Ok(failed());
-    }
+    };
     let mut tx = auth.db(a)?.pool().begin().await?;
-    // Let citext perform case folding. Account IDs bind known-user lockouts
-    // across every spelling accepted by the database, including Unicode.
-    let mut user = users::get_by_username(&mut tx, &username).await?;
-    let account_key = user.as_ref().map_or_else(
-        || auth.fingerprint("username", username.to_lowercase()),
-        |u| auth.fingerprint("account", u.id.0.as_bytes()),
-    );
-    let mut keys = [
-        account_key.to_vec(),
-        auth.fingerprint("ip-lock", network).to_vec(),
-    ];
-    keys.sort();
-    // Serialize attempts across processes for both account and network. Bounded
-    // Argon2 work runs on the blocking pool while these two row locks are held.
-    let mut locks = Vec::new();
-    for key in &keys {
-        let value = sessions::lockout_get(&mut tx, key).await?;
-        let lock: LockoutState = if value == json!({}) {
-            LockoutState::default()
-        } else {
-            serde_json::from_value(value).map_err(|_| HttpError::BadRequest)?
-        };
-        if let Err(until) = lock.check(now()) {
-            let seconds = until.0.saturating_sub(now()).as_secs() + 1;
-            audit::write(
-                &mut tx,
-                None,
-                "login.failure",
-                None,
-                &json!({"username":username,"ip_hash":network,"outcome":"locked"}),
-            )
-            .await?;
-            tx.commit().await?;
-            return Ok(locked(seconds));
-        }
-        locks.push(lock);
-    }
-    if let Some(found) = &user {
-        users::lock_auth(&mut tx, found.id).await?;
-        user = users::get_by_id(&mut tx, found.id).await?;
-    }
-    if let Some(user) = &user
-        && let Some(response) = check_mfa_lockout(&mut tx, user, &network).await?
-    {
-        tx.commit().await?;
-        return Ok(response);
-    }
-    let valid = verify(
+    let user = match check_password(
+        &mut tx,
         auth,
+        a,
+        PasswordTarget::Username(&username),
         input.password,
-        user.as_ref().map(|u| u.password_hash.clone()),
+        &network,
     )
-    .await?;
-    let user = user.filter(|u| valid && u.disabled_at.is_none() && (!a.0 || u.is_admin));
-    if let Some(user) = user {
-        for (key, mut lock) in keys.iter().zip(locks) {
-            lock.record_success();
-            sessions::lockout_set(&mut tx, key, &serde_json::to_value(lock)?).await?;
-        }
-        let methods = mfa::list(&mut tx, user.id).await?;
-        let destination = next_path(&input.next);
-        let rp = a.rp_id(&state)?;
-        if methods.iter().any(|m| usable(m, rp) || m.kind == "email") {
-            let token = Token::generate();
-            let hash = token.hash(TokenKind::PendingLogin);
-            sessions::pending_create(
-                &mut tx,
-                uuid::Uuid::now_v7(),
-                user.id,
-                hash.as_bytes(),
-                a.0,
-                destination.as_deref(),
-                blake3::hash(user.password_hash.as_bytes()).as_bytes(),
-            )
-            .await?;
+    .await?
+    {
+        PasswordCheck::Accepted(user) => user,
+        PasswordCheck::Refused(response) => {
             tx.commit().await?;
-            let mut response = redirect(&format!("{}/mfa", a.login()));
-            set_cookie(
-                &mut response,
-                a.cookie(
-                    a.pending_cookie(),
-                    &token.encode(TokenKind::PendingLogin),
-                    false,
-                )?,
-            );
             return Ok(response);
         }
-        let response = establish(
-            &mut tx,
-            a,
-            &state,
-            &user,
-            current.as_ref().map(|c| &c.0),
-            &network,
-            agent,
-            None,
-            None,
-            destination.as_deref(),
-        )
-        .await?;
-        tx.commit().await?;
-        if let Some(Extension(current)) = current {
-            auth.invalidate(current.0.session.id);
-        }
-        Ok(response)
-    } else {
-        let mut retry = None;
-        for (key, mut lock) in keys.iter().zip(locks) {
-            // Task 009 locks immediately after the fifth failure. The primitive's
-            // default permits five free failures, so this flow permits four.
-            lock.record_failure(now(), lockout_policy());
-            if let Err(until) = lock.check(now()) {
-                retry = Some(until.0.saturating_sub(now()).as_secs() + 1);
-            }
-            sessions::lockout_set(&mut tx, key, &serde_json::to_value(lock)?).await?;
-        }
+    };
+    let methods = mfa::list(&mut tx, user.id).await?;
+    let destination = next_path(&input.next);
+    let rp = a.rp_id(&state)?;
+    if !methods.is_empty() && !methods.iter().any(|m| usable(m, rp)) {
         audit::write(
+            &mut tx, Some(user.id), "login.failure", None,
+            &json!({"username":username,"ip_hash":network,"outcome":"failed","reason":"mfa_unavailable_on_listener"}),
+        ).await?;
+        tx.commit().await?;
+        return Ok(failed());
+    }
+    if !methods.is_empty() {
+        let token = Token::generate();
+        let hash = token.hash(TokenKind::PendingLogin);
+        sessions::pending_create(
             &mut tx,
-            None,
-            "login.failure",
-            None,
-            &json!({"username":username,"ip_hash":network,"outcome":"failed"}),
+            uuid::Uuid::now_v7(),
+            user.id,
+            hash.as_bytes(),
+            a.0,
+            destination.as_deref(),
+            blake3::hash(user.password_hash.as_bytes()).as_bytes(),
         )
         .await?;
         tx.commit().await?;
-        Ok(retry.map_or_else(failed, locked))
+        let mut response = redirect(&format!("{}/mfa", a.login()));
+        set_cookie(
+            &mut response,
+            a.cookie(
+                a.pending_cookie(),
+                &token.encode(TokenKind::PendingLogin),
+                false,
+            )?,
+        );
+        return Ok(response);
     }
+    let response = establish(
+        &mut tx,
+        a,
+        &state,
+        &user,
+        current.as_ref().map(|c| &c.0),
+        &network,
+        agent,
+        None,
+        None,
+        destination.as_deref(),
+    )
+    .await?;
+    tx.commit().await?;
+    if let Some(Extension(current)) = current {
+        auth.invalidate(current.0.session.id);
+    }
+    Ok(response)
 }
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn establish(

@@ -3,7 +3,24 @@
 use crate::DbError;
 use sqlx::PgConnection;
 use time::OffsetDateTime;
+use unicode_normalization::UnicodeNormalization;
 use yhotos_core::UserId;
+
+/// Returns a trimmed, NFC username containing 1 to 64 characters and no controls.
+/// Case folding remains the database's case-insensitive uniqueness boundary.
+///
+/// # Errors
+/// Rejects empty, whitespace-only, oversized or control-containing usernames.
+pub fn normalize_username(input: &str) -> Result<String, DbError> {
+    let username: String = input.trim().nfc().collect();
+    if username.is_empty()
+        || username.chars().count() > 64
+        || username.chars().any(char::is_control)
+    {
+        return Err(DbError::InvalidInput);
+    }
+    Ok(username)
+}
 
 /// Account state including a password hash; Debug exposes only the typed user id.
 #[derive(Clone)]
@@ -50,6 +67,7 @@ pub async fn create(
     password_hash: &secrecy::SecretString,
     must_change: bool,
 ) -> Result<UserRow, DbError> {
+    let username = normalize_username(username)?;
     Ok(sqlx::query_as!(UserRow,r#"INSERT INTO users(id,username,password_hash,must_change_password) VALUES ($1,$2,$3,$4) RETURNING id as "id: _", created_at, updated_at, username::text AS "username!", password_hash, must_change_password, is_admin, disabled_at, last_login_at, mfa_failures, mfa_locked_until"#, UserId::new() as _, username, secrecy::ExposeSecret::expose_secret(password_hash), must_change).fetch_one(conn).await?)
 }
 
@@ -61,6 +79,7 @@ pub async fn get_by_username(
     conn: &mut PgConnection,
     username: &str,
 ) -> Result<Option<UserRow>, DbError> {
+    let username = normalize_username(username)?;
     Ok(sqlx::query_as!(UserRow,r#"SELECT id as "id: _", created_at, updated_at, username::text AS "username!", password_hash, must_change_password, is_admin, disabled_at, last_login_at, mfa_failures, mfa_locked_until FROM users WHERE username=$1::citext"#, username).fetch_optional(conn).await?)
 }
 
@@ -137,9 +156,7 @@ pub async fn create_admin(
     username: &str,
     password_hash: &secrecy::SecretString,
 ) -> Result<(), DbError> {
-    if username.is_empty() || username.len() > 80 || username.chars().any(char::is_control) {
-        return Err(DbError::InvalidInput);
-    }
+    let username = normalize_username(username)?;
     sqlx::query!("INSERT INTO users(id,username,password_hash,must_change_password,is_admin) VALUES($1,$2,$3,true,true)",UserId::new() as _,username,secrecy::ExposeSecret::expose_secret(password_hash)).execute(conn).await?;
     Ok(())
 }
@@ -179,4 +196,28 @@ pub async fn set_mfa_lockout(
     .execute(conn)
     .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_username;
+
+    #[test]
+    fn usernames_share_trim_nfc_and_length_validation() {
+        assert_eq!(
+            normalize_username(" \u{65}\u{301} \u{2003}")
+                .ok()
+                .as_deref(),
+            Some("é")
+        );
+        assert!(normalize_username(&"é".repeat(64)).is_ok());
+        for input in [
+            String::new(),
+            " \t\n\u{2003}".into(),
+            "x\0y".into(),
+            "é".repeat(65),
+        ] {
+            assert!(normalize_username(&input).is_err());
+        }
+    }
 }

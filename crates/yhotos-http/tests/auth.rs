@@ -124,11 +124,55 @@ impl Client {
             .into(),
         }
     }
-    #[cfg(feature = "admin")]
+    async fn enroll_passkey(&mut self, authenticator: &mut WebauthnAuthenticator<SoftToken>) {
+        let prefix = if self.origin == "https://example.test" {
+            ""
+        } else {
+            "/admin"
+        };
+        let start = self
+            .json(
+                &format!("{prefix}/u/security/passkey/start"),
+                serde_json::json!({}),
+            )
+            .await;
+        assert_eq!(start.status, StatusCode::OK, "{}", start.body);
+        let challenge: CreationChallengeResponse = serde_json::from_str(&start.body).unwrap();
+        let registration = authenticator
+            .do_registration(Url::parse(&self.origin).unwrap(), challenge)
+            .unwrap();
+        let finish = self
+            .json(
+                &format!("{prefix}/u/security/passkey/finish"),
+                serde_json::to_value(registration).unwrap(),
+            )
+            .await;
+        assert_eq!(finish.status, StatusCode::OK, "{}", finish.body);
+    }
     async fn enroll_totp(&mut self) -> totp::Secret {
-        let reply = self.get("/admin/u/security/totp").await;
+        let admin = self.origin != "https://example.test";
+        let base = if admin {
+            "/admin/u/security"
+        } else {
+            "/u/security"
+        };
+        let reply = self.get(&format!("{base}/totp")).await;
         assert_eq!(reply.status, StatusCode::OK);
-        let binding = self.session(true).await.id;
+        let secret = self.pending_totp_secret(admin).await;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap();
+        let code = totp::generate(&secret, now).unwrap();
+        location(
+            &self
+                .post(&format!("{base}/totp"), &[("code", code.expose_secret())])
+                .await,
+            base,
+        );
+        secret
+    }
+    async fn pending_totp_secret(&self, admin: bool) -> totp::Secret {
+        let binding = self.session(admin).await.id;
         let pending = sqlx::query_scalar!(
             "SELECT state FROM pending_webauthn WHERE binding_id=$1 AND kind='totp'",
             binding
@@ -144,23 +188,12 @@ impl Client {
             yhotos_auth::Keyring::from_master(&SecretString::from(STANDARD.encode(key))).unwrap();
         let id: Uuid = serde_json::from_value(pending["id"].clone()).unwrap();
         let sealed: Vec<u8> = serde_json::from_value(pending["sealed"].clone()).unwrap();
-        let secret = totp::Secret::from_bytes(
+        totp::Secret::from_bytes(
             ring.open(id.as_bytes(), &sealed)
                 .unwrap()
                 .try_into()
                 .unwrap(),
-        );
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap();
-        let code = totp::generate(&secret, now).unwrap();
-        location(
-            &self
-                .post("/admin/u/security/totp", &[("code", code.expose_secret())])
-                .await,
-            "/admin/u/security",
-        );
-        secret
+        )
     }
     async fn send(&mut self, method: &str, path: &str, body: String, json: bool) -> Reply {
         let mut builder = Request::builder().method(method).uri(path).header(
@@ -1491,114 +1524,130 @@ async fn mfa_backoff_survives_replacement_challenges_and_network_changes(pool: P
 
 #[cfg(feature = "admin")]
 #[sqlx::test(migrations = "../yhotos-db/migrations")]
-async fn passkeys_bind_to_each_listener_and_allow_other_origin_enrollment(pool: PgPool) {
+async fn listener_unusable_mfa_fails_closed_and_enrollment_requires_mfa(pool: PgPool) {
     let client = Client::new(pool, false).await;
     for first_admin in [false, true] {
         let (id, name, password) = client.seed(false, true).await;
         let mut first = client.listener(first_admin);
         let mut second = client.listener(!first_admin);
+        first.login(&name, &password, first_admin).await;
+        second.login(&name, &password, !first_admin).await;
+        let base = if first_admin {
+            "/u/security"
+        } else {
+            "/admin/u/security"
+        };
+        // Begin both ceremonies while the account still has no factors.
+        assert_eq!(
+            second.get(&format!("{base}/totp")).await.status,
+            StatusCode::OK
+        );
+        let start = second
+            .json(&format!("{base}/passkey/start"), serde_json::json!({}))
+            .await;
+        assert_eq!(start.status, StatusCode::OK);
+        let challenge: CreationChallengeResponse = serde_json::from_str(&start.body).unwrap();
         let (soft, _) = SoftToken::new(true).unwrap();
         let mut authenticator = WebauthnAuthenticator::new(soft);
-        for (browser, admin) in [(&mut first, first_admin), (&mut second, !first_admin)] {
-            location(
-                &browser.login(&name, &password, admin).await,
-                if admin { "/admin/setup-mfa" } else { "/" },
-            );
-            assert!(browser.session(admin).await.mfa_at.is_none());
-            if admin {
-                location(&browser.get("/admin/healthz").await, "/admin/setup-mfa");
-                assert_eq!(browser.get("/admin/setup-mfa").await.status, StatusCode::OK);
-            } else {
-                assert_eq!(browser.get("/u/security").await.status, StatusCode::OK);
-            }
-            let base = if admin {
-                "/admin/u/security"
-            } else {
-                "/u/security"
-            };
-            let start = browser
+        let registration = authenticator
+            .do_registration(Url::parse(&second.origin).unwrap(), challenge)
+            .unwrap();
+        let stale = second.session(!first_admin).await;
+        let pending_secret = second.pending_totp_secret(!first_admin).await;
+        first.enroll_passkey(&mut authenticator).await;
+        assert!(first.session(first_admin).await.mfa_at.is_some());
+        // Model a legacy password-only session surviving factor enrollment.
+        // The handlers must check current factors at both start and completion.
+        sessions::create(&mut client.pool.acquire().await.unwrap(), &stale)
+            .await
+            .unwrap();
+        if !first_admin {
+            let setup = second.get("/admin/setup-mfa").await;
+            assert!(setup.body.contains("TOTP to sign in on both"));
+            location(&second.get("/admin/healthz").await, "/admin/setup-mfa");
+        }
+        let time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap();
+        let pending_code = totp::generate(&pending_secret, time).unwrap();
+        for reply in [
+            second.get(&format!("{base}/totp")).await,
+            second
+                .post(
+                    &format!("{base}/totp"),
+                    &[("code", pending_code.expose_secret())],
+                )
+                .await,
+            second
                 .json(&format!("{base}/passkey/start"), serde_json::json!({}))
-                .await;
-            assert_eq!(start.status, StatusCode::OK, "{}", start.body);
-            let challenge: CreationChallengeResponse = serde_json::from_str(&start.body).unwrap();
-            assert_eq!(
-                challenge.public_key.rp.id,
-                if admin {
-                    "admin.example.test"
-                } else {
-                    "example.test"
-                }
-            );
-            // A credential belonging to the other RP must not be offered or excluded here.
-            assert!(
-                challenge
-                    .public_key
-                    .exclude_credentials
-                    .as_ref()
-                    .is_none_or(Vec::is_empty)
-            );
-            let registration = authenticator
-                .do_registration(Url::parse(&browser.origin).unwrap(), challenge)
-                .unwrap();
-            let finish = browser
+                .await,
+            second
                 .json(
                     &format!("{base}/passkey/finish"),
                     serde_json::to_value(registration).unwrap(),
                 )
-                .await;
-            assert_eq!(finish.status, StatusCode::OK, "{}", finish.body);
-            assert!(browser.session(admin).await.mfa_at.is_some());
-            if !admin && first_admin {
-                let methods = mfa::list(&mut client.pool.acquire().await.unwrap(), id)
-                    .await
-                    .unwrap();
-                let foreign = methods
-                    .iter()
-                    .find(|method| method.rp_id.as_deref() == Some("admin.example.test"))
-                    .unwrap();
-                let page = browser.get("/u/security").await;
-                assert!(!page.body.contains(&foreign.id.to_string()));
-                assert_eq!(
-                    browser
-                        .post(&format!("/u/security/mfa/{}/remove", foreign.id), &[])
-                        .await
-                        .status,
-                    StatusCode::NOT_FOUND
-                );
-                assert_eq!(
-                    mfa::list(&mut client.pool.acquire().await.unwrap(), id)
-                        .await
-                        .unwrap()
-                        .len(),
-                    2
-                );
-            }
-            if admin == first_admin {
-                let prefix = if admin { "/admin" } else { "" };
-                browser.post(&format!("{prefix}/logout"), &[]).await;
-                location(
-                    &browser.login(&name, &password, admin).await,
-                    &format!("{prefix}/login/mfa"),
-                );
-                assert_eq!(
-                    browser
-                        .json(&format!("{prefix}/login/mfa"), serde_json::json!({}))
-                        .await
-                        .status,
-                    StatusCode::UNAUTHORIZED
-                );
-            }
-            // Password-only access and enrollment on the other RP cannot clear MFA failures.
-            let user = users::get_by_id(&mut client.pool.acquire().await.unwrap(), id)
+                .await,
+        ] {
+            assert_eq!(reply.status, StatusCode::BAD_REQUEST, "{}", reply.body);
+            assert_eq!(reply.body, "Sign in failed");
+        }
+        assert_eq!(
+            mfa::list(&mut client.pool.acquire().await.unwrap(), id)
                 .await
                 .unwrap()
-                .unwrap();
-            assert_eq!(user.mfa_failures, 1);
-        }
+                .len(),
+            1
+        );
+        let prefix = if first_admin { "" } else { "/admin" };
+        second.post(&format!("{prefix}/logout"), &[]).await;
+        let denied = second.login(&name, &password, !first_admin).await;
+        assert_eq!(denied.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(denied.body, "Sign in failed");
+        assert!(
+            !second
+                .jar
+                .contains_key(if first_admin { "__Host-ys" } else { "ya" })
+        );
+        assert!(
+            !second
+                .jar
+                .contains_key(if first_admin { "yc" } else { "yac" })
+        );
+        let reasons = sqlx::query_scalar!("SELECT detail FROM audit_log WHERE user_id=$1", id.0)
+            .fetch_all(&client.pool)
+            .await
+            .unwrap();
+        assert!(
+            reasons
+                .iter()
+                .any(|detail| detail["reason"] == "mfa_unavailable_on_listener")
+        );
+        // TOTP is not RP-bound. Prove it permits MFA login on the other listener,
+        // after which enrolling that listener's passkey is allowed.
+        let secret = first.enroll_totp().await;
+        location(
+            &second.login(&name, &password, !first_admin).await,
+            &format!("{prefix}/login/mfa"),
+        );
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap();
+        let code = totp::generate(&secret, now + std::time::Duration::from_secs(30)).unwrap();
+        location(
+            &second
+                .post(
+                    &format!("{prefix}/login/mfa"),
+                    &[("code", code.expose_secret())],
+                )
+                .await,
+            if first_admin { "/" } else { "/admin/" },
+        );
+        second.enroll_passkey(&mut authenticator).await;
         let methods = mfa::list(&mut client.pool.acquire().await.unwrap(), id)
             .await
             .unwrap();
-        assert_eq!(methods.len(), 2);
+        assert_eq!(methods.len(), 3);
+        // Each RP offers only its own passkey, and both remain usable.
         for (browser, admin) in [(&mut first, first_admin), (&mut second, !first_admin)] {
             let prefix = if admin { "/admin" } else { "" };
             browser.post(&format!("{prefix}/logout"), &[]).await;
@@ -1612,7 +1661,7 @@ async fn passkeys_bind_to_each_listener_and_allow_other_origin_enrollment(pool: 
                     serde_json::json!({}),
                 )
                 .await;
-            assert_eq!(start.status, StatusCode::OK, "{}", start.body);
+            assert_eq!(start.status, StatusCode::OK);
             let challenge: RequestChallengeResponse = serde_json::from_str(&start.body).unwrap();
             assert_eq!(challenge.public_key.allow_credentials.len(), 1);
             let rp = if admin {
@@ -1765,4 +1814,235 @@ async fn session_eviction_rejects_an_inflight_stale_database_snapshot(pool: PgPo
             .unwrap()
             .is_none()
     );
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn reauth_lockout_spans_ips_and_password_endpoints(pool: PgPool) {
+    let mut c = Client::new(pool, false).await;
+    let (_, name, password) = c.seed(false, false).await;
+    c.login(&name, &password, false).await;
+    c.enroll_totp().await;
+    let session = c.session(false).await;
+    sqlx::query!(
+        "UPDATE sessions SET reauth_at=now()-interval '6 minutes' WHERE id=$1",
+        session.id
+    )
+    .execute(&c.pool)
+    .await
+    .unwrap();
+    c.state.auth.as_ref().unwrap().invalidate(session.id);
+    let wrong = yhotos_auth::generate_temp_password();
+    for attempt in 1..=5 {
+        c.network = format!("127.0.2.{attempt}:1234").parse().unwrap();
+        let reply = c
+            .post("/u/security/reauth", &[("password", wrong.expose_secret())])
+            .await;
+        assert_eq!(reply.body, "Sign in failed");
+        assert_eq!(
+            reply.status,
+            if attempt == 5 {
+                StatusCode::TOO_MANY_REQUESTS
+            } else {
+                StatusCode::UNAUTHORIZED
+            }
+        );
+        if attempt == 5 {
+            assert_eq!(reply.headers[header::RETRY_AFTER], "30");
+        }
+    }
+    c.network = "127.0.2.6:1234".parse().unwrap();
+    assert_eq!(
+        c.post(
+            "/u/security/reauth",
+            &[("password", password.expose_secret())]
+        )
+        .await
+        .status,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(
+        c.post(
+            "/u/password",
+            &[
+                ("current_password", password.expose_secret()),
+                ("new_password", wrong.expose_secret())
+            ]
+        )
+        .await
+        .status,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    let method = mfa::list(&mut c.pool.acquire().await.unwrap(), session.user_id)
+        .await
+        .unwrap()
+        .remove(0);
+    assert_eq!(
+        c.post(&format!("/u/security/mfa/{}/remove", method.id), &[])
+            .await
+            .status,
+        StatusCode::FORBIDDEN
+    );
+    // Login cannot bypass failures accumulated on reauthentication either.
+    c.post("/logout", &[]).await;
+    assert_eq!(
+        c.login(&name, &password, false).await.status,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    let count = sqlx::query_scalar!(
+        r#"SELECT count(*) AS "count!" FROM audit_log WHERE action='login.failure'"#
+    )
+    .fetch_one(&c.pool)
+    .await
+    .unwrap();
+    assert_eq!(count, 8);
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn password_change_failures_share_ip_lockout_and_reauth_resets_success(pool: PgPool) {
+    let mut c = Client::new(pool, false).await;
+    let (_, name, password) = c.seed(false, false).await;
+    c.login(&name, &password, false).await;
+    let wrong = yhotos_auth::generate_temp_password();
+    for _ in 0..4 {
+        assert_eq!(
+            c.post(
+                "/u/password",
+                &[
+                    ("current_password", wrong.expose_secret()),
+                    ("new_password", wrong.expose_secret())
+                ]
+            )
+            .await
+            .status,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    // A successful reauth clears both counters before they reach the threshold.
+    location(
+        &c.post(
+            "/u/security/reauth",
+            &[("password", password.expose_secret())],
+        )
+        .await,
+        "/u/security",
+    );
+    for _ in 0..4 {
+        assert_eq!(
+            c.post(
+                "/u/password",
+                &[
+                    ("current_password", wrong.expose_secret()),
+                    ("new_password", wrong.expose_secret())
+                ]
+            )
+            .await
+            .status,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    c.post("/logout", &[]).await;
+    // A different account on the same IP shares the network's failure count.
+    assert_eq!(
+        c.login(&Uuid::now_v7().to_string(), &wrong, false)
+            .await
+            .status,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    c.network = "127.0.3.1:1234".parse().unwrap();
+    // The real account has four failures; a fresh IP does not reset that state.
+    assert_eq!(
+        c.login(&name, &wrong, false).await.status,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn overlapping_passkey_ceremonies_cannot_roll_back_the_counter(pool: PgPool) {
+    let mut c = Client::new(pool, false).await;
+    let (id, name, password) = c.seed(false, false).await;
+    c.login(&name, &password, false).await;
+    let (soft, _) = SoftToken::new(true).unwrap();
+    let mut authenticator = WebauthnAuthenticator::new(soft);
+    c.enroll_passkey(&mut authenticator).await;
+    c.post("/logout", &[]).await;
+    c.login(&name, &password, false).await;
+    let start = c
+        .json("/login/mfa/passkey/start", serde_json::json!({}))
+        .await;
+    let first: RequestChallengeResponse = serde_json::from_str(&start.body).unwrap();
+    // Keep the first pending token while creating a second independent ceremony.
+    let pending = c.jar["yc"].clone();
+    let first_assertion = authenticator
+        .do_authentication(Url::parse(&c.origin).unwrap(), first)
+        .unwrap();
+    c.login(&name, &password, false).await;
+    let start = c
+        .json("/login/mfa/passkey/start", serde_json::json!({}))
+        .await;
+    let second: RequestChallengeResponse = serde_json::from_str(&start.body).unwrap();
+    let second_assertion = authenticator
+        .do_authentication(Url::parse(&c.origin).unwrap(), second)
+        .unwrap();
+    location(
+        &c.json(
+            "/login/mfa/passkey/finish",
+            serde_json::to_value(second_assertion).unwrap(),
+        )
+        .await,
+        "/",
+    );
+    c.post("/logout", &[]).await;
+    c.jar.insert("yc".into(), pending);
+    assert_eq!(
+        c.json(
+            "/login/mfa/passkey/finish",
+            serde_json::to_value(first_assertion).unwrap()
+        )
+        .await
+        .status,
+        StatusCode::UNAUTHORIZED
+    );
+    let mut connection = c.pool.acquire().await.unwrap();
+    let method = mfa::list(&mut connection, id).await.unwrap().remove(0);
+    assert_eq!(method.sign_count, 2);
+    let key = method.public_key.clone().unwrap();
+    // This is the storage check used after signature validation against a stale
+    // zero-counter ceremony: a now-counted credential must never reset to zero.
+    assert!(
+        !mfa::use_passkey(&mut connection, id, &method, 0, &key)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !mfa::use_passkey(&mut connection, id, &method, 2, &key)
+            .await
+            .unwrap()
+    );
+    assert!(
+        mfa::use_passkey(&mut connection, id, &method, 3, &key)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !mfa::use_passkey(&mut connection, id, &method, 4, &key)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        mfa::list(&mut connection, id).await.unwrap()[0].sign_count,
+        3
+    );
+    // Genuine counterless credentials still accept zero, including overlapping uses.
+    let mut counterless = method;
+    counterless.id = Uuid::now_v7();
+    counterless.credential_id = Some(Uuid::now_v7().as_bytes().to_vec());
+    counterless.sign_count = 0;
+    mfa::add(&mut connection, id, &counterless).await.unwrap();
+    for _ in 0..2 {
+        assert!(
+            mfa::use_passkey(&mut connection, id, &counterless, 0, &key)
+                .await
+                .unwrap()
+        );
+    }
 }
