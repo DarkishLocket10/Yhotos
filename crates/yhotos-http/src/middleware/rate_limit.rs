@@ -35,7 +35,10 @@ fn class(path: &str) -> Class {
         || (path.starts_with("/s/") && path.ends_with("/unlock"))
     {
         Class::Auth
-    } else if matches!(path, "/search" | "/zip") || path.starts_with("/o/") {
+    } else if matches!(path, "/search" | "/zip")
+        || path.starts_with("/o/")
+        || path.starts_with("/v/")
+    {
         Class::Expensive
     } else {
         Class::Cheap
@@ -181,9 +184,12 @@ fn client_ip(request: &Request, trust_proxy: bool) -> Result<IpAddr, HttpError> 
             .ok_or(HttpError::BadRequest)
     }
 }
+#[derive(Clone, Copy)]
+pub(crate) struct ClientIp(pub(crate) IpAddr);
+
 pub(crate) async fn limit(
     State(state): State<Arc<RateLimiter>>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
     let ip = match client_ip(&request, state.trust_proxy) {
@@ -196,6 +202,10 @@ pub(crate) async fn limit(
             response.headers_mut().insert(header::RETRY_AFTER, value);
         }
         return response;
+    }
+    // Both original and video bodies use the validated IP for stream accounting.
+    if request.uri().path().starts_with("/o/") || request.uri().path().starts_with("/v/") {
+        request.extensions_mut().insert(ClientIp(ip));
     }
     next.run(request).await
 }

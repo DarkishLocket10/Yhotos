@@ -18,3 +18,11 @@ When nightly is unavailable, installed Rust 1.99.1 also supports the sanitizer
 flags with `RUSTC_BOOTSTRAP=1`. Cargo deny loads the fuzz-only NCSA exception from
 `fuzz/deny.exceptions.toml` for libfuzzer-sys 0.4.13. The root deny policy is
 maintainer-only and remains unchanged.
+
+The `range_header` target compiles the production single-range parser directly.
+It checks positive lengths, representation bounds and canonical round trips for
+arbitrary headers and file sizes, including `u64::MAX`.
+
+```sh
+cargo +nightly fuzz run range_header -- -runs=100000 -max_len=128
+```
