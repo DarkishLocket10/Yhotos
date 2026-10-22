@@ -54,7 +54,13 @@ PROMPT_FILE="$(mktemp)"
   echo "Your final message must be the review in the format above and nothing else."
 } > "$PROMPT_FILE"
 LAST="$(mktemp)"
-codex exec \
+# Reviews are light, but on Linux they still get a hard ceiling so nothing we start can
+# exhaust the host (yesktop crashed twice on 2026-10-22).
+SCOPE=()
+if [[ "$(uname)" != "Darwin" ]] && command -v systemd-run >/dev/null; then
+  SCOPE=(systemd-run --user --scope -q -p "MemoryMax=${YHOTOS_REVIEW_MEM_MAX:-4G}" -p MemorySwapMax=0 --)
+fi
+${SCOPE[@]+"${SCOPE[@]}"} codex exec \
   -C "$WT" \
   -m gpt-6-astra \
   -c "model_reasoning_effort=\"$EFFORT\"" \

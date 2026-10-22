@@ -70,18 +70,35 @@ FREE="$(free_gb)"
 # runaway build is killed inside its own scope instead of exhausting the machine (an unbounded
 # cargo -j30 per agent caused global OOM kills on yesktop on 2026-10-21).
 # Overrides: YHOTOS_AGENT_MIN_FREE_GB, YHOTOS_AGENT_MAX_RUNNING, YHOTOS_AGENT_MEM_MAX.
+# 2026-10-22: one agent per host after yesktop crashed twice and the 24 GB Mac reached 3.5 GB of
+# swap with two agents. scripts/mem-watchdog.sh pauses builds if memory still runs low.
 if [[ "$(uname)" == "Darwin" ]]; then
-  MIN_FREE="${YHOTOS_AGENT_MIN_FREE_GB:-6}"
-  MAX_RUNNING="${YHOTOS_AGENT_MAX_RUNNING:-2}"
-  export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}"
+  MIN_FREE="${YHOTOS_AGENT_MIN_FREE_GB:-8}"
+  MAX_RUNNING="${YHOTOS_AGENT_MAX_RUNNING:-1}"
+  MAX_SWAP_GB="${YHOTOS_AGENT_MAX_SWAP_GB:-3}"
+  export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-3}"
 else
   MIN_FREE="${YHOTOS_AGENT_MIN_FREE_GB:-14}"
-  MAX_RUNNING="${YHOTOS_AGENT_MAX_RUNNING:-2}"
-  export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}"
+  MAX_RUNNING="${YHOTOS_AGENT_MAX_RUNNING:-1}"
+  MAX_SWAP_GB="${YHOTOS_AGENT_MAX_SWAP_GB:-2}"
+  export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}"
 fi
-MEM_MAX="${YHOTOS_AGENT_MEM_MAX:-14G}"
+export RUST_TEST_THREADS="${RUST_TEST_THREADS:-2}"
+MEM_MAX="${YHOTOS_AGENT_MEM_MAX:-12G}"
+swap_used_gb() {
+  if [[ "$(uname)" == "Darwin" ]]; then
+    sysctl -n vm.swapusage | awk '{for (i=1;i<=NF;i++) if ($i=="used") {v=$(i+2); sub(/M/,"",v); printf "%d", v/1024}}'
+  else
+    awk '/SwapTotal/ {t=$2} /SwapFree/ {f=$2} END {printf "%d", (t-f)/1048576}' /proc/meminfo
+  fi
+}
 if (( FREE < MIN_FREE )); then
   echo "refusing to start: only ${FREE} GB free memory (need ${MIN_FREE})" >&2
+  exit 3
+fi
+SWAP="$(swap_used_gb)"
+if (( SWAP > MAX_SWAP_GB )); then
+  echo "refusing to start: ${SWAP} GB swap in use (max ${MAX_SWAP_GB})" >&2
   exit 3
 fi
 # Count running agent runs on this host through pid files; stale files are ignored.
