@@ -39,15 +39,17 @@ getrandom.workspace = true
 blake3.workspace = true
 subtle.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 
 yhotos-auth = { path = "../yhotos-auth" }
 secrecy.workspace = true
-serde_json.workspace = true
 time.workspace = true
 zeroize.workspace = true
 qrcode.workspace = true
 
 [dev-dependencies]
+insta.workspace = true
+flate2.workspace = true
 # Enable the constructor for integration tests, including default-feature test runs.
 yhotos-http = { path = ".", features = ["test-util"] }
 webauthn-authenticator-rs.workspace = true
@@ -61,3 +63,7 @@ figment.workspace = true
 url.workspace = true
 tracing-subscriber.workspace = true
 log.workspace = true
+
+[[example]]
+name = "pages_fixture"
+path = "../../deploy/dev/pages_fixture.rs"

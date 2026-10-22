@@ -6,21 +6,20 @@ pub mod auth;
 pub mod error;
 pub mod files;
 pub mod middleware;
+pub mod pages;
 mod state;
 pub use state::{AppResources, AppState};
 mod static_assets;
 
-use askama::Template;
 use axum::{
     Extension, Router,
-    extract::State,
     http::{StatusCode, header},
     middleware::{from_fn, from_fn_with_state},
-    response::{Html, IntoResponse, Response},
+    response::IntoResponse,
     routing::get,
 };
 use error::HttpError;
-use middleware::{rate_limit::RateLimiter, security_headers::Nonce};
+use middleware::rate_limit::RateLimiter;
 use std::time::Duration;
 use tower_http::{limit::RequestBodyLimitLayer, timeout::TimeoutLayer, trace::TraceLayer};
 
@@ -41,8 +40,14 @@ pub fn public_router(state: AppState) -> Router {
         .route("/o/{hash}/{name}", get(files::original))
         .route("/v/{hash}/{name}", get(files::video));
     let router = Router::new()
+        .route("/", get(pages::home))
+        .route("/a/{*path}", get(pages::album))
+        .route("/p/{id}", get(pages::photo))
+        .route("/legacy/{*path}", get(pages::legacy))
+        .route("/index.php", get(pages::legacy))
+        .route("/picture.php", get(pages::legacy))
+        .route_layer(from_fn(pages::privacy))
         .merge(auth::routes(auth::Audience(false)))
-        .route("/", get(home))
         .route("/healthz", get(health).with_state(()))
         .route("/static/{*path}", get(static_assets::serve))
         .merge(files);
@@ -127,39 +132,12 @@ async fn health() -> impl IntoResponse {
         "ok",
     )
 }
-#[derive(Template)]
-#[template(path = "default/home.html")]
-struct HomeTemplate<'a> {
-    nonce: Nonce,
-    stylesheet: &'a str,
-    script: &'a str,
-}
-async fn home(
-    State(_state): State<AppState>,
-    Extension(nonce): Extension<Nonce>,
-) -> Result<Response, HttpError> {
-    let html = HomeTemplate {
-        nonce,
-        stylesheet: static_assets::stylesheet_url()?,
-        script: static_assets::script_url()?,
-    }
-    .render()
-    .map_err(|e| HttpError::Internal(e.into()))?;
-    Ok((
-        [(
-            header::CACHE_CONTROL,
-            "public, max-age=60, stale-while-revalidate=600",
-        )],
-        Html(html),
-    )
-        .into_response())
-}
 #[cfg(test)]
-async fn test_form() -> Result<Response, HttpError> {
+async fn test_form() -> Result<axum::response::Response, HttpError> {
     let token = middleware::csrf::CsrfToken::generate()?;
     Ok((
         [(header::SET_COOKIE, token.cookie(false)?)],
-        Html(format!(
+        axum::response::Html(format!(
             "<form method=post><input name=_csrf value=\"{}\"></form>",
             token.form_value()
         )),

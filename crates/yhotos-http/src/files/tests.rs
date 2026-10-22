@@ -294,7 +294,10 @@ async fn denied_and_missing_are_byte_identical_and_granted_requests_are_private(
     let response = app.oneshot(denied).await.unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     assert!(!response.headers().contains_key(header::ETAG));
-    assert_eq!(bytes(response).await, "Not found");
+    assert_eq!(
+        bytes(response).await,
+        bytes(crate::pages::not_found()).await
+    );
 }
 
 #[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
@@ -414,7 +417,10 @@ async fn invalid_hashes_and_selectors_never_reach_database_or_missing_store() {
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::NOT_FOUND);
-            assert_eq!(bytes(response).await, "Not found");
+            assert_eq!(
+                bytes(response).await,
+                bytes(crate::pages::not_found()).await
+            );
         }
     }
     for name in [
@@ -438,10 +444,60 @@ async fn invalid_hashes_and_selectors_never_reach_database_or_missing_store() {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        assert_eq!(bytes(response).await, "Not found");
+        assert_eq!(
+            bytes(response).await,
+            bytes(crate::pages::not_found()).await
+        );
     }
     state.files.rows.run_pending_tasks().await;
     assert_eq!(state.files.rows.entry_count(), 0);
+}
+
+#[test]
+fn derivative_selector_alphabet_and_length_match_storage() {
+    let hash = "a".repeat(64);
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    for (variant, valid) in [
+        ("small", true),
+        ("square2x", true),
+        ("0123456789abcdef", true),
+        ("", false),
+        ("a-b", false),
+        ("a_b", false),
+        ("Small", false),
+        ("é", false),
+        ("abcdefghijklmnopq", false),
+    ] {
+        for format in ["jpeg", "avif", "jxl"] {
+            for hdr in [false, true] {
+                let suffix = if hdr { ".hdr" } else { "" };
+                assert_eq!(
+                    Selector::parse(
+                        &hash,
+                        &format!("{variant}.{format}{suffix}"),
+                        Area::Derivatives
+                    )
+                    .is_ok(),
+                    valid
+                );
+                assert_eq!(
+                    store
+                        .path_derivative(&DerivativeKey {
+                            hash: &hash.parse().unwrap(),
+                            variant,
+                            format,
+                            hdr,
+                        })
+                        .is_ok(),
+                    valid
+                );
+            }
+        }
+    }
+    for name in ["small.JPEG", "small.png"] {
+        assert!(Selector::parse(&hash, name, Area::Derivatives).is_err());
+    }
 }
 
 // Keep callsite interest enabled for the lifetime of the test process. A task
@@ -517,7 +573,10 @@ async fn missing_file_is_concealed_and_logs_error_with_request_id(pool: PgPool) 
         .to_str()
         .unwrap()
         .to_owned();
-    assert_eq!(bytes(response).await, "Not found");
+    assert_eq!(
+        bytes(response).await,
+        bytes(crate::pages::not_found()).await
+    );
     let logs = errors.lock().unwrap();
     assert!(
         logs.iter()
@@ -826,7 +885,10 @@ async fn missing_original_filename_aliases_do_not_grow_metadata_cache(pool: PgPo
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        assert_eq!(bytes(response).await, "Not found");
+        assert_eq!(
+            bytes(response).await,
+            bytes(crate::pages::not_found()).await
+        );
         f.state.files.rows.run_pending_tasks().await;
         assert_eq!(f.state.files.rows.entry_count(), 1);
     }
@@ -1064,4 +1126,17 @@ async fn hdr_variant_paths_are_distinct_and_database_filename_is_sanitized(pool:
         app.oneshot(conditional).await.unwrap().status(),
         StatusCode::OK
     );
+}
+
+// Shares the task-local observer so page and file tests never compete for a
+// process-global tracing subscriber or count another concurrent test's SQL.
+pub(crate) async fn count_queries<T>(future: impl std::future::Future<Output = T>) -> (T, usize) {
+    init_capture();
+    let queries = Arc::new(AtomicUsize::new(0));
+    let events = Events {
+        queries: queries.clone(),
+        errors: Arc::default(),
+    };
+    let value = CAPTURE.scope(events, future).await;
+    (value, queries.load(Ordering::Relaxed))
 }

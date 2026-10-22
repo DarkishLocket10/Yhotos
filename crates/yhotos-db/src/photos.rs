@@ -587,3 +587,157 @@ pub(crate) async fn file_owners(
         })
         .collect()
 }
+
+/// Fixed public sort choices; unknown external values fall back to date taken.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PageSort {
+    /// Most recent capture first, with posted date for missing capture dates.
+    #[default]
+    Taken,
+    /// Most recently posted first.
+    Posted,
+    /// Alphabetical title, with a stable id tie breaker.
+    Name,
+    /// Administrator-specified ascending order.
+    Manual,
+}
+impl PageSort {
+    /// Accepts only the documented sort names.
+    #[must_use]
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "posted" => Self::Posted,
+            "name" => Self::Name,
+            "manual" => Self::Manual,
+            _ => Self::Taken,
+        }
+    }
+    /// Canonical query-string value; safe for links and SQL CASE selection.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Taken => "taken",
+            Self::Posted => "posted",
+            Self::Name => "name",
+            Self::Manual => "manual",
+        }
+    }
+}
+
+/// A derivative descriptor; rendering validates URL components and dimensions.
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+pub struct PageDerivative {
+    /// Stored variant, from the fixed file-serving vocabulary.
+    pub variant: String,
+    /// Stored image encoding.
+    pub format: String,
+    /// Whether this representation contains HDR pixels.
+    pub hdr: bool,
+    /// Content digest, checked before constructing an image URL.
+    pub hash: String,
+    /// Positive pixel width.
+    pub w: u32,
+    /// Positive pixel height.
+    pub h: u32,
+}
+
+/// Only page-relevant metadata; no grants, secrets or internal paths are rendered.
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct PagePhoto {
+    /// Photo cache tag identity.
+    pub id: PhotoId,
+    /// Canonical public lookup key.
+    pub short_id: ShortId,
+    /// Album cache tag identity.
+    pub album_id: AlbumId,
+    /// Untrusted title, escaped by templates.
+    pub title: String,
+    /// Untrusted plain text description, escaped by templates.
+    pub description: String,
+    /// Original content digest, checked before constructing a download URL.
+    pub original_hash: String,
+    /// Display name only, percent-encoded for downloads.
+    pub original_name: String,
+    /// Closed media vocabulary, checked by rendering.
+    pub kind: String,
+    /// Optional source width.
+    pub width: Option<u32>,
+    /// Optional source height.
+    pub height: Option<u32>,
+    /// Source EXIF orientation; derivatives already have orientation applied.
+    pub orientation: Option<u8>,
+    /// RGB integers from extraction; out-of-range values are ignored.
+    pub dominant_colors: Vec<i32>,
+    /// Base64-encoded thumbhash from PostgreSQL, bounded at rendering.
+    pub thumbhash: Option<String>,
+    /// All available responsive representations.
+    pub derivatives: Vec<PageDerivative>,
+    /// Capture date as stored text, escaped when rendered.
+    #[serde(default)]
+    pub taken_at: Option<String>,
+    /// Camera manufacturer.
+    pub camera_make: Option<String>,
+    /// Camera model.
+    pub camera_model: Option<String>,
+    /// Lens name.
+    pub lens: Option<String>,
+    /// Focal length in millimetres.
+    pub focal_mm: Option<f64>,
+    /// Lens aperture.
+    pub aperture: Option<f64>,
+    /// Exposure duration.
+    pub shutter: Option<String>,
+    /// ISO sensitivity.
+    pub iso: Option<i32>,
+    /// Geographic latitude, range checked by rendering.
+    pub gps_lat: Option<f64>,
+    /// Geographic longitude, range checked by rendering.
+    pub gps_lon: Option<f64>,
+}
+
+/// A visible photo and its same-sort neighbours, fetched in one round trip.
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct PhotoPage {
+    /// Visible photo and its derivatives.
+    pub photo: PagePhoto,
+    /// Root-to-leaf album breadcrumbs.
+    pub chain: Vec<crate::albums::Breadcrumb>,
+    /// Previous visible photo under the selected sort.
+    pub previous: Option<ShortId>,
+    /// Next visible photo under the selected sort.
+    pub next: Option<ShortId>,
+}
+
+/// Resolves a short id only after SQL visibility and computes neighbours before filtering it.
+///
+/// # Errors
+/// Returns connection failures or malformed stored metadata.
+pub async fn page(
+    conn: &mut PgConnection,
+    principal: &yhotos_core::access::Principal<'_>,
+    short_id: &ShortId,
+    sort: PageSort,
+) -> Result<Option<PhotoPage>, DbError> {
+    let bindings = crate::access_sql::visible_photos(principal);
+    let key = short_id.to_string();
+    let row = crate::visible_page_query!(r#",
+      ordered AS (
+        SELECT p.*, lag(short_id) OVER ordering AS previous, lead(short_id) OVER ordering AS next
+        FROM visible_photos p
+        WHERE p.album_id=(SELECT album_id FROM visible_photos WHERE short_id=$6)
+        WINDOW ordering AS (ORDER BY
+          CASE WHEN $7='taken' THEN coalesce(taken_at,posted_at) END DESC,
+          CASE WHEN $7='posted' THEN posted_at END DESC,
+          CASE WHEN $7='name' THEN title END COLLATE "C" ASC,
+          CASE WHEN $7='manual' THEN sort_order END ASC, id ASC)
+      ) SELECT jsonb_build_object(
+        'photo', to_jsonb(p) || jsonb_build_object('thumbhash',encode(p.placeholder,'base64'),
+          'derivatives',coalesce((SELECT jsonb_agg(jsonb_build_object(
+            'variant',d.variant,'format',d.format,'hdr',d.hdr,'hash',d.hash,'w',d.width,'h',d.height)
+            ORDER BY d.width,d.format,d.hdr) FROM derivatives d WHERE d.photo_id=p.id),'[]'::jsonb)),
+        'chain', a.chain, 'previous',p.previous,'next',p.next) AS "payload!"
+      FROM ordered p JOIN album_levels a ON a.id=p.album_id WHERE p.short_id=$6
+    "#, bindings, key, sort.as_str()).fetch_optional(conn).await?;
+    row.map(|r| serde_json::from_value(r.payload).map_err(|_| DbError::InvalidInput))
+        .transpose()
+}

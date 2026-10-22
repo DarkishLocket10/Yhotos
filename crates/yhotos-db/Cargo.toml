@@ -20,6 +20,7 @@ time.workspace = true
 unicode-normalization.workspace = true
 
 [dev-dependencies]
+proptest.workspace = true
 tracing.workspace = true
 tokio.workspace = true
 tracing-subscriber.workspace = true

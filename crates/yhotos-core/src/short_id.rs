@@ -58,6 +58,18 @@ impl FromStr for ShortId {
     }
 }
 
+impl<'de> serde::Deserialize<'de> for ShortId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
+        value.parse().map_err(serde::de::Error::custom)
+    }
+}
+impl serde::Serialize for ShortId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
 #[cfg(feature = "sqlx")]
 mod postgres {
     use super::ShortId;

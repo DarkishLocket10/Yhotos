@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO photos(id,short_id,album_id,title,original_hash,original_name,original_bytes,mime,kind,visibility) VALUES ($1,$2,$3,'Property photo',$4,'photo.jpeg',0,'image/jpeg','image',$5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Text",
+        {
+          "Custom": {
+            "name": "visibility",
+            "kind": {
+              "Enum": [
+                "inherit",
+                "public",
+                "restricted"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b25989281ee20b6317286f7ae6188ebfbfb248f36ba160ae8ca1d0b021b30676"
+}

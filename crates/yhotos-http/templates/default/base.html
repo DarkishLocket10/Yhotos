@@ -3,9 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Yhotos</title>
-<link rel="stylesheet" href="{{ stylesheet }}">
-<script type="module" nonce="{{ nonce }}" src="{{ script }}"></script>
+<title>{{ title }} · Yhotos</title>
+<meta name="description" content="{{ description }}">
+<link rel="stylesheet" href="{{ context.stylesheet }}">
+{% if !styles.is_empty() %}<style nonce="{{ context.nonce }}">{{ styles|safe }}</style>{% endif %}
+<script type="module" nonce="{{ context.nonce }}" src="{{ context.script }}"></script>
+{% block metadata %}{% endblock %}
 </head>
-<body>{% block content %}{% endblock %}</body>
+<body><header class="site-header"><a href="/">Yhotos</a><span>Photo gallery</span></header>{% block content %}{% endblock %}<footer>Yhotos photo gallery</footer></body>
 </html>
