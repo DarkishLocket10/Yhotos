@@ -7,6 +7,8 @@
 #   scripts/agent-run.sh NNN --host yesktop  run on yesktop over ssh (repo must exist at ~/work/Yhotos there)
 #   scripts/agent-run.sh NNN --base REF      branch from REF instead of origin/main
 #
+# Optional YHOTOS_AGENT_NOTE env var: extra maintainer notes (for example test service URLs)
+# added to the prompt.
 # Reads model/effort from the brief header. Refuses to start when free memory is low or the
 # host already runs its maximum number of agents; see the limits block below.
 set -euo pipefail
@@ -127,6 +129,11 @@ trap 'rm -f "$PROMPT_FILE" "$RUN_DIR/$TASK_ID.pid"' EXIT
     echo
     echo "Reviewer notes:"
     echo "$RESUME_MSG"
+    echo
+  fi
+  if [[ -n "${YHOTOS_AGENT_NOTE:-}" ]]; then
+    echo "Environment notes from the maintainer (test services and similar):"
+    echo "$YHOTOS_AGENT_NOTE"
     echo
   fi
   echo "----- BRIEF -----"
