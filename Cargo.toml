@@ -1,5 +1,6 @@
 [workspace]
 members = ["crates/*"]
+exclude = ["fuzz"]
 resolver = "3"
 
 [workspace.package]
@@ -42,6 +43,16 @@ subtle = "=2.6.1"
 criterion = { version = "=0.8.2", default-features = false, features = ["cargo_bench_support"] }
 proptest = "=1.12.0"
 tempfile = "=3.27.0"
+argon2 = { version = "=0.6.0", features = ["zeroize"] }
+password-hash = { version = "=0.6.1", features = ["phc"] }
+rand = "=0.8.8"
+zeroize = { version = "=1.9.1", features = ["derive"] }
+base64 = "=0.23.1"
+hmac = "=0.13.0"
+sha1 = "=0.11.0"
+webauthn-rs = { version = "=0.5.5", default-features = false, features = ["danger-allow-state-serialisation"] }
+webauthn-authenticator-rs = { version = "=0.5.5", features = ["softtoken"] }
+chacha20poly1305 = { version = "=0.11.0", features = ["zeroize"] }
 
 [profile.release]
 lto = "fat"
