@@ -203,3 +203,8 @@ else
   gh pr create --base main --head "$BRANCH" --title "$TASK_ID $SLUG" --body-file "$BODY_FILE"
 fi
 rm -f "$BODY_FILE"
+# Build output is 14-30 GB per worktree. The source and branch stay for reviews and resumes;
+# the next run rebuilds. Set YHOTOS_KEEP_TARGET=1 to keep it.
+if [[ "${YHOTOS_KEEP_TARGET:-0}" != 1 ]]; then
+  rm -rf "$WT/target"
+fi
