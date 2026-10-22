@@ -1,6 +1,7 @@
 services:
   postgres:
     image: pgvector/pgvector:pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
+    command: ["postgres", "-c", "ssl=off"]
     environment:
       POSTGRES_USER: yhotos
       POSTGRES_DB: yhotos_test

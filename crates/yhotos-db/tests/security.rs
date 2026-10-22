@@ -4,7 +4,7 @@
 use secrecy::SecretString;
 use sqlx::{ConnectOptions, PgPool};
 use uuid::Uuid;
-use yhotos_db::{Db, DbError, MIGRATOR, Role, users};
+use yhotos_db::{DatabaseTls, Db, DbError, MIGRATOR, Role, users};
 
 #[sqlx::test(migrations = false)]
 async fn migrations_from_empty_are_idempotent(pool: PgPool) {
@@ -27,7 +27,9 @@ async fn connection_settings_and_admin_only_migration(pool: PgPool) {
         (Role::Admin, "30s", "yhotos_admin"),
         (Role::Worker, "1min", "yhotos_worker"),
     ] {
-        let db = Db::connect(&url, role, 2).await.unwrap();
+        let db = Db::connect(&url, role, 2, DatabaseTls::Disable)
+            .await
+            .unwrap();
         // Acquire two simultaneously so after_connect is tested on more than one connection.
         let mut one = db.pool().acquire().await.unwrap();
         let mut two = db.pool().acquire().await.unwrap();
@@ -49,15 +51,58 @@ async fn connection_settings_and_admin_only_migration(pool: PgPool) {
         }
         db.pool().close().await;
     }
-    assert!(Db::connect(&url, Role::Admin, 0).await.is_err());
+    assert!(
+        Db::connect(&url, Role::Admin, 0, DatabaseTls::Disable)
+            .await
+            .is_err()
+    );
     let invalid: SecretString = Uuid::now_v7().to_string().into();
-    let Err(err) = Db::connect(&invalid, Role::Public, 1).await else {
+    let Err(err) = Db::connect(&invalid, Role::Public, 1, DatabaseTls::default()).await else {
         unreachable!()
     };
     assert!(
         !err.to_string()
             .contains(secrecy::ExposeSecret::expose_secret(&invalid))
     );
+}
+
+#[tokio::test]
+async fn disabling_tls_for_remote_hosts_is_rejected_before_dialing() {
+    for host in ["192.0.2.1", "[2001:db8::1]", "db.example.invalid"] {
+        let url: SecretString = format!("postgres://{host}/gallery?sslmode=disable").into();
+        assert!(matches!(
+            Db::connect(&url, Role::Admin, 1, DatabaseTls::Disable).await,
+            Err(DbError::InsecureTransport)
+        ));
+    }
+}
+
+#[sqlx::test]
+async fn required_tls_rejects_plain_postgres_and_loopback_disable_succeeds(pool: PgPool) {
+    // The dev/CI service intentionally has no TLS, so Require must fail rather than fall back.
+    let ssl = sqlx::query_scalar!("SHOW ssl")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(ssl.as_deref(), Some("off"));
+    let url: SecretString = pool.connect_options().to_url_lossy().to_string().into();
+    assert!(matches!(
+        Db::connect(&url, Role::Admin, 1, DatabaseTls::default()).await,
+        Err(DbError::Sqlx(sqlx::Error::Tls(_)))
+    ));
+    let local = Db::connect(&url, Role::Admin, 1, DatabaseTls::Disable)
+        .await
+        .unwrap();
+    let mut conn = local.pool().acquire().await.unwrap();
+    assert_eq!(
+        sqlx::query_scalar!("SELECT 1 AS \"value!\"")
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap(),
+        1
+    );
+    drop(conn);
+    local.pool().close().await;
 }
 
 #[sqlx::test]

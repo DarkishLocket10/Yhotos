@@ -51,7 +51,10 @@ async fn photo(conn: &mut PgConnection, album: AlbumId) -> photos::PhotoRow {
 async fn claim_all(pool: &PgPool, worker: &str) -> Vec<yhotos_core::JobId> {
     let mut conn = pool.acquire().await.unwrap();
     let mut ids = Vec::new();
-    while let Some(job) = jobs::claim(&mut conn, worker, &["ingest"]).await.unwrap() {
+    while let Some((job, token)) = jobs::claim(&mut conn, worker, &["ingest"]).await.unwrap() {
+        assert_eq!(token.job_id, job.id);
+        assert_eq!(token.worker_id, worker);
+        assert_eq!(token.attempt, job.attempts);
         ids.push(job.id);
         tokio::task::yield_now().await;
     }
@@ -796,7 +799,7 @@ async fn jobs_all_operations_retries_stale_and_notifications(pool: PgPool) {
             .unwrap()
             .is_none()
     );
-    let claimed = jobs::claim(&mut conn, "worker", &["ingest"])
+    let (claimed, token) = jobs::claim(&mut conn, "worker", &["ingest"])
         .await
         .unwrap()
         .unwrap();
@@ -811,7 +814,7 @@ async fn jobs_all_operations_retries_stale_and_notifications(pool: PgPool) {
     );
     jobs::fail(
         &mut conn,
-        j.id,
+        &token,
         "temporary decode failure",
         std::time::Duration::from_secs(60),
     )
@@ -830,13 +833,13 @@ async fn jobs_all_operations_retries_stale_and_notifications(pool: PgPool) {
     .execute(&mut *conn)
     .await
     .unwrap();
-    jobs::claim(&mut conn, "worker", &["ingest"])
+    let (_, token) = jobs::claim(&mut conn, "worker", &["ingest"])
         .await
         .unwrap()
         .unwrap();
     jobs::fail(
         &mut conn,
-        j.id,
+        &token,
         "terminal decode failure",
         std::time::Duration::ZERO,
     )
@@ -871,15 +874,12 @@ async fn jobs_all_operations_retries_stale_and_notifications(pool: PgPool) {
     jobs::release_stale(&mut conn, OffsetDateTime::now_utc() + Duration::seconds(1))
         .await
         .unwrap();
-    assert_eq!(
-        jobs::claim(&mut conn, "other-worker", &["ingest"])
-            .await
-            .unwrap()
-            .unwrap()
-            .id,
-        next.id
-    );
-    jobs::complete(&mut conn, next.id).await.unwrap();
+    let (reclaimed, token) = jobs::claim(&mut conn, "other-worker", &["ingest"])
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(reclaimed.id, next.id);
+    assert!(jobs::complete(&mut conn, &token).await.unwrap());
     assert_eq!(
         jobs::list(&mut conn, jobs::JobStatus::Complete, 0)
             .await
@@ -887,11 +887,11 @@ async fn jobs_all_operations_retries_stale_and_notifications(pool: PgPool) {
             .len(),
         1
     );
-    assert!(
+    assert_eq!(
         jobs::list(&mut conn, jobs::JobStatus::Complete, 1)
             .await
-            .unwrap()
-            .is_empty()
+            .unwrap(),
+        []
     );
     let stale = jobs::enqueue(
         &mut conn,
@@ -920,6 +920,111 @@ async fn jobs_all_operations_retries_stale_and_notifications(pool: PgPool) {
             .len(),
         2
     );
+}
+
+#[sqlx::test]
+async fn stale_workers_cannot_complete_or_fail_reclaimed_jobs(pool: PgPool) {
+    let mut worker_a = pool.acquire().await.unwrap();
+    let mut worker_b = pool.acquire().await.unwrap();
+    // Reusing a worker name must still invalidate the old attempt's token.
+    for replacement_worker in ["worker-b", "worker-a"] {
+        let queued = jobs::enqueue(
+            &mut worker_a,
+            "ingest",
+            &json!({}),
+            0,
+            OffsetDateTime::now_utc(),
+        )
+        .await
+        .unwrap();
+        let (first, stale) = jobs::claim(&mut worker_a, "worker-a", &["ingest"])
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.id, queued.id);
+        assert_eq!(stale.attempt, 1);
+        assert_eq!(
+            jobs::release_stale(
+                &mut worker_b,
+                OffsetDateTime::now_utc() + Duration::seconds(1)
+            )
+            .await
+            .unwrap(),
+            1
+        );
+        // A released claim also has no right to complete or reschedule work.
+        assert!(!jobs::complete(&mut worker_a, &stale).await.unwrap());
+        assert!(
+            !jobs::fail(
+                &mut worker_a,
+                &stale,
+                "late error",
+                std::time::Duration::ZERO
+            )
+            .await
+            .unwrap()
+        );
+        let (second, current) = jobs::claim(&mut worker_b, replacement_worker, &["ingest"])
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(second.id, queued.id);
+        assert_eq!(current.worker_id, replacement_worker);
+        assert_eq!(current.attempt, 2);
+        // Check each ownership predicate independently as well as the real stale token.
+        let wrong_worker = jobs::ClaimToken {
+            worker_id: "different-worker".into(),
+            ..current.clone()
+        };
+        let wrong_attempt = jobs::ClaimToken {
+            attempt: stale.attempt,
+            ..current.clone()
+        };
+        for invalid in [&stale, &wrong_worker, &wrong_attempt] {
+            assert!(!jobs::complete(&mut worker_a, invalid).await.unwrap());
+            assert_eq!(
+                jobs::list(&mut worker_b, jobs::JobStatus::Running, 0)
+                    .await
+                    .unwrap(),
+                vec![second.clone()]
+            );
+            assert!(
+                !jobs::fail(
+                    &mut worker_a,
+                    invalid,
+                    "late error",
+                    std::time::Duration::from_secs(60)
+                )
+                .await
+                .unwrap()
+            );
+            // Includes timestamps, retry schedule, error, attempt count and lock identity.
+            assert_eq!(
+                jobs::list(&mut worker_b, jobs::JobStatus::Running, 0)
+                    .await
+                    .unwrap(),
+                vec![second.clone()]
+            );
+        }
+        assert!(
+            jobs::claim(&mut worker_a, "worker-c", &["ingest"])
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(jobs::complete(&mut worker_b, &current).await.unwrap());
+        assert!(!jobs::complete(&mut worker_a, &stale).await.unwrap());
+        assert!(
+            !jobs::fail(
+                &mut worker_a,
+                &stale,
+                "late error",
+                std::time::Duration::ZERO
+            )
+            .await
+            .unwrap()
+        );
+    }
 }
 
 #[sqlx::test]

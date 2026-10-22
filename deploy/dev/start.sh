@@ -18,5 +18,5 @@ if [[ ! "$_yhotos_dev_port" =~ ^[0-9]{1,5}$ ]] || ((10#$_yhotos_dev_port < 1 || 
     return 1 2>/dev/null || exit 1
 fi
 POSTGRES_PASSWORD="$_yhotos_dev_password" POSTGRES_PORT="$_yhotos_dev_port" docker compose --project-directory "$_yhotos_dev_dir" -f "$_yhotos_dev_dir/compose.yml" up -d --wait
-export DATABASE_URL="postgres://yhotos:${_yhotos_dev_password}@127.0.0.1:${_yhotos_dev_port}/yhotos_test"
+export DATABASE_URL="postgres://yhotos:${_yhotos_dev_password}@127.0.0.1:${_yhotos_dev_port}/yhotos_test?sslmode=disable"
 unset _yhotos_dev_password _yhotos_dev_env _yhotos_dev_port _yhotos_dev_dir

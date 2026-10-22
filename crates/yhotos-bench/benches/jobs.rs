@@ -8,13 +8,13 @@ use std::{
     time::{Duration, Instant},
 };
 use time::OffsetDateTime;
-use yhotos_db::{Db, Role, jobs};
+use yhotos_db::{DatabaseTls, Db, Role, jobs};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let runtime = tokio::runtime::Runtime::new()?;
     let _runtime_context = runtime.enter();
     let url: SecretString = std::env::var("DATABASE_URL")?.into();
-    let db = runtime.block_on(Db::connect(&url, Role::Admin, 2))?;
+    let db = runtime.block_on(Db::connect(&url, Role::Admin, 2, DatabaseTls::Disable))?;
     runtime.block_on(db.migrate())?;
     let mut conn = runtime.block_on(db.pool().acquire())?;
     let kind = format!("bench.{}", uuid::Uuid::now_v7());
@@ -31,10 +31,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         let start = Instant::now();
         let claimed = runtime.block_on(jobs::claim(&mut conn, "benchmark", &[&kind]))?;
         measured.push(start.elapsed());
-        if claimed.as_ref().map(|j| j.id) != Some(job.id) {
+        let Some((claimed, token)) = claimed else {
+            return Err("benchmark claim did not return its seeded job".into());
+        };
+        if claimed.id != job.id {
             return Err("benchmark claim did not return its seeded job".into());
         }
-        runtime.block_on(jobs::complete(&mut conn, job.id))?;
+        if !runtime.block_on(jobs::complete(&mut conn, &token))? {
+            return Err("benchmark lost ownership of its claim".into());
+        }
     }
     measured.sort_unstable();
     let p50 = *measured.get(measured.len() / 2).ok_or("missing samples")?;
@@ -57,10 +62,15 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let start = Instant::now();
                     let claimed = jobs::claim(&mut conn, "benchmark", &[&kind]).await?;
                     let elapsed = start.elapsed();
-                    if claimed.as_ref().map(|j| j.id) != Some(job.id) {
+                    let Some((claimed, token)) = claimed else {
+                        return Err(yhotos_db::DbError::InvalidInput);
+                    };
+                    if claimed.id != job.id {
                         return Err(yhotos_db::DbError::InvalidInput);
                     }
-                    jobs::complete(&mut conn, job.id).await?;
+                    if !jobs::complete(&mut conn, &token).await? {
+                        return Err(yhotos_db::DbError::InvalidInput);
+                    }
                     Ok(elapsed)
                 });
                 match result {

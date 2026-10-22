@@ -6,7 +6,7 @@ use time::OffsetDateTime;
 use yhotos_core::JobId;
 
 /// Durable queue state with typed identity, UTC scheduling and an atomic claim counter.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct JobRow {
     /// Stored id.
     pub id: JobId,
@@ -34,6 +34,17 @@ pub struct JobRow {
     pub finished_at: Option<OffsetDateTime>,
     /// Stored error.
     pub error: Option<String>,
+}
+
+/// Identifies one worker's particular claim; stale attempts cannot update a replacement claim.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClaimToken {
+    /// Job returned by the atomic claim query.
+    pub job_id: JobId,
+    /// Worker that acquired this claim.
+    pub worker_id: String,
+    /// Attempt number incremented by the claim query, including when a worker name is reused.
+    pub attempt: i32,
 }
 
 /// Queue states derived from completion, lock and error columns.
@@ -71,7 +82,7 @@ pub async fn enqueue(
 }
 
 /// Atomically claims the highest-priority due job of a supported kind with SKIP LOCKED; exhausted
-/// jobs are excluded.
+/// jobs are excluded. Returns the job and the token required to complete or fail this attempt.
 ///
 /// # Errors
 /// Returns invalid input or a database constraint/connection failure.
@@ -79,36 +90,44 @@ pub async fn claim(
     conn: &mut PgConnection,
     worker_id: &str,
     kinds: &[&str],
-) -> Result<Option<JobRow>, DbError> {
+) -> Result<Option<(JobRow, ClaimToken)>, DbError> {
     if worker_id.is_empty() || worker_id.len() > 128 {
         return Err(DbError::InvalidInput);
     }
-    Ok(
-        sqlx::query_file_as!(JobRow, "queries/claim.sql", worker_id, kinds as &[&str])
-            .fetch_optional(conn)
-            .await?,
-    )
+    let job = sqlx::query_file_as!(JobRow, "queries/claim.sql", worker_id, kinds as &[&str])
+        .fetch_optional(conn)
+        .await?;
+    Ok(job.map(|job| {
+        let token = ClaimToken {
+            job_id: job.id,
+            worker_id: worker_id.to_owned(),
+            attempt: job.attempts,
+        };
+        (job, token)
+    }))
 }
 
-/// Finishes a currently locked job successfully and clears its lock and prior error.
+/// Finishes only the matching worker's current attempt and clears its lock and prior error.
+/// Returns `false` without changing any row when the token no longer owns the claim.
 ///
 /// # Errors
 /// Returns invalid input or a database constraint/connection failure.
-pub async fn complete(conn: &mut PgConnection, id: JobId) -> Result<u64, DbError> {
-    Ok(sqlx::query!(r#"UPDATE jobs SET finished_at=now(),locked_at=NULL,locked_by=NULL,error=NULL WHERE id=$1 AND locked_at IS NOT NULL AND finished_at IS NULL"#, id as _).execute(conn).await?.rows_affected())
+pub async fn complete(conn: &mut PgConnection, token: &ClaimToken) -> Result<bool, DbError> {
+    Ok(sqlx::query!(r#"UPDATE jobs SET finished_at=now(),locked_at=NULL,locked_by=NULL,error=NULL WHERE id=$1 AND locked_by=$2 AND attempts=$3 AND locked_at IS NOT NULL AND finished_at IS NULL"#, token.job_id as _, &token.worker_id, token.attempt).execute(conn).await?.rows_affected() == 1)
 }
 
-/// Releases a locked job for a delayed retry, or records terminal failure at the attempt limit.
+/// Releases only the matching worker's current attempt for retry, or records terminal failure.
+/// Returns `false` without changing any row when the token no longer owns the claim.
 ///
 /// # Errors
 /// Returns invalid input or a database constraint/connection failure.
 pub async fn fail(
     conn: &mut PgConnection,
-    id: JobId,
+    token: &ClaimToken,
     error: &str,
     retry_in: std::time::Duration,
-) -> Result<u64, DbError> {
-    Ok(sqlx::query!(r#"UPDATE jobs SET error=$2,run_after=now()+make_interval(secs=>$3::double precision),finished_at=CASE WHEN attempts>=max_attempts THEN now() ELSE NULL END,locked_at=NULL,locked_by=NULL WHERE id=$1 AND locked_at IS NOT NULL AND finished_at IS NULL"#, id as _, error, retry_in.as_secs_f64()).execute(conn).await?.rows_affected())
+) -> Result<bool, DbError> {
+    Ok(sqlx::query!(r#"UPDATE jobs SET error=$2,run_after=now()+make_interval(secs=>$3::double precision),finished_at=CASE WHEN attempts>=max_attempts THEN now() ELSE NULL END,locked_at=NULL,locked_by=NULL WHERE id=$1 AND locked_by=$4 AND attempts=$5 AND locked_at IS NOT NULL AND finished_at IS NULL"#, token.job_id as _, error, retry_in.as_secs_f64(), &token.worker_id, token.attempt).execute(conn).await?.rows_affected() == 1)
 }
 
 /// Releases locks older than the UTC cutoff, marking exhausted jobs as terminal failures.

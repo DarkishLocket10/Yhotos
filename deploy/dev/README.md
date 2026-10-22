@@ -12,6 +12,18 @@ cargo sqlx prepare --workspace -- --all-targets --all-features
 cargo bench -p yhotos-bench --bench jobs
 ```
 
+The dev service deliberately runs with `ssl=off`; its exported URL explicitly
+sets `sslmode=disable`. Tests and the jobs benchmark pass `DatabaseTls::Disable`
+to `Db::connect` for this loopback connection. `DatabaseTls::default()` is
+`Require`, which overrides URL `sslmode` with `verify-full`: both the server
+certificate and hostname must verify. Set `sslrootcert=/path/to/ca.pem` in the
+connection URL for a private certificate authority. A `Require` connection to
+the plain dev service fails as expected, and the integration test asserts it.
+`Prefer` is an explicit development fallback that can allow plaintext;
+production TCP connections must use `Require`. `Disable` is rejected before
+dialing unless the effective host is a Unix socket path or a literal loopback
+IP address (IPv4 or IPv6); DNS names, including `localhost`, are rejected.
+
 Install the pinned migration/prepare CLI once if needed:
 
 ```sh
@@ -31,6 +43,9 @@ testing against its pgvector service.
 The jobs benchmark reports 1,000 individual claim samples (including p50) and a
 Criterion `jobs/claim` estimate. Enqueue and completion are outside claim timing.
 It uses a unique job kind and leaves completed jobs for normal queue inspection.
+Workers retain the `ClaimToken` returned alongside the claimed job and pass it
+to completion/failure calls. Updates match the job, worker and attempt; expired
+claims return `false` without altering a replacement worker's claim.
 
 Stop the database with `docker compose -f deploy/dev/compose.yml down`. The named
 volume preserves it; remove the volume before regenerating an existing password.

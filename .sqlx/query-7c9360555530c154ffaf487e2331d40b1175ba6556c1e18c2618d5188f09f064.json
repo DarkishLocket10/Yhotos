@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SHOW ssl",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "ssl",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "7c9360555530c154ffaf487e2331d40b1175ba6556c1e18c2618d5188f09f064"
+}
