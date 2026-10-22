@@ -27,16 +27,20 @@ OpenMapTiles-compatible data and their required attribution must be retained.
 
 Run `npm ci && npm run build` in web/ to vendor the pinned MapLibre bundles,
 worker, CSS and BSD license into embedded assets. MapLibre loads only on /map.
-With MapLibre 6.15.0 the measured gzip sizes are 291,311 bytes for map.js,
+With MapLibre 6.15.0 the measured gzip sizes are 293,198 bytes for map.js,
 149,791 bytes for its worker, and 10,191 bytes for map CSS (gzip default level).
-The map JS total is 441,102 bytes, larger than the brief's ~200 KB estimate.
+The map JS total is 442,989 bytes, larger than the brief's ~200 KB estimate.
 This page has a task-specific JS weight exception (main bundle plus worker);
 the normal <50 KB compressed JS budget applies to all other public pages.
 The maintainer must record this exception in docs/performance.md, which task
 instructions otherwise prohibit editing. Record actual gzip sizes and a
 Lighthouse result in the PR. The place list is always server-rendered and usable
-without JavaScript or WebGL. The server returns at most 484 grid cells below
-zoom 15, and at most 500 individual locations at zoom 15 and above. Zoom in to
+without JavaScript or WebGL. Its links lead to `/places/{place_id}`, a
+visibility-filtered photo grid with 60-photo pagination and a breadcrumb to /map. The server returns at most 484 grid cells below
+zoom 15, and at most 500 distinct locations at zoom 15 and above. Photos with identical
+coordinates share a count marker that opens a paginated photo list. These
+photo-level groups cannot split further; lower-zoom clusters zoom towards that
+level before offering the chooser. Zoom in to
 see photos when a dense viewport exceeds that cap. Clustering never includes
 invisible photos. Calendar counts and covers use the same visibility CTE.
 

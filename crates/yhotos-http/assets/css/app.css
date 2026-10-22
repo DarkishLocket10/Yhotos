@@ -4,3 +4,4 @@
 @media(max-width:600px){.album-list{grid-template-columns:1fr}.pagination{gap:12px}.site-header{gap:16px}}
 
 #photo-map{height:480px;max-height:65vh;border-radius:var(--radius,8px)}.calendar-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:16px;margin-block:24px}.calendar-card{display:flex;flex-direction:column;gap:8px}.calendar-card img{width:100%;height:auto;aspect-ratio:3/2;object-fit:cover}.map-marker{border:2px solid white;border-radius:24px;background:#183c54;color:white;min-width:44px;min-height:44px;padding:6px;cursor:pointer;font:inherit}.map-marker img{width:40px;height:40px;object-fit:cover;border-radius:50%}
+.map-chooser{color:#183c54;max-height:260px;overflow:auto}.map-chooser h2{font-size:1rem}.map-chooser a{color:#183c54;display:block;padding:6px}.map-chooser button{margin:4px;padding:6px}

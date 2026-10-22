@@ -1,8 +1,8 @@
-import { Map, Marker, NavigationControl, setWorkerUrl, setWorkerCount } from "maplibre-gl";
+import { Map, Marker, Popup, NavigationControl, setWorkerUrl, setWorkerCount } from "maplibre-gl";
 
 interface Cluster {
   geometry: { type: "Point"; coordinates: [number, number] };
-  properties: { count: number; short_id: string; thumb_hash: string | null };
+  properties: { count: number; short_id: string; thumb_hash: string | null; terminal: boolean };
 }
 const container = document.getElementById("photo-map");
 const status = document.getElementById("map-status");
@@ -29,6 +29,53 @@ if (container?.dataset.tiles && container.dataset.worker) {
     map.addControl(new NavigationControl({showCompass: false}), "top-right");
     let markers: Marker[] = [];
     let pending: AbortController | undefined;
+    let chooser: Popup | undefined;
+    let choosing: AbortController | undefined;
+    const showPhotos = async (coordinates: [number, number], page = 1) => {
+      choosing?.abort();
+      const controller = new AbortController();
+      choosing = controller;
+      try {
+        const [lon, lat] = coordinates;
+        const response = await fetch(`/map/photos.json?lon=${lon}&lat=${lat}&page=${page}`, {signal: controller.signal, credentials: "same-origin"});
+        if (!response.ok) throw new Error("Photos unavailable");
+        const data: {photos: {short_id: string; title: string}[]; total: number} = await response.json();
+        if (controller.signal.aborted) return;
+        const content = document.createElement("section");
+        content.className = "map-chooser";
+        content.setAttribute("aria-label", "Photos at this location");
+        const heading = document.createElement("h2");
+        heading.textContent = `${data.total} photos at this location`;
+        const list = document.createElement("ul");
+        for (const photo of data.photos) {
+          if (!/^[a-z2-7]{12}$/.test(photo.short_id)) continue;
+          const item = document.createElement("li");
+          const link = document.createElement("a");
+          link.href = `/p/${photo.short_id}`;
+          link.textContent = photo.title || "Open photo";
+          item.append(link);
+          list.append(item);
+        }
+        content.append(heading, list);
+        const navigation = document.createElement("nav");
+        navigation.setAttribute("aria-label", "Photo list pages");
+        for (const [label, number] of [["Previous page", page - 1], ["Next page", page + 1]] as const) {
+          if (number < 1 || (number - 1) * 60 >= data.total) continue;
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = label;
+          button.addEventListener("click", () => { void showPhotos(coordinates, number); });
+          navigation.append(button);
+        }
+        content.append(navigation);
+        chooser?.remove();
+        chooser = new Popup({maxWidth: "320px"}).setLngLat(coordinates).setDOMContent(content).addTo(map);
+        chooser.on("close", () => controller.abort());
+        list.querySelector("a")?.focus();
+      } catch {
+        if (!controller.signal.aborted && status) status.textContent = "Photo list unavailable. Browse the places below.";
+      }
+    };
     const refresh = async () => {
       pending?.abort();
       const controller = new AbortController();
@@ -43,12 +90,12 @@ if (container?.dataset.tiles && container.dataset.worker) {
         if (controller.signal.aborted) return;
         for (const marker of markers) marker.remove();
         markers = data.features.map(feature => {
-          const {count,short_id,thumb_hash} = feature.properties;
+          const {count,short_id,thumb_hash,terminal} = feature.properties;
           const individual = zoom >= 15 && count === 1;
           const element = document.createElement(individual ? "a" : "button");
           element.className = "map-marker";
           element.textContent = String(count);
-          element.setAttribute("aria-label", individual ? "Open photo" : `Zoom to ${count} photos`);
+          element.setAttribute("aria-label", individual ? "Open photo" : terminal ? `Choose from ${count} photos` : `Zoom to ${count} photos`);
           if (individual && element instanceof HTMLAnchorElement && /^[a-z2-7]{12}$/.test(short_id)) element.href = `/p/${short_id}`;
           if (thumb_hash && /^[0-9a-f]{64}$/.test(thumb_hash) && individual) {
             const image = document.createElement("img");
@@ -56,7 +103,10 @@ if (container?.dataset.tiles && container.dataset.worker) {
             image.width = 40; image.height = 40; image.alt = "Photo thumbnail";
             element.replaceChildren(image);
           }
-          if (!individual) element.addEventListener("click", () => map.easeTo({center:feature.geometry.coordinates,zoom:Math.min(20,zoom+2)}));
+          if (!individual) element.addEventListener("click", () => {
+            if (terminal || zoom === 20) void showPhotos(feature.geometry.coordinates);
+            else map.easeTo({center:feature.geometry.coordinates,zoom:Math.min(20,zoom+2)});
+          });
           return new Marker({element}).setLngLat(feature.geometry.coordinates).addTo(map);
         });
         if (status) status.textContent = `${data.features.length} photo locations shown. Use the map controls or browse the places below.`;
@@ -67,7 +117,17 @@ if (container?.dataset.tiles && container.dataset.worker) {
     map.on("load", () => { void refresh(); });
     map.on("moveend", () => { void refresh(); });
     map.on("error", () => { if (status) status.textContent = "Some map tiles are unavailable. Photo locations and places remain available."; });
-    window.addEventListener("pagehide", () => { pending?.abort(); map.remove(); }, {once:true});
+    window.addEventListener("pagehide", event => {
+      pending?.abort();
+      choosing?.abort();
+      if (!event.persisted) map.remove();
+    });
+    window.addEventListener("pageshow", event => {
+      if (event.persisted) {
+        map.resize();
+        void refresh();
+      }
+    });
   } catch {
     if (status) status.textContent = "Interactive maps are unavailable in this browser. Browse the places below.";
   }

@@ -21,6 +21,19 @@ pub struct PageContext<'a> {
     /// Validated deployment URL for absolute Open Graph images.
     pub public_base_url: &'a str,
 }
+/// Capabilities of the independently verified scope used to view this photo.
+pub(crate) struct PhotoControls<'a> {
+    pub csrf: &'a str,
+    pub download: bool,
+    pub like: bool,
+    pub flag: bool,
+}
+struct Actions<'a> {
+    photo: yhotos_core::PhotoId,
+    csrf: &'a str,
+    like: bool,
+    flag: bool,
+}
 struct OpenGraph {
     image: String,
     width: u32,
@@ -329,49 +342,20 @@ pub fn render_home(albums: &[AlbumCard], context: &PageContext<'_>) -> Result<St
     .render()
     .map_err(|e| HttpError::Internal(e.into()))
 }
-#[derive(Template)]
-#[template(path = "default/album.html")]
-struct AlbumTemplate<'a> {
-    context: &'a PageContext<'a>,
-    title: &'a str,
-    description: &'a str,
-    og: Option<OpenGraph>,
-    styles: String,
-    albums: Vec<Card>,
-    chain: Vec<Crumb>,
-    rows: Vec<Row>,
-    total: u64,
-    number: u32,
-    previous: Option<String>,
-    next: Option<String>,
-    sort: &'static str,
-    island: String,
-}
-/// Renders a sixty-photo page including O(n) grid math and first-row PNG placeholders.
-///
-/// # Errors
-/// Rejects malformed stored paths and template/JSON serialization failures.
-pub fn render_album(
-    page: &AlbumPage,
-    number: u32,
-    sort: PageSort,
-    context: &PageContext<'_>,
-) -> Result<String, HttpError> {
-    let ratios: Vec<_> = page
-        .photos
+// Shared with place results so image sizing and grid layout stay identical.
+fn photo_rows(photos: &[PagePhoto], sort: PageSort, styles: &mut String) -> Vec<Row> {
+    let ratios: Vec<_> = photos
         .iter()
         .map(|p| {
             let (w, h) = dimensions(p);
             (f64::from(w) / f64::from(h)).clamp(0.1, 10.0)
         })
         .collect();
-    let mut styles = card_styles(&page.children);
-    let rows = justified_rows(&ratios)
+    justified_rows(&ratios)
         .iter()
         .enumerate()
         .map(|(row_index, row)| {
-            let cells = page
-                .photos
+            let cells = photos
                 .iter()
                 .enumerate()
                 .take(row.end)
@@ -408,7 +392,82 @@ pub fn render_album(
                 .collect();
             Row { cells }
         })
-        .collect();
+        .collect()
+}
+#[derive(Template)]
+#[template(path = "default/place.html")]
+struct PlaceTemplate<'a> {
+    context: &'a PageContext<'a>,
+    title: String,
+    description: &'static str,
+    styles: String,
+    rows: Vec<Row>,
+    total: u64,
+    number: u32,
+    previous: Option<String>,
+    next: Option<String>,
+}
+/// Renders visible place results using the album grid and sixty-photo pagination.
+///
+/// # Errors
+/// Returns template rendering failures.
+pub fn render_place(
+    page: &yhotos_db::places::PlacePage,
+    place: uuid::Uuid,
+    number: u32,
+    context: &PageContext<'_>,
+) -> Result<String, HttpError> {
+    let mut styles = String::new();
+    let rows = photo_rows(&page.photos, PageSort::Taken, &mut styles);
+    let title = match &page.admin1 {
+        Some(region) => format!("{}, {region}, {}", page.name, page.country),
+        None => format!("{}, {}", page.name, page.country),
+    };
+    let page_url = |n| format!("/places/{place}?page={n}");
+    PlaceTemplate {
+        context,
+        title,
+        description: "Photos taken at this place",
+        styles,
+        rows,
+        total: page.total,
+        number,
+        previous: (number > 1).then(|| page_url(number - 1)),
+        next: (u64::from(number) * 60 < page.total).then(|| page_url(number + 1)),
+    }
+    .render()
+    .map_err(|e| HttpError::Internal(e.into()))
+}
+#[derive(Template)]
+#[template(path = "default/album.html")]
+struct AlbumTemplate<'a> {
+    context: &'a PageContext<'a>,
+    title: &'a str,
+    description: &'a str,
+    og: Option<OpenGraph>,
+    styles: String,
+    albums: Vec<Card>,
+    chain: Vec<Crumb>,
+    rows: Vec<Row>,
+    total: u64,
+    number: u32,
+    previous: Option<String>,
+    next: Option<String>,
+    sort: &'static str,
+    island: String,
+}
+/// Renders a sixty-photo page including O(n) grid math and first-row PNG placeholders.
+///
+/// # Errors
+/// Rejects malformed stored paths and template/JSON serialization failures.
+pub fn render_album(
+    page: &AlbumPage,
+    number: u32,
+    sort: PageSort,
+    context: &PageContext<'_>,
+) -> Result<String, HttpError> {
+    let mut styles = card_styles(&page.children);
+    let rows = photo_rows(&page.photos, sort, &mut styles);
     let href = path(&page.album.path)?;
     let page_url = |number| format!("{href}?page={number}&sort={}", sort.as_str());
     let island=serde_json::to_string(&serde_json::json!({"photos":page.photos.iter().map(|p|serde_json::json!({"id":p.short_id,"title":p.title})).collect::<Vec<_>>()})).map_err(|e|HttpError::Internal(e.into()))?.replace("</","<\\/")
@@ -445,6 +504,7 @@ struct PhotoTemplate<'a> {
     previous: Option<String>,
     next: Option<String>,
     downloads: Vec<Download>,
+    actions: Option<Actions<'a>>,
     exif: Vec<(&'static str, String)>,
     map: Option<String>,
     badge: &'static str,
@@ -476,24 +536,7 @@ fn filename(value: &str) -> String {
         encoded
     }
 }
-/// Renders a viewport-sized photo with metadata, downloads and visible neighbours.
-///
-/// # Errors
-/// Rejects malformed stored paths, content digests or template rendering failure.
-pub fn render_photo(
-    page: &PhotoPage,
-    sort: PageSort,
-    context: &PageContext<'_>,
-) -> Result<String, HttpError> {
-    let p = &page.photo;
-    if p.original_hash.len() != 64
-        || !p
-            .original_hash
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    {
-        return Err(invalid());
-    }
+fn downloads(p: &PagePhoto) -> Vec<Download> {
     let mut downloads = vec![Download {
         href: format!("/o/{}/{}", p.original_hash, filename(&p.original_name)),
         label: "Download original".into(),
@@ -527,6 +570,46 @@ pub fn render_photo(
             label: format!("Download {} ({} × {})", d.variant, d.w, d.h),
         })
     }));
+    downloads
+}
+/// Renders a viewport-sized photo with metadata, downloads and visible neighbours.
+///
+/// # Errors
+/// Rejects malformed stored paths, content digests or template rendering failure.
+pub fn render_photo(
+    page: &PhotoPage,
+    sort: PageSort,
+    context: &PageContext<'_>,
+) -> Result<String, HttpError> {
+    render_photo_with_controls(page, sort, context, None)
+}
+pub(crate) fn render_scoped_photo(
+    page: &PhotoPage,
+    sort: PageSort,
+    context: &PageContext<'_>,
+    controls: PhotoControls<'_>,
+) -> Result<String, HttpError> {
+    render_photo_with_controls(page, sort, context, Some(controls))
+}
+fn render_photo_with_controls(
+    page: &PhotoPage,
+    sort: PageSort,
+    context: &PageContext<'_>,
+    controls: Option<PhotoControls<'_>>,
+) -> Result<String, HttpError> {
+    let p = &page.photo;
+    if p.original_hash.len() != 64
+        || !p
+            .original_hash
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(invalid());
+    }
+    let mut downloads = downloads(p);
+    if controls.as_ref().is_some_and(|c| !c.download) {
+        downloads.clear();
+    }
     let mut exif = Vec::new();
     for (label, value) in [
         ("Date taken", &p.taken_at),
@@ -577,6 +660,12 @@ pub fn render_photo(
             .next
             .map(|id| format!("/p/{id}?sort={}", sort.as_str())),
         downloads,
+        actions: controls.map(|c| Actions {
+            photo: p.id,
+            csrf: c.csrf,
+            like: c.like,
+            flag: c.flag,
+        }),
         exif,
         map,
         badge: match p.kind.as_str() {

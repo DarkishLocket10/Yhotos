@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO derivatives(id,photo_id,variant,format,hdr,hash,width,height,bytes) SELECT $1,photo_id,variant,$2,hdr,hash,width,height,bytes FROM derivatives WHERE photo_id=$3 AND format='jpeg'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ff1d4397960f7996afa90de13b5b8e943a68a8e8b152b7aef9e3581c772bf026"
+}

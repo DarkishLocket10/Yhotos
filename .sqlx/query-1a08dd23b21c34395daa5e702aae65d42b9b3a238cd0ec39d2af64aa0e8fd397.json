@@ -1,74 +1,80 @@
 {
   "db_name": "PostgreSQL",
+  "query": "SELECT variant,format,hash,width,height,bytes FROM derivatives WHERE photo_id=$1 ORDER BY variant,format",
   "describe": {
     "columns": [
       {
-        "name": "variant",
         "ordinal": 0,
+        "name": "variant",
+        "type_info": "Text",
         "origin": {
           "Table": {
-            "name": "variant",
-            "table": "derivatives"
+            "table": "derivatives",
+            "name": "variant"
           }
-        },
-        "type_info": "Text"
+        }
       },
       {
-        "name": "format",
         "ordinal": 1,
+        "name": "format",
+        "type_info": "Text",
         "origin": {
           "Table": {
-            "name": "format",
-            "table": "derivatives"
+            "table": "derivatives",
+            "name": "format"
           }
-        },
-        "type_info": "Text"
+        }
       },
       {
-        "name": "hash",
         "ordinal": 2,
+        "name": "hash",
+        "type_info": "Text",
         "origin": {
           "Table": {
-            "name": "hash",
-            "table": "derivatives"
+            "table": "derivatives",
+            "name": "hash"
           }
-        },
-        "type_info": "Text"
+        }
       },
       {
-        "name": "width",
         "ordinal": 3,
+        "name": "width",
+        "type_info": "Int4",
         "origin": {
           "Table": {
-            "name": "width",
-            "table": "derivatives"
+            "table": "derivatives",
+            "name": "width"
           }
-        },
-        "type_info": "Int4"
+        }
       },
       {
-        "name": "height",
         "ordinal": 4,
+        "name": "height",
+        "type_info": "Int4",
         "origin": {
           "Table": {
-            "name": "height",
-            "table": "derivatives"
+            "table": "derivatives",
+            "name": "height"
           }
-        },
-        "type_info": "Int4"
+        }
       },
       {
-        "name": "bytes",
         "ordinal": 5,
+        "name": "bytes",
+        "type_info": "Int8",
         "origin": {
           "Table": {
-            "name": "bytes",
-            "table": "derivatives"
+            "table": "derivatives",
+            "name": "bytes"
           }
-        },
-        "type_info": "Int8"
+        }
       }
     ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
     "nullable": [
       false,
       false,
@@ -76,13 +82,7 @@
       false,
       false,
       false
-    ],
-    "parameters": {
-      "Left": [
-        "Uuid"
-      ]
-    }
+    ]
   },
-  "hash": "1a08dd23b21c34395daa5e702aae65d42b9b3a238cd0ec39d2af64aa0e8fd397",
-  "query": "SELECT variant,format,hash,width,height,bytes FROM derivatives WHERE photo_id=$1 ORDER BY variant,format"
+  "hash": "1a08dd23b21c34395daa5e702aae65d42b9b3a238cd0ec39d2af64aa0e8fd397"
 }

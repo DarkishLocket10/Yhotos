@@ -8,7 +8,7 @@ use yhotos_core::{ShortId, access::Principal};
 /// A place is exposed only when at least one visible photo refers to it.
 #[derive(Debug, serde::Deserialize)]
 pub struct PlaceCount {
-    /// Internal place identity; public filters use the encoded name.
+    /// Place identity used by the public place-results route.
     pub id: uuid::Uuid,
     /// Escaped city name.
     pub name: String,
@@ -46,9 +46,11 @@ pub struct Cluster {
     pub short_id: ShortId,
     /// JPEG thumbnail digest, when one exists.
     pub thumb_hash: Option<String>,
+    /// True at photo zoom, where exact-coordinate groups cannot split further.
+    pub terminal: bool,
 }
 /// Grid-clusters the requested rectangle, returning at most 500 features.
-/// At zoom 15 and above, each returned feature represents exactly one photo.
+/// At zoom 15 and above, photos at identical coordinates share one feature.
 ///
 /// # Errors
 /// Rejects zooms above 20 and malformed stored data; returns database failures.
@@ -76,15 +78,19 @@ pub async fn clusters(
         r#",
       selected AS (
         SELECT p.short_id,p.gps_lon AS lon,p.gps_lat AS lat,
-          CASE WHEN $10>=15 THEN p.short_id COLLATE "C" END AS individual,
+          CASE WHEN $10>=15 THEN p.gps_lon END AS point_lon,
+          CASE WHEN $10>=15 THEN p.gps_lat END AS point_lat,
           CASE WHEN $10>=15 THEN 0::float8 ELSE
             least($11::float8-1,floor((p.gps_lon-$6)/($8-$6)*$11::float8)) + 22 *
             least($11::float8-1,floor((p.gps_lat-$7)/($9-$7)*$11::float8)) END AS cell
         FROM visible_photos p WHERE p.gps_point IS NOT NULL AND
           p.gps_point <@ box(point($6,$7),point($8,$9))
       ), clustered AS (
-        SELECT count(*) AS count,avg(lon) AS lon,avg(lat) AS lat,min(short_id COLLATE "C") COLLATE "default" AS short_id
-        FROM selected GROUP BY cell,individual
+        SELECT count(*) AS count,
+          coalesce(point_lon,avg(lon)) AS lon,
+          coalesce(point_lat,avg(lat)) AS lat,
+          min(short_id COLLATE "C") COLLATE "default" AS short_id
+        FROM selected GROUP BY cell,point_lon,point_lat
       ) SELECT count AS "count!",lon AS "lon!",lat AS "lat!",short_id AS "short_id!",
         (SELECT d.hash FROM derivatives d
           WHERE d.photo_id=(SELECT id FROM photos WHERE short_id=c.short_id) AND d.variant='thumb' AND d.format='jpeg' AND NOT d.hdr) AS thumb_hash
@@ -118,7 +124,71 @@ pub async fn clusters(
                 lat: r.lat,
                 short_id: r.short_id.parse().map_err(|_| DbError::InvalidInput)?,
                 thumb_hash: r.thumb_hash,
+                terminal: zoom >= 15,
             })
         })
         .collect()
+}
+
+/// A bounded chooser entry; titles remain untrusted display text.
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub struct PointPhoto {
+    /// Canonical photo link identity.
+    pub short_id: ShortId,
+    /// Title for a text-only link.
+    pub title: String,
+}
+/// Visible photos at an exact coordinate, paginated before serialization.
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub struct PointPage {
+    /// At most 60 entries, ordered by capture/posted date and identity.
+    pub photos: Vec<PointPhoto>,
+    /// Complete visible count.
+    pub total: u64,
+}
+/// Lists visible photos sharing a coordinate in one statement.
+///
+/// # Errors
+/// Rejects invalid coordinates and page zero; returns invalid stored data or SQL errors.
+pub async fn point_photos(
+    conn: &mut PgConnection,
+    principal: &Principal<'_>,
+    lon: f64,
+    lat: f64,
+    number: u32,
+) -> Result<Option<PointPage>, DbError> {
+    if !lon.is_finite()
+        || !lat.is_finite()
+        || !(-180.0..=180.0).contains(&lon)
+        || !(-85.051_129..=85.051_129).contains(&lat)
+        || number == 0
+    {
+        return Err(DbError::InvalidInput);
+    }
+    let offset = i64::from(number - 1) * 60;
+    let p = crate::access_sql::visible_photos(principal);
+    let row = crate::visible_page_query!(
+        r#",
+      selected AS MATERIALIZED (
+        SELECT p.id,coalesce(p.taken_at,p.posted_at) AS date FROM visible_photos p
+        WHERE p.gps_point <@ box(point($6,$7),point($6,$7))
+          AND p.gps_lon=$6 AND p.gps_lat=$7
+      ) SELECT jsonb_build_object(
+        'total',(SELECT count(*) FROM selected),
+        'photos',coalesce((SELECT jsonb_agg(jsonb_build_object('short_id',short_id,'title',title)
+          ORDER BY date DESC,id) FROM (
+            SELECT p.id,p.short_id,p.title,s.date FROM (
+              SELECT id,date FROM selected ORDER BY date DESC,id LIMIT 60 OFFSET $8
+            ) s JOIN visible_photos p ON p.id=s.id
+          ) t),'[]'::jsonb)) AS "payload!"
+    "#,
+        p,
+        lon,
+        lat,
+        offset
+    )
+    .fetch_one(conn)
+    .await?;
+    let page: PointPage = serde_json::from_value(row.payload).map_err(|_| DbError::InvalidInput)?;
+    Ok((!page.photos.is_empty()).then_some(page))
 }

@@ -1,76 +1,76 @@
 {
   "db_name": "PostgreSQL",
+  "query": "SELECT attempts,run_after,finished_at,error,locked_by FROM jobs WHERE id=$1",
   "describe": {
     "columns": [
       {
-        "name": "attempts",
         "ordinal": 0,
+        "name": "attempts",
+        "type_info": "Int4",
         "origin": {
           "Table": {
-            "name": "attempts",
-            "table": "jobs"
+            "table": "jobs",
+            "name": "attempts"
           }
-        },
-        "type_info": "Int4"
+        }
       },
       {
-        "name": "run_after",
         "ordinal": 1,
+        "name": "run_after",
+        "type_info": "Timestamptz",
         "origin": {
           "Table": {
-            "name": "run_after",
-            "table": "jobs"
+            "table": "jobs",
+            "name": "run_after"
           }
-        },
-        "type_info": "Timestamptz"
+        }
       },
       {
-        "name": "finished_at",
         "ordinal": 2,
+        "name": "finished_at",
+        "type_info": "Timestamptz",
         "origin": {
           "Table": {
-            "name": "finished_at",
-            "table": "jobs"
+            "table": "jobs",
+            "name": "finished_at"
           }
-        },
-        "type_info": "Timestamptz"
+        }
       },
       {
-        "name": "error",
         "ordinal": 3,
+        "name": "error",
+        "type_info": "Text",
         "origin": {
           "Table": {
-            "name": "error",
-            "table": "jobs"
+            "table": "jobs",
+            "name": "error"
           }
-        },
-        "type_info": "Text"
+        }
       },
       {
-        "name": "locked_by",
         "ordinal": 4,
+        "name": "locked_by",
+        "type_info": "Text",
         "origin": {
           "Table": {
-            "name": "locked_by",
-            "table": "jobs"
+            "table": "jobs",
+            "name": "locked_by"
           }
-        },
-        "type_info": "Text"
+        }
       }
     ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
     "nullable": [
       false,
       false,
       true,
       true,
       true
-    ],
-    "parameters": {
-      "Left": [
-        "Uuid"
-      ]
-    }
+    ]
   },
-  "hash": "8df9fb4bde6ff5ac92395b4d27f88490ec97b457557bd7452cc8f35f4dfcf3e3",
-  "query": "SELECT attempts,run_after,finished_at,error,locked_by FROM jobs WHERE id=$1"
+  "hash": "8df9fb4bde6ff5ac92395b4d27f88490ec97b457557bd7452cc8f35f4dfcf3e3"
 }

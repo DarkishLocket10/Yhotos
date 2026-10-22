@@ -65,6 +65,24 @@ pub fn cross_origin_resource(path: &str) -> bool {
         .any(|prefix| path.starts_with(prefix))
 }
 
+// Only map documents and their dedicated worker may contact the configured tile origin.
+fn map_policy(policy: &HeaderValue, origin: Option<&str>) -> Option<HeaderValue> {
+    let mut text = policy.to_str().ok()?.to_owned();
+    if let Some(origin) = origin {
+        text = text
+            .replace(
+                "img-src 'self' data:",
+                &format!("img-src 'self' data: {origin}"),
+            )
+            .replace(
+                "connect-src 'self'",
+                &format!("connect-src 'self' {origin}"),
+            );
+    }
+    text.push_str("; worker-src 'self'");
+    HeaderValue::from_str(&text).ok()
+}
+
 pub(crate) async fn secure(
     State(state): State<crate::AppState>,
     mut request: Request,
@@ -76,29 +94,18 @@ pub(crate) async fn secure(
         path.starts_with("/login") || path.starts_with("/u/") || path.starts_with("/admin/");
     let is_map =
         path == "/map" || crate::static_assets::map_worker_url().is_ok_and(|worker| path == worker);
+    let share_page = path.starts_with("/s/");
     let nonce = Nonce::generate();
     let policy = nonce
         .as_ref()
         .ok()
         .and_then(|value| value.policy().ok())
         .and_then(|policy| {
-            if !is_map {
-                return Some(policy);
+            if is_map {
+                map_policy(&policy, state.config.map_tiles.origin.as_deref())
+            } else {
+                Some(policy)
             }
-            let mut text = policy.to_str().ok()?.to_owned();
-            if let Some(origin) = &state.config.map_tiles.origin {
-                text = text
-                    .replace(
-                        "img-src 'self' data:",
-                        &format!("img-src 'self' data: {origin}"),
-                    )
-                    .replace(
-                        "connect-src 'self'",
-                        &format!("connect-src 'self' {origin}"),
-                    );
-            }
-            text.push_str("; worker-src 'self'");
-            HeaderValue::from_str(&text).ok()
         });
     let mut response = match nonce {
         Ok(nonce) if policy.is_some() => {
@@ -158,6 +165,16 @@ pub(crate) async fn secure(
         response
             .headers_mut()
             .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    }
+    if share_page {
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("private, no-store"),
+        );
+        response.headers_mut().insert(
+            header::REFERRER_POLICY,
+            HeaderValue::from_static("no-referrer"),
+        );
     }
     response
 }

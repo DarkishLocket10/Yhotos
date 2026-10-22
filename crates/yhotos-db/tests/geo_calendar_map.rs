@@ -291,3 +291,61 @@ async fn calendar_counts_covers_fallback_dates_and_pagination_are_visible(pool: 
         1
     );
 }
+
+#[sqlx::test]
+async fn collocated_markers_and_chooser_preserve_every_visible_photo(pool: PgPool) {
+    let album = album(&pool).await;
+    let first = photo(&pool, album, Some(43.7), Some(-79.4), false).await;
+    let second = photo(&pool, album, Some(43.7), Some(-79.4), false).await;
+    let nearby = photo(&pool, album, Some(43.7), Some(-79.400_000_01), false).await;
+    let secret = photo(&pool, album, Some(43.7), Some(-79.4), true).await;
+    let mut conn = pool.acquire().await.unwrap();
+    let bounds = Bounds::parse("-80,43,-79,44").unwrap();
+    for zoom in [15, 20] {
+        let clusters = map::clusters(&mut conn, &Principal::Anonymous, bounds, zoom)
+            .await
+            .unwrap();
+        assert_eq!(clusters.len(), 2);
+        assert_eq!(clusters.iter().map(|c| c.count).sum::<u64>(), 3);
+        let grouped = clusters.iter().find(|c| c.count == 2).unwrap();
+        assert!(grouped.terminal);
+        assert_eq!((grouped.lon, grouped.lat), (-79.4, 43.7));
+        let page = map::point_photos(
+            &mut conn,
+            &Principal::Anonymous,
+            grouped.lon,
+            grouped.lat,
+            1,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(page.total, 2);
+        assert_eq!(page.photos.len(), 2);
+        for id in [first, second] {
+            assert!(
+                page.photos
+                    .iter()
+                    .any(|p| p.short_id == ShortId::from_photo_id(id))
+            );
+        }
+        for id in [nearby, secret] {
+            assert!(
+                !page
+                    .photos
+                    .iter()
+                    .any(|p| p.short_id == ShortId::from_photo_id(id))
+            );
+        }
+    }
+    sqlx::query!("UPDATE photos SET deleted_at=now() WHERE id=$1", nearby.0)
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    let clusters = map::clusters(&mut conn, &Principal::Anonymous, bounds, 1)
+        .await
+        .unwrap();
+    assert_eq!(clusters.len(), 1);
+    assert!(!clusters[0].terminal); // Lower zooms still zoom towards the photo level.
+    assert_eq!(clusters[0].count, 2);
+}

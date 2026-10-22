@@ -1,5 +1,5 @@
 //! Browser-only tiles and visible photo clusters. No outbound HTTP client exists.
-use super::{cached, context};
+use super::{Options as PageOptions, cached, context};
 use crate::{
     AppState,
     error::HttpError,
@@ -9,7 +9,7 @@ use crate::{
 use askama::Template;
 use axum::{
     Extension, Json,
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, HeaderValue, header},
     response::{IntoResponse, Response},
 };
@@ -28,18 +28,6 @@ struct MapTemplate<'a> {
     map_css: &'static str,
     worker: &'static str,
 }
-fn place_url(name: &str) -> String {
-    use std::fmt::Write;
-    let mut href = String::from("/search?place=");
-    for byte in name.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
-            href.push(char::from(byte));
-        } else {
-            let _ = write!(href, "%{byte:02X}");
-        }
-    }
-    href
-}
 pub(crate) async fn page(
     State(state): State<AppState>,
     Extension(nonce): Extension<Nonce>,
@@ -51,7 +39,7 @@ pub(crate) async fn page(
         .await?
         .into_iter()
         .map(|place| {
-            let href = place_url(&place.name);
+            let href = format!("/places/{}", place.id);
             (place, href)
         })
         .collect();
@@ -91,9 +79,13 @@ pub(crate) async fn tiles(
         .ok_or(HttpError::BadRequest)?;
     let mut conn = state.pool.acquire().await?;
     let clusters = map::clusters(&mut conn, &identity.principal(), bounds, zoom).await?;
-    let features=clusters.into_iter().map(|c|serde_json::json!({"type":"Feature","geometry":{"type":"Point","coordinates":[c.lon,c.lat]},"properties":{"count":c.count,"short_id":c.short_id,"thumb_hash":c.thumb_hash}})).collect::<Vec<_>>();
-    let mut response =
+    let features=clusters.into_iter().map(|c|serde_json::json!({"type":"Feature","geometry":{"type":"Point","coordinates":[c.lon,c.lat]},"properties":{"count":c.count,"short_id":c.short_id,"thumb_hash":c.thumb_hash,"terminal":c.terminal}})).collect::<Vec<_>>();
+    let response =
         Json(serde_json::json!({"type":"FeatureCollection","features":features})).into_response();
+    Ok(json_cache(response, &headers, &identity))
+}
+
+fn json_cache(mut response: Response, headers: &HeaderMap, identity: &SessionIdentity) -> Response {
     let private =
         headers.contains_key(header::COOKIE) || !matches!(identity, SessionIdentity::Anonymous);
     response.headers_mut().insert(
@@ -107,16 +99,58 @@ pub(crate) async fn tiles(
     response
         .headers_mut()
         .insert(header::VARY, HeaderValue::from_static("Cookie"));
-    Ok(response)
+    response
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn place_filter_uses_encoded_text_without_internal_ids() {
-        assert_eq!(
-            super::place_url("São Paulo & coast"),
-            "/search?place=S%C3%A3o%20Paulo%20%26%20coast"
-        );
+/// Validated at the HTTP boundary before SQL, as with the cluster bbox.
+#[derive(serde::Deserialize)]
+pub(crate) struct PointOptions {
+    lon: f64,
+    lat: f64,
+    #[serde(flatten)]
+    page: PageOptions,
+}
+pub(crate) async fn point_photos(
+    State(state): State<AppState>,
+    Extension(identity): Extension<SessionIdentity>,
+    Query(options): Query<PointOptions>,
+    headers: HeaderMap,
+) -> Result<Response, HttpError> {
+    if !options.lon.is_finite()
+        || !options.lat.is_finite()
+        || !(-180.0..=180.0).contains(&options.lon)
+        || !(-85.051_129..=85.051_129).contains(&options.lat)
+    {
+        return Err(HttpError::BadRequest);
     }
+    let number = options.page.number()?;
+    let mut conn = state.pool.acquire().await?;
+    let page = map::point_photos(
+        &mut conn,
+        &identity.principal(),
+        options.lon,
+        options.lat,
+        number,
+    )
+    .await?
+    .ok_or(HttpError::NotFound)?;
+    Ok(json_cache(Json(page).into_response(), &headers, &identity))
+}
+pub(crate) async fn place(
+    State(state): State<AppState>,
+    Extension(nonce): Extension<Nonce>,
+    Extension(identity): Extension<SessionIdentity>,
+    Path(id): Path<String>,
+    Query(options): Query<PageOptions>,
+    headers: HeaderMap,
+) -> Result<Response, HttpError> {
+    let place = id.parse::<uuid::Uuid>().map_err(|_| HttpError::NotFound)?;
+    let number = options.number()?;
+    let mut conn = state.pool.acquire().await?;
+    let page = yhotos_db::places::page(&mut conn, &identity.principal(), place, number)
+        .await?
+        .ok_or(HttpError::NotFound)?;
+    let nonce = nonce.to_string();
+    let html = super::view::render_place(&page, place, number, &context(&nonce, &state)?)?;
+    cached(html, &headers, &identity, "")
 }

@@ -1,0 +1,206 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id as \"id: _\", created_at, updated_at, token_hash, target_kind as \"target_kind: _\", target_id, passphrase_hash, passphrase_version, expires_at, allow_view, allow_download, allow_like, allow_flag, revoked_at, created_by as \"created_by: _\" FROM share_links WHERE token_hash=$1 AND revoked_at IS NULL",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: _",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "token_hash",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "token_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "target_kind: _",
+        "type_info": {
+          "Custom": {
+            "name": "target_kind",
+            "kind": {
+              "Enum": [
+                "album",
+                "photo"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "target_kind"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "target_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "target_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "passphrase_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "passphrase_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "passphrase_version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "passphrase_version"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "expires_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "expires_at"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "allow_view",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "allow_view"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "allow_download",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "allow_download"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "allow_like",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "allow_like"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "allow_flag",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "allow_flag"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "revoked_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "revoked_at"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "created_by: _",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "created_by"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "1b6b59bcd285f8fe4956ebe3f12ab1ceef860b03b1754b450be811a9491a72ab"
+}

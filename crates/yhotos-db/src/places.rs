@@ -64,3 +64,54 @@ pub async fn reverse(conn: &mut PgConnection, photo: PhotoId) -> Result<(), DbEr
     tx.commit().await?;
     Ok(())
 }
+
+/// One visibility-filtered place page using the public album grid's photo type.
+#[derive(Debug, serde::Deserialize)]
+pub struct PlacePage {
+    /// Stored city name, escaped when rendered.
+    pub name: String,
+    /// Stored region, escaped when rendered.
+    pub admin1: Option<String>,
+    /// Stored country, escaped when rendered.
+    pub country: String,
+    /// Complete count, including photos outside the current page.
+    pub total: u64,
+    /// At most sixty visible photos with responsive derivatives.
+    pub photos: Vec<crate::photos::PagePhoto>,
+}
+/// Returns a place only if it contains visible photos, in one SQL round trip.
+///
+/// # Errors
+/// Returns invalid stored metadata or SQL failures. Unavailable pages return `None`.
+pub async fn page(
+    conn: &mut PgConnection,
+    principal: &yhotos_core::access::Principal<'_>,
+    place: uuid::Uuid,
+    number: u32,
+) -> Result<Option<PlacePage>, DbError> {
+    if number == 0 {
+        return Ok(None);
+    }
+    let offset = i64::from(number - 1) * 60;
+    let p = crate::access_sql::visible_photos(principal);
+    let row = crate::visible_page_query!(r#",
+      selected AS MATERIALIZED (
+        SELECT p.id,coalesce(p.taken_at,p.posted_at) AS date FROM visible_photos p WHERE place_id=$6
+      ), slice AS (
+        SELECT p.* FROM (
+          SELECT id FROM selected ORDER BY date DESC,id LIMIT 60 OFFSET $7
+        ) s JOIN visible_photos p ON p.id=s.id
+      )
+      SELECT jsonb_build_object('name',l.name,'admin1',l.admin1,'country',l.country,
+        'total',(SELECT count(*) FROM selected),
+        'photos',coalesce((SELECT jsonb_agg(to_jsonb(p)||jsonb_build_object(
+          'thumbhash',encode(p.placeholder,'base64'),
+          'derivatives',coalesce((SELECT jsonb_agg(jsonb_build_object(
+            'variant',d.variant,'format',d.format,'hdr',d.hdr,'hash',d.hash,'w',d.width,'h',d.height)
+            ORDER BY d.width,d.format,d.hdr) FROM derivatives d WHERE d.photo_id=p.id),'[]'::jsonb))
+          ORDER BY coalesce(p.taken_at,p.posted_at) DESC,p.id) FROM slice p),'[]'::jsonb)) AS "payload!"
+      FROM places l WHERE l.id=$6 AND EXISTS(SELECT FROM slice)
+    "#, p, place, offset).fetch_optional(conn).await?;
+    row.map(|r| serde_json::from_value(r.payload).map_err(|_| DbError::InvalidInput))
+        .transpose()
+}

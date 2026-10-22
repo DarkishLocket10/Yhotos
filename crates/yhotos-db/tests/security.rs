@@ -120,7 +120,8 @@ async fn grant_matrix_catalog_and_forbidden_statements(pool: PgPool) {
     .fetch_all(&pool)
     .await
     .unwrap();
-    assert_eq!(rows.len(), 32 * 3);
+    // Includes both share-session memberships and the offline gazetteer.
+    assert_eq!(rows.len(), 33 * 3);
     for row in rows {
         let actual = (row.select, row.insert, row.update, row.delete);
         let expected = match row.role.as_str() {
@@ -135,13 +136,19 @@ async fn grant_matrix_catalog_and_forbidden_statements(pool: PgPool) {
                     "pending_login",
                     "pending_webauthn",
                     "auth_lockout",
+                    "share_session_links",
                 ]
                 .contains(&row.table.as_str());
                 (allowed, allowed, allowed, allowed)
             }
             "yhotos_public"
-                if ["pending_login", "pending_webauthn", "auth_lockout"]
-                    .contains(&row.table.as_str()) =>
+                if [
+                    "pending_login",
+                    "pending_webauthn",
+                    "auth_lockout",
+                    "share_session_links",
+                ]
+                .contains(&row.table.as_str()) =>
             {
                 (true, true, true, true)
             }

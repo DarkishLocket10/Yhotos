@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE photos SET place_id=$1,gps_lat=43.65,gps_lon=-79.38 WHERE album_id=$2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "dcf383325fe17c1fd31f017eca6082a9065e9973c3555d42917dbc3f9bacc837"
+}
