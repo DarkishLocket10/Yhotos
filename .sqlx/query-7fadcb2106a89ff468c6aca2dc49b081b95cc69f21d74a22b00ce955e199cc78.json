@@ -1,0 +1,193 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH RECURSIVE chain AS (\n SELECT a.id,a.parent_id,a.visibility,a.deleted_at,ARRAY[a.id] AS visited\n FROM albums a JOIN share_links s ON s.target_kind='album' AND s.target_id=a.id WHERE s.token_hash=$1\n UNION ALL\n SELECT a.id,a.parent_id,a.visibility,a.deleted_at,c.visited || a.id\n FROM chain c JOIN albums a ON a.id=c.parent_id WHERE NOT a.id=ANY(c.visited)\n)\n SELECT s.id,s.created_at,s.updated_at,s.token_hash,\n s.target_kind::text as \"target_kind!\",s.target_id,s.passphrase_hash,s.expires_at,\n s.allow_view,s.allow_download,s.allow_like,s.allow_flag,s.revoked_at,s.created_by,\n share_target_photos(s.target_kind,s.target_id) as \"photos!\",\n CASE s.target_kind WHEN 'album' THEN (SELECT title FROM albums WHERE id=s.target_id AND deleted_at IS NULL)\n ELSE (SELECT title FROM photos WHERE id=s.target_id AND deleted_at IS NULL) END as title\n FROM share_links s WHERE s.token_hash=$1 AND s.revoked_at IS NULL\n AND (s.target_kind='photo' OR (\n  EXISTS(SELECT FROM chain WHERE parent_id IS NULL)\n  AND NOT EXISTS(SELECT FROM chain WHERE deleted_at IS NOT NULL OR (id<>s.target_id AND visibility='restricted'))\n ))",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "token_hash",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "token_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "target_kind!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "target_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "target_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "passphrase_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "passphrase_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "expires_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "expires_at"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "allow_view",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "allow_view"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "allow_download",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "allow_download"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "allow_like",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "allow_like"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "allow_flag",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "allow_flag"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "revoked_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "revoked_at"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "created_by",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "created_by"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "photos!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 15,
+        "name": "title",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      null,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "7fadcb2106a89ff468c6aca2dc49b081b95cc69f21d74a22b00ce955e199cc78"
+}

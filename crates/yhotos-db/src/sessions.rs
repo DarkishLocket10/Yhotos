@@ -36,7 +36,7 @@ pub struct Session {
 /// # Errors
 /// Returns a database connection, statement or constraint failure.
 pub async fn get(c: &mut PgConnection, hash: &[u8]) -> Result<Option<Session>, DbError> {
-    Ok(sqlx::query_as!(Session,r#"SELECT id,user_id as "user_id: _",admin,created_at,last_seen_at,expires_at,reauth_at,mfa_at,ip_hash,ua_class,token_hash FROM sessions WHERE token_hash=$1"#, hash).fetch_optional(c).await?)
+    Ok(sqlx::query_as!(Session,r#"SELECT id,user_id as "user_id!: _",admin,created_at,last_seen_at,expires_at,reauth_at,mfa_at,ip_hash,ua_class,token_hash FROM sessions WHERE token_hash=$1 AND user_id IS NOT NULL"#, hash).fetch_optional(c).await?)
 }
 /// Inserts a freshly generated bearer digest with explicit audience and lifetime.
 ///
@@ -51,7 +51,7 @@ pub async fn create(c: &mut PgConnection, s: &Session) -> Result<(), DbError> {
 /// # Errors
 /// Returns a database connection, statement or constraint failure.
 pub async fn list(c: &mut PgConnection, user: UserId) -> Result<Vec<Session>, DbError> {
-    Ok(sqlx::query_as!(Session,r#"SELECT id,user_id as "user_id: _",admin,created_at,last_seen_at,expires_at,reauth_at,mfa_at,ip_hash,ua_class,token_hash FROM sessions WHERE user_id=$1 ORDER BY created_at DESC"#,user as _).fetch_all(c).await?)
+    Ok(sqlx::query_as!(Session,r#"SELECT id,user_id as "user_id!: _",admin,created_at,last_seen_at,expires_at,reauth_at,mfa_at,ip_hash,ua_class,token_hash FROM sessions WHERE user_id=$1 ORDER BY created_at DESC"#,user as _).fetch_all(c).await?)
 }
 /// Deletes only a session owned by the authenticated account, returning its cache key.
 ///
@@ -167,7 +167,7 @@ pub async fn pending_get(
     hash: &[u8],
     admin: bool,
 ) -> Result<Option<PendingLogin>, DbError> {
-    Ok(sqlx::query_as!(PendingLogin,r#"SELECT id,user_id as "user_id: _",admin,next_path,attempts,password_version,password_at FROM pending_login WHERE token_hash=$1 AND admin=$2 AND expires_at>clock_timestamp() AND attempts<5 FOR UPDATE"#,hash,admin).fetch_optional(c).await?)
+    Ok(sqlx::query_as!(PendingLogin,r#"SELECT id,user_id as "user_id!: _",admin,next_path,attempts,password_version,password_at FROM pending_login WHERE token_hash=$1 AND admin=$2 AND expires_at>clock_timestamp() AND attempts<5 FOR UPDATE"#,hash,admin).fetch_optional(c).await?)
 }
 /// Reserves one attempt atomically; deletes the fifth failed challenge.
 ///
@@ -312,7 +312,7 @@ pub async fn load(
  AND created_at>clock_timestamp()-CASE WHEN (SELECT is_admin FROM users WHERE id=sessions.user_id) THEN interval '7 days' ELSE interval '90 days' END
  RETURNING last_seen_at
 )
-SELECT s.id,s.user_id,s.admin,s.created_at,COALESCE((SELECT last_seen_at FROM touched),s.last_seen_at) as "last_seen_at!",s.expires_at,s.reauth_at,s.mfa_at,s.ip_hash,s.ua_class,s.token_hash,
+SELECT s.id,s.user_id as "user_id!",s.admin,s.created_at,COALESCE((SELECT last_seen_at FROM touched),s.last_seen_at) as "last_seen_at!",s.expires_at,s.reauth_at,s.mfa_at,s.ip_hash,s.ua_class,s.token_hash,
 u.must_change_password,u.is_admin,(u.disabled_at IS NOT NULL) as "disabled!",
 EXISTS(SELECT FROM user_mfa_list(u.id) WHERE kind IN ('totp','passkey')) as "has_mfa!",
 ARRAY(SELECT group_id FROM user_groups WHERE user_id=u.id) as "groups!"
@@ -359,6 +359,8 @@ pub enum Invalidation {
     Session(Uuid),
     /// Account authentication or privilege changed.
     User(UserId),
+    /// Share-link scope, capabilities or passphrase changed.
+    Link(yhotos_core::ShareLinkId),
 }
 /// Dedicated LISTEN connection, independent of request pool capacity.
 pub struct Invalidations(sqlx::postgres::PgListener);
@@ -393,6 +395,7 @@ impl Invalidations {
         match kind {
             "session" => Ok(Invalidation::Session(id)),
             "user" => Ok(Invalidation::User(UserId(id))),
+            "link" => Ok(Invalidation::Link(yhotos_core::ShareLinkId(id))),
             _ => Err(DbError::InvalidInput),
         }
     }

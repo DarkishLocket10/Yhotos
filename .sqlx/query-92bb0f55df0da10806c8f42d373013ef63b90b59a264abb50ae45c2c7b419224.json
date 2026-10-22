@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT CASE WHEN $1::target_kind='album' THEN EXISTS(SELECT FROM albums WHERE id=$2 AND deleted_at IS NULL) ELSE EXISTS(SELECT FROM photos WHERE id=$2 AND deleted_at IS NULL) END as \"exists!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "exists!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        {
+          "Custom": {
+            "name": "target_kind",
+            "kind": {
+              "Enum": [
+                "album",
+                "photo"
+              ]
+            }
+          }
+        },
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "92bb0f55df0da10806c8f42d373013ef63b90b59a264abb50ae45c2c7b419224"
+}

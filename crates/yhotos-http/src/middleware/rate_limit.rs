@@ -39,7 +39,7 @@ fn class(path: &str) -> Class {
             path,
             "/u/password" | "/admin/u/password" | "/logout" | "/admin/logout"
         )
-        || (path.starts_with("/s/") && path.ends_with("/unlock"))
+        || (path.starts_with("/s/") && !path.starts_with("/s/photos/"))
     {
         Class::Auth
     } else if matches!(path, "/search" | "/zip")
@@ -210,7 +210,10 @@ pub(crate) async fn limit(
     } else {
         route_class
     };
-    if let Some(seconds) = state.check(ip, route_class) {
+    let cheap = (route_class == Class::Auth && request.uri().path().starts_with("/s/"))
+        .then(|| state.check(ip, Class::Cheap))
+        .flatten();
+    if let Some(seconds) = cheap.or_else(|| state.check(ip, route_class)) {
         let mut response = HttpError::RateLimited.into_response();
         if let Ok(value) = HeaderValue::from_str(&seconds.to_string()) {
             response.headers_mut().insert(header::RETRY_AFTER, value);

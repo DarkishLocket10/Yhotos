@@ -1,0 +1,4 @@
+
+.share-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 18rem), 1fr)); gap: 1rem; }
+.share-grid figure { margin: 0; }
+.share-grid img { display: block; width: 100%; height: auto; }

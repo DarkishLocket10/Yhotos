@@ -143,6 +143,13 @@ async fn run(
     } else if a.0 && !path.starts_with("/admin/login") && !path.starts_with("/static/") {
         gate = Some(auth::redirect(a.login()));
     }
+    let links = if a.0 {
+        crate::share::Links::default()
+    } else {
+        crate::share::resolve(state, request.headers()).await?
+    };
+    let has_links = !links.0.is_empty();
+    request.extensions_mut().insert(links);
     request.extensions_mut().insert(identity);
     let mut response = if let Some(gate) = gate {
         gate
@@ -152,7 +159,7 @@ async fn run(
     if carried && loaded.is_none() && !replaces_cookie(&response, name) {
         auth::set_cookie(&mut response, a.cookie(name, "", true)?);
     }
-    if loaded.is_some() {
+    if loaded.is_some() || has_links {
         response.headers_mut().insert(
             header::CACHE_CONTROL,
             HeaderValue::from_static("private, no-store"),

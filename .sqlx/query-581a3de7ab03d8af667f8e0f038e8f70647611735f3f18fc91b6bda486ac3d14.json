@@ -1,0 +1,83 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH touched AS (\n UPDATE sessions SET last_seen_at=clock_timestamp() WHERE token_hash=$1 AND user_id IS NULL AND NOT admin\n AND last_seen_at<=clock_timestamp()-interval '5 minutes' AND expires_at>clock_timestamp()\n AND created_at<=last_seen_at AND created_at<=clock_timestamp()\n AND last_seen_at>clock_timestamp()-interval '14 days' AND created_at>clock_timestamp()-interval '90 days'\n RETURNING last_seen_at\n)\n SELECT s.id,s.share_link_id as \"link_id!: _\",l.token_hash as link_hash,s.expires_at,s.created_at,\n coalesce((SELECT last_seen_at FROM touched),s.last_seen_at) as \"last_seen_at!\"\n FROM sessions s JOIN share_links l ON l.id=s.share_link_id\n WHERE s.token_hash=$1 AND s.user_id IS NULL AND NOT s.admin AND s.expires_at>clock_timestamp()\n AND s.created_at<=s.last_seen_at AND s.created_at<=clock_timestamp()\n AND s.last_seen_at>clock_timestamp()-interval '14 days'\n AND s.created_at>clock_timestamp()-interval '90 days'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "link_id!: _",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "share_link_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "link_hash",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "token_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "expires_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "expires_at"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "sessions",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "last_seen_at!",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "581a3de7ab03d8af667f8e0f038e8f70647611735f3f18fc91b6bda486ac3d14"
+}

@@ -190,6 +190,7 @@ async fn bytes(response: Response) -> axum::body::Bytes {
 fn bare(state: AppState) -> Router {
     Router::new()
         .route("/i/{hash}/{name}", get(derivative))
+        .layer(Extension(Links::default()))
         .layer(Extension(SessionIdentity::Anonymous))
         .with_state(state)
 }
@@ -449,7 +450,7 @@ async fn invalid_hashes_and_selectors_never_reach_database_or_missing_store() {
 static CAPTURE_INIT: std::sync::Once = std::sync::Once::new();
 tokio::task_local! { static CAPTURE: Events; }
 struct CaptureLayer;
-fn init_capture() {
+pub(crate) fn init_capture() {
     CAPTURE_INIT.call_once(|| {
         tracing::subscriber::set_global_default(tracing_subscriber::registry().with(CaptureLayer))
             .unwrap();
@@ -973,6 +974,7 @@ async fn ancestor_group_grants_deletion_cycles_and_duplicate_owners(pool: PgPool
         f.state.files.invalidate_all();
         let admin = Router::new()
             .route("/i/{hash}/{name}", get(derivative))
+            .layer(Extension(Links::default()))
             .layer(Extension(SessionIdentity::User {
                 id: UserId::new(),
                 groups: vec![],

@@ -6,6 +6,7 @@ pub mod auth;
 pub mod error;
 pub mod files;
 pub mod middleware;
+mod share;
 mod state;
 pub use state::{AppResources, AppState};
 mod static_assets;
@@ -42,6 +43,7 @@ pub fn public_router(state: AppState) -> Router {
         .route("/v/{hash}/{name}", get(files::video));
     let router = Router::new()
         .merge(auth::routes(auth::Audience(false)))
+        .merge(share::routes())
         .route("/", get(home))
         .route("/healthz", get(health).with_state(()))
         .route("/static/{*path}", get(static_assets::serve))
@@ -83,6 +85,7 @@ pub fn admin_router(state: AppState) -> Router {
     stack(
         Router::new()
             .merge(auth::routes(auth::Audience(true)))
+            .merge(share::admin_routes())
             .route("/admin/healthz", get(health))
             .route("/admin/", get(health))
             .route("/admin/setup-mfa", get(auth::security::setup))
