@@ -78,3 +78,7 @@ path = "../yhotos-pipeline"
 [[bench]]
 name = "pipeline"
 harness = false
+
+[[bench]]
+name = "interactions"
+harness = false

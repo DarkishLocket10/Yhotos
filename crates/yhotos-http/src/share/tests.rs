@@ -724,6 +724,40 @@ async fn scope_descendants_restricted_ancestors_photo_only_and_user_union(pool: 
         single_client.get(&f.app, &image).await.status,
         StatusCode::OK
     );
+    // An unrelated album grant must not reveal the photo-only target's album.
+    assert_eq!(
+        single_client.get(&f.app, &path).await.status,
+        StatusCode::OK
+    );
+    let direct = single_client
+        .get(
+            &f.app,
+            &format!("/p/{}", yhotos_core::ShortId::from_photo_id(photo)),
+        )
+        .await;
+    assert_eq!(direct.status, StatusCode::OK);
+    assert!(!direct.text().contains("/a/"));
+    assert!(!direct.text().contains("photo-target"));
+    // The unrelated link's interaction caps must not authorize this photo either.
+    for action in ["like", "flag"] {
+        concealed(&single_client.action(&f.app, photo, action).await).await;
+    }
+    concealed(
+        &single_client
+            .send(
+                &f.app,
+                Method::DELETE,
+                &format!(
+                    "/api/v1/photos/{}/like",
+                    yhotos_core::ShortId::from_photo_id(photo)
+                ),
+                String::new(),
+                true,
+                false,
+            )
+            .await,
+    )
+    .await;
     concealed(&single_client.get(&f.app, "/a/photo-target").await).await;
     concealed(&single_client.get(&f.app, &sibling).await).await;
     concealed(
@@ -1318,6 +1352,9 @@ async fn page_controls_keep_each_links_capabilities_with_its_own_scope(pool: PgP
         assert!(!page.text().contains(control));
     }
     concealed(&client.get(&f.app, &original).await).await;
+    for action in ["like", "flag"] {
+        concealed(&client.action(&f.app, photo, action).await).await;
+    }
     grants::grant_photo(
         &mut f.pool.acquire().await.unwrap(),
         photo,
@@ -1330,6 +1367,12 @@ async fn page_controls_keep_each_links_capabilities_with_its_own_scope(pool: PgP
     assert_eq!(page.status, StatusCode::OK);
     assert!(page.text().contains("Download photo"));
     assert_eq!(client.get(&f.app, &original).await.status, StatusCode::OK);
+    for action in ["like", "flag"] {
+        assert_eq!(
+            client.action(&f.app, photo, action).await.status,
+            StatusCode::OK
+        );
+    }
 }
 
 #[tokio::test]

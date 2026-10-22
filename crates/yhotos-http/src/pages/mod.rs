@@ -214,6 +214,15 @@ pub(crate) async fn photo(
         && links
             .0
             .iter()
+            .filter(|link| {
+                link.caps.view
+                    && match link.target {
+                        yhotos_core::access::ShareTarget::Photo(id) => id == row.photo.id,
+                        yhotos_core::access::ShareTarget::Album(id) => {
+                            row.photo.shared_albums.contains(&id)
+                        }
+                    }
+            })
             .all(|l| matches!(l.target, yhotos_core::access::ShareTarget::Photo(_)))
     {
         row.chain.clear();

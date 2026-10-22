@@ -30,10 +30,6 @@ export function parseGallery(value: unknown): Gallery {
   for (const p of data.photos) if (!p || !/^[a-z2-7]{12}$/.test(p.id) || typeof p.title !== "string" || !p.image || !p.caps) throw new Error("Invalid photo");
   return data;
 }
-export function mediaPath(path: string): string {
-  if (!/^\/(?:i|o)\//.test(path) || path.includes("\\")) throw new Error("Invalid image URL");
-  return path;
-}
 export function hydrateGrid(value: unknown, images: Map<string, Photo["image"]>): Gallery {
   const data = value as Gallery;
   if (!data || !Array.isArray(data.photos) || data.photos.length > 60) throw new Error("Invalid gallery");

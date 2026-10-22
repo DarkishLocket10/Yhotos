@@ -1,4 +1,5 @@
-import { PageCursor, mergePhotos, parseGallery, hydrateGrid, swipeDirection, mediaPath, type Photo, type Gallery } from "./lib/gallery.js";
+import { PageCursor, mergePhotos, parseGallery, hydrateGrid, swipeDirection, type Photo, type Gallery } from "./lib/gallery.js";
+import { safeMediaUrl, zoomSourceSet, DecodedMedia } from "./lib/media.js";
 import { enhance, plainClick, reducedData } from "./lib/lifecycle.js";
 enhance(signal => {
   const element = document.querySelector<HTMLDialogElement>("#lightbox");
@@ -16,14 +17,14 @@ enhance(signal => {
       jpeg: { all: img.srcset }, avif: source("image/avif"), jxl: source("image/jxl"), hdr_jpeg: source("image/jpeg", true), hdr_avif: source("image/avif", true), hdr_jxl: source("image/jxl", true) });
   });
   let gallery: Gallery; try { gallery = hydrateGrid(JSON.parse(json.textContent || "null"), images); } catch { return; }
-  const imagePath = (path: string) => path.startsWith("/i/") ? mediaPath(path) : "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='4' height='3'%3E%3Cpath fill='%23777' d='M0 0h4v3H0z'/%3E%3C/svg%3E";
   const photos = gallery.photos, cursor = new PageCursor(gallery.next_page);
   const $ = <T extends HTMLElement>(selector: string) => dialog.querySelector<T>(selector)!;
   const stage = $<HTMLDivElement>("[data-stage]"), picture = $<HTMLPictureElement>("[data-picture]");
   const status = $<HTMLParagraphElement>("[role=status]");
   const origin = location.href;
   let index = 0, generation = 0, opener: HTMLElement | null = null, timer: ReturnType<typeof setInterval> | undefined;
-  let scale = 1, tx = 0, ty = 0, originalLoaded = false;
+  let scale = 1, tx = 0, ty = 0;
+  const upgrades = new DecodedMedia();
   let lastTap: number | null = null;
   let restoring = false;
   const pointers = new Map<number, { x: number; y: number }>();
@@ -32,24 +33,45 @@ enhance(signal => {
   function pause(): void { clearInterval(timer); timer = undefined; $("[data-slideshow]").setAttribute("aria-pressed", "false"); $("[data-slideshow]").textContent = "Play slideshow"; }
   function transform(): void {
     const image = $<HTMLImageElement>("[data-image]");
-    image.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+    if (image) image.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
     stage.classList.toggle("zoomed", scale > 1);
     $("[data-zoom]").setAttribute("aria-pressed", String(scale > 1));
     $("[data-zoom]").setAttribute("aria-label", scale > 1 ? "Reset photo zoom" : "Zoom photo");
     $("[data-zoom]").textContent = scale > 1 ? "Reset zoom" : "Zoom";
   }
-  async function zoom(value: number): Promise<void> {
+  function displayWidth(): number {
+    return Math.max(1, picture.querySelector<HTMLImageElement>("img")?.clientWidth || stage.clientWidth);
+  }
+  function upgradeImage(): void {
+    if (!dialog.open) return;
+    const photo = photos[index], width = displayWidth(), pixels = width * scale * devicePixelRatio;
+    const original = photo.caps.download && pixels > photo.zoom_width && photo.original ? safeMediaUrl(photo.original) : null;
+    const sets = (["hdr_jxl", "hdr_avif", "hdr_jpeg", "jxl", "avif", "jpeg"] as const).map(key => zoomSourceSet(photo.image[key].all, pixels));
+    const key = original || sets.join("|");
+    if (key === upgrades.key) return;
+    const upgrade = document.createElement("picture");
+    if (!original) {
+      for (const [position, type, hdr] of [[0, "image/jxl", true], [1, "image/avif", true], [2, "image/jpeg", true], [3, "image/jxl", false], [4, "image/avif", false]] as const) {
+        const candidate = sets[position]; if (!candidate) continue;
+        const source = document.createElement("source"); source.type = type; source.srcset = candidate; source.sizes = `${width * scale}px`; if (hdr) source.media = "(dynamic-range: high)"; upgrade.append(source);
+      }
+    }
+    const fallback = original || safeMediaUrl(photo.image.src);
+    if (!fallback) return;
+    const image = document.createElement("img"); image.dataset.image = ""; image.alt = photo.title; image.width = photo.image.width; image.height = photo.image.height;
+    image.sizes = `${width * scale}px`; if (!original && sets[5]) image.srcset = sets[5]; image.src = fallback; upgrade.append(image);
+    // A connected offscreen picture lets the browser negotiate HDR and format.
+    upgrade.className = "lightbox-upgrade"; stage.append(upgrade);
+    void upgrades.show(key, () => image.decode(), () => {
+      if (dialog.open) { picture.replaceChildren(...upgrade.childNodes); transform(); }
+    }).catch(() => setStatus("Higher resolution is unavailable.")).finally(() => upgrade.remove());
+  }
+  function zoom(value: number): void {
     pause();
-    const photo = photos[index], cap = Math.max(1, photo.zoom_width / Math.max(1, Math.min(stage.clientWidth, stage.clientHeight * photo.image.width / photo.image.height)));
+    const photo = photos[index], cap = Math.max(1, photo.zoom_width / (displayWidth() * devicePixelRatio));
     scale = Math.max(1, Math.min(value, photo.caps.download ? 12 : cap));
     if (scale === 1) { tx = 0; ty = 0; }
-    transform();
-    if (scale > cap && photo.original && !originalLoaded) {
-      originalLoaded = true; const version = generation, image = new Image();
-      image.src = mediaPath(photo.original);
-      try { await image.decode(); if (version === generation && dialog.open) { picture.querySelectorAll("source").forEach(s => s.remove()); const old = $<HTMLImageElement>("[data-image]"); image.alt = photo.title; image.dataset.image = ""; image.width = photo.image.width; image.height = photo.image.height; old.replaceWith(image); transform(); } }
-      catch { if (version === generation) { originalLoaded = false; setStatus("Full resolution is unavailable."); } }
-    }
+    transform(); upgradeImage();
   }
   let paging: Promise<void> | null = null;
   function more(): Promise<void> {
@@ -72,7 +94,8 @@ enhance(signal => {
     for (const position of [index - 1, index + 1]) {
       const photo = photos[position]; if (!photo) continue;
       const large = photo.image.jpeg.all.split(", ").find(s => /\/large\.jpeg /.test(s))?.split(" ")[0];
-      if (large && !nearby.has(photo.id)) { const image = new Image(); image.src = mediaPath(large); nearby.set(photo.id, image); void image.decode().catch(() => {}); }
+      const url = large ? safeMediaUrl(large) : null;
+      if (url && !nearby.has(photo.id)) { const image = new Image(); image.src = url; nearby.set(photo.id, image); void image.decode().catch(() => {}); }
     }
   }
   function historyPhoto(push: boolean): void {
@@ -83,11 +106,11 @@ enhance(signal => {
   function renderDownloads(photo: Photo): void {
     const downloads = dialog.querySelector<HTMLElement>("#lightbox-downloads"); downloads?.replaceChildren();
     const button = dialog.querySelector<HTMLButtonElement>("[data-download]"); if (button) button.hidden = !photo.caps.download;
-    for (const download of photo.downloads) { const li = document.createElement("li"), a = document.createElement("a"); a.href = mediaPath(download.href); a.download = ""; a.textContent = download.label; li.append(a); downloads?.append(li); }
+    for (const download of photo.downloads) { const url = safeMediaUrl(download.href); if (!url) continue; const li = document.createElement("li"), a = document.createElement("a"); a.href = url; a.download = ""; a.textContent = download.label; li.append(a); downloads?.append(li); }
   }
   function render(seed?: HTMLImageElement): void {
     const photo = photos[index], version = ++generation;
-    scale = 1; tx = 0; ty = 0; originalLoaded = false; lastTap = null; pointers.clear();
+    scale = 1; tx = 0; ty = 0; upgrades.reset(); lastTap = null; pointers.clear();
     $("#lightbox-title").textContent = photo.title;
     $("[data-description]").textContent = photo.description;
     const details = $("[data-details]"); details.replaceChildren();
@@ -102,18 +125,10 @@ enhance(signal => {
     const preview = document.createElement("img"); preview.dataset.image = ""; preview.alt = photo.title; preview.width = photo.image.width; preview.height = photo.image.height;
     const gridImage = gridImages.get(photo.id);
     const initial = seed || (gridImage?.naturalWidth ? gridImage : nearby.get(photo.id) || gridImage);
-    preview.src = initial?.currentSrc || initial?.src || imagePath(photo.image.src);
-    picture.replaceChildren(preview); transform();
-    // Decode the browser-selected HDR/format source set offscreen before replacing the grid image.
-    const upgrade = document.createElement("picture");
-    for (const [key, type, hdr] of [["hdr_jxl", "image/jxl", true], ["hdr_avif", "image/avif", true], ["hdr_jpeg", "image/jpeg", true], ["jxl", "image/jxl", false], ["avif", "image/avif", false]] as const) {
-      if (!photo.image[key].all) continue;
-      const source = document.createElement("source"); source.type = type; source.srcset = photo.image[key].all; source.sizes = "100vw"; if (hdr) source.media = "(dynamic-range: high)"; upgrade.append(source);
-    }
-    const image = document.createElement("img"); image.dataset.image = ""; image.alt = photo.title; image.width = photo.image.width; image.height = photo.image.height; image.sizes = "100vw"; image.srcset = photo.image.jpeg.all; image.src = imagePath(photo.image.src); upgrade.append(image);
-    // Hidden but connected makes <picture> source selection work consistently in browsers.
-    upgrade.className = "lightbox-upgrade"; stage.append(upgrade);
-    void image.decode().then(() => { if (version === generation && dialog.open && scale === 1) { picture.replaceChildren(...upgrade.childNodes); transform(); } }).catch(() => {}).finally(() => upgrade.remove());
+    const previewUrl = safeMediaUrl(initial?.currentSrc || initial?.src || photo.image.src);
+    if (previewUrl) { preview.src = previewUrl; picture.replaceChildren(preview); transform(); }
+    else picture.replaceChildren();
+    upgradeImage();
     $<HTMLButtonElement>("[data-previous]").disabled = index === 0;
     $<HTMLButtonElement>("[data-next]").disabled = index === photos.length - 1 && cursor.next === null;
     setStatus(`Photo ${index + 1} of ${photos.length}${cursor.next === null ? "" : ", more photos available"}`);
@@ -139,7 +154,7 @@ enhance(signal => {
   }
   function close(): void {
     if (!dialog.open) return;
-    pause(); generation++; if (document.fullscreenElement === dialog) void document.exitFullscreen().catch(() => {}); dialog.close();
+    pause(); generation++; upgrades.reset(); if (document.fullscreenElement === dialog) void document.exitFullscreen().catch(() => {}); dialog.close();
     document.documentElement.classList.remove("lightbox-open");
     document.body.querySelectorAll<HTMLElement>("[data-lightbox-inert]").forEach(el => { el.inert = false; delete el.dataset.lightboxInert; });
     opener?.focus({ preventScroll: true });
@@ -152,7 +167,7 @@ enhance(signal => {
     performance.mark("lightbox-click"); render(link.querySelector("img") || undefined);
     document.documentElement.classList.add("lightbox-open");
     for (const child of document.body.children) if (child instanceof HTMLElement && child !== dialog && !child.inert) { child.inert = true; child.dataset.lightboxInert = ""; }
-    dialog.showModal(); $("[data-close]").focus(); historyPhoto(true);
+    dialog.showModal(); upgradeImage(); $("[data-close]").focus(); historyPhoto(true);
     requestAnimationFrame(() => requestAnimationFrame(() => { performance.measure("lightbox-first-paint", "lightbox-click"); }));
   }, { signal });
   function dismiss(): void { if (restoring) return; if (history.state?.yhotosLightbox) { restoring = true; history.back(); } else close(); }
@@ -211,6 +226,7 @@ enhance(signal => {
     if (Math.abs(dx) + Math.abs(dy) < 12) { if (lastTap !== null && event.timeStamp - lastTap < 300) { void zoom(scale === 1 ? 2 : 1); lastTap = null; } else lastTap = event.timeStamp; }
   }, { signal });
   stage.addEventListener("pointercancel", event => { pointers.delete(event.pointerId); pinch = 0; }, { signal });
+  window.addEventListener("resize", () => { if (dialog.open) upgradeImage(); }, { signal });
   document.addEventListener("yhotos:before-navigate", close, { signal });
   signal.addEventListener("abort", () => { pause(); close(); });
 });
