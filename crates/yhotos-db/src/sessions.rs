@@ -1,4 +1,4 @@
-//! Session and single-use ceremony storage. Identity and audience are verified by HTTP.
+//! Session and single-use ceremony storage. Lookups bind bearer digests to listener audiences.
 use crate::DbError;
 use sqlx::PgConnection;
 use time::OffsetDateTime;
@@ -294,13 +294,18 @@ pub struct Loaded {
     /// Current groups from the database.
     pub groups: Vec<GroupId>,
 }
-/// Loads session, account, factors and groups in one query; conditionally coalesces activity writes.
+/// Loads session, account, factors and groups only for the expected listener audience.
+/// Coalesces activity writes in the same query; a mismatched audience never refreshes activity.
 ///
 /// # Errors
 /// Returns a database connection, statement or constraint failure.
-pub async fn load(c: &mut PgConnection, hash: &[u8]) -> Result<Option<Loaded>, DbError> {
+pub async fn load(
+    c: &mut PgConnection,
+    hash: &[u8],
+    admin: bool,
+) -> Result<Option<Loaded>, DbError> {
     let row=sqlx::query!(r#"WITH touched AS (
- UPDATE sessions SET last_seen_at=clock_timestamp() WHERE token_hash=$1
+ UPDATE sessions SET last_seen_at=clock_timestamp() WHERE token_hash=$1 AND admin=$2
  AND last_seen_at<=clock_timestamp()-interval '5 minutes'
  AND expires_at>clock_timestamp() AND created_at<=last_seen_at
  AND last_seen_at>clock_timestamp()-CASE WHEN (SELECT is_admin FROM users WHERE id=sessions.user_id) THEN interval '12 hours' ELSE interval '14 days' END
@@ -311,7 +316,7 @@ SELECT s.id,s.user_id,s.admin,s.created_at,COALESCE((SELECT last_seen_at FROM to
 u.must_change_password,u.is_admin,(u.disabled_at IS NOT NULL) as "disabled!",
 EXISTS(SELECT FROM user_mfa_list(u.id) WHERE kind IN ('totp','passkey')) as "has_mfa!",
 ARRAY(SELECT group_id FROM user_groups WHERE user_id=u.id) as "groups!"
-FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1"#,hash).fetch_optional(c).await?;
+FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.admin=$2"#,hash,admin).fetch_optional(c).await?;
     Ok(row.map(|r| Loaded {
         session: Session {
             id: r.id,

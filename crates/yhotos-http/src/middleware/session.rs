@@ -60,7 +60,7 @@ async fn run(
             // Admin privilege and MFA gates must observe account changes and
             // revocations on every request, including changes in another process.
             let mut c = auth.db(a)?.pool().acquire().await?;
-            sessions::load(&mut c, hash).await?.map(Arc::new)
+            sessions::load(&mut c, hash, a.0).await?.map(Arc::new)
         } else {
             auth.load(hash).await?
         }

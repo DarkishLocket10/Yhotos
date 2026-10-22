@@ -127,7 +127,7 @@ impl Auth {
             }
         }
     }
-    /// Loads cached session context, issuing exactly one query on an uncontended miss.
+    /// Loads public-listener session context, issuing exactly one query on an uncontended miss.
     /// Each slot's version prevents a concurrent revocation from caching stale data.
     ///
     /// # Errors
@@ -150,7 +150,7 @@ impl Auth {
                 entry.version
             };
             let mut c = self.public_db.pool().acquire().await?;
-            let loaded = sessions::load(&mut c, hash).await?.map(Arc::new);
+            let loaded = sessions::load(&mut c, hash, false).await?.map(Arc::new);
             let mut entry = slot
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);

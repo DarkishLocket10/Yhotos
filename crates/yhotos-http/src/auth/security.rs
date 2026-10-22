@@ -115,8 +115,15 @@ pub(crate) async fn password(
     })
     .await
     .map_err(|_| HttpError::BadRequest)??;
+    // Current predates password hashing. Consume the authorizing bearer in the
+    // same transaction as the password write and replacement session so a
+    // concurrent logout or revocation cannot resurrect it.
+    let Some(current_hash) = sessions::revoke(&mut tx, user.id, current.0.session.id).await? else {
+        return Ok(login::failed());
+    };
     users::set_password(&mut tx, user.id, &SecretString::from(hash.as_str())).await?;
-    let revoked = sessions::revoke_all(&mut tx, user.id).await?;
+    let mut revoked = sessions::revoke_all(&mut tx, user.id).await?;
+    revoked.push(current_hash);
     for _ in &revoked {
         audit::write(
             &mut tx,

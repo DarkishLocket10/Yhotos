@@ -608,6 +608,95 @@ async fn forced_password_gate_rotation_and_other_sessions_revoked(pool: PgPool) 
     assert_eq!(count, 1);
 }
 #[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn concurrent_revocation_cannot_recreate_a_session_during_password_change(pool: PgPool) {
+    for forced in [true, false] {
+        let mut c = Client::new(pool.clone(), false).await;
+        let (id, name, password) = c.seed(forced, false).await;
+        c.login(&name, &password, false).await;
+        c.get("/u/password").await;
+        let current = c.session(false).await;
+        let before = users::get_by_id(&mut pool.acquire().await.unwrap(), id)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut other = current.clone();
+        other.id = Uuid::now_v7();
+        other.token_hash = Token::generate()
+            .hash(TokenKind::Session)
+            .as_bytes()
+            .to_vec();
+        sessions::create(&mut pool.acquire().await.unwrap(), &other)
+            .await
+            .unwrap();
+
+        // The recent activity timestamp lets middleware load Current without
+        // writing. Hold only the session row so hashing can finish independently.
+        let mut revocation = pool.begin().await.unwrap();
+        sqlx::query!("SELECT id FROM sessions WHERE id=$1 FOR UPDATE", current.id)
+            .fetch_one(&mut *revocation)
+            .await
+            .unwrap();
+        let new = yhotos_auth::generate_temp_password();
+        let fields = [
+            (
+                "current_password",
+                if forced { "" } else { password.expose_secret() },
+            ),
+            ("new_password", new.expose_secret()),
+        ];
+        let change = c.post("/u/password", &fields);
+        let revoke = async {
+            // Both session consumption and the vulnerable revoke-all query have
+            // this prefix. Wait for the actual database lock, never a hashing delay.
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                loop {
+                    let blocked = sqlx::query_scalar!(
+                        r#"SELECT EXISTS(SELECT FROM pg_stat_activity
+                        WHERE datname=current_database() AND wait_event_type='Lock'
+                        AND query LIKE 'DELETE FROM sessions WHERE user_id=$1%') AS "blocked!""#
+                    )
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+                    if blocked {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(
+                sessions::revoke(&mut revocation, id, current.id)
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+            revocation.commit().await.unwrap();
+        };
+        let (reply, ()) = tokio::join!(change, revoke);
+        assert_eq!(reply.status, StatusCode::UNAUTHORIZED);
+        assert_eq!(reply.body, "Sign in failed");
+        assert!(!reply.headers.contains_key(header::SET_COOKIE));
+        let after = users::get_by_id(&mut pool.acquire().await.unwrap(), id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.password_hash, before.password_hash);
+        assert_eq!(after.must_change_password, forced);
+        let remaining = sessions::list(&mut pool.acquire().await.unwrap(), id)
+            .await
+            .unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, other.id);
+        let changes = sqlx::query_scalar!(
+            r#"SELECT count(*) AS "count!" FROM audit_log WHERE user_id=$1 AND action='password.change'"#,
+            id.0
+        ).fetch_one(&pool).await.unwrap();
+        assert_eq!(changes, 0);
+    }
+}
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
 async fn expiry_invalid_cookies_csrf_and_redirect_validation(pool: PgPool) {
     let mut c = Client::new(pool, false).await;
     let (_, name, pw) = c.seed(false, false).await;
@@ -868,6 +957,59 @@ async fn passkey_roundtrip_single_use_and_json_csrf(pool: PgPool) {
 
 #[cfg(feature = "admin")]
 #[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn cross_listener_tokens_never_refresh_session_activity(pool: PgPool) {
+    for admin in [true, false] {
+        let mut source = Client::new(pool.clone(), admin).await;
+        let (_, name, password) = source.seed(false, true).await;
+        source.login(&name, &password, admin).await;
+        let session = source.session(admin).await;
+        sqlx::query!("UPDATE sessions SET created_at=now()-interval '7 minutes',last_seen_at=now()-interval '6 minutes' WHERE id=$1",session.id)
+            .execute(&pool).await.unwrap();
+        source.state.auth.as_ref().unwrap().invalidate(session.id);
+        let before = source.session(admin).await.last_seen_at;
+        let mut other = source.listener(!admin);
+        other.jar.insert(
+            if admin { "__Host-ys" } else { "ya" }.into(),
+            source
+                .jar
+                .get(if admin { "ya" } else { "__Host-ys" })
+                .unwrap()
+                .clone(),
+        );
+        location(
+            &other
+                .get(if admin {
+                    "/u/security"
+                } else {
+                    "/admin/healthz"
+                })
+                .await,
+            if admin { "/login" } else { "/admin/login" },
+        );
+        assert_eq!(source.session(admin).await.last_seen_at, before);
+        assert!(
+            !other
+                .jar
+                .contains_key(if admin { "__Host-ys" } else { "ya" })
+        );
+        // The rightful listener still coalesces a due activity update.
+        assert_eq!(
+            source
+                .get(if admin {
+                    "/admin/setup-mfa"
+                } else {
+                    "/u/security"
+                })
+                .await
+                .status,
+            StatusCode::OK
+        );
+        assert!(source.session(admin).await.last_seen_at > before);
+    }
+}
+
+#[cfg(feature = "admin")]
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
 async fn admin_enrollment_guard_and_listener_cookie_isolation(pool: PgPool) {
     let mut admin = Client::new(pool.clone(), true).await;
     let (id, name, pw) = admin.seed(false, true).await;
@@ -1110,7 +1252,7 @@ async fn check_session_queries(pool: PgPool, count: Arc<std::sync::atomic::Atomi
     .await
     .unwrap();
     count.store(0, std::sync::atomic::Ordering::Relaxed);
-    let context = sessions::load(&mut conn, &s.token_hash)
+    let context = sessions::load(&mut conn, &s.token_hash, false)
         .instrument(tracing::debug_span!("session_query_count"))
         .await
         .unwrap()
