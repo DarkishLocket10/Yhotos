@@ -12,6 +12,13 @@ export function safeMediaUrl(value: string): string | null {
     return url.pathname + url.search;
   } catch { return null; }
 }
+/** Rendered width of a photo drawn with `object-fit: contain` inside a box.
+ * Letterboxing is excluded, so portrait photos in wide boxes get their real width. */
+export function containedWidth(boxWidth: number, boxHeight: number, imageWidth: number, imageHeight: number): number {
+  if (!(boxWidth > 0)) return 1;
+  if (!(boxHeight > 0) || !(imageWidth > 0) || !(imageHeight > 0)) return Math.max(1, boxWidth);
+  return Math.max(1, Math.min(boxWidth, boxHeight * imageWidth / imageHeight));
+}
 /** Validate every width candidate, then choose the smallest sufficient derivative
  * (or the largest available). Invalid candidates never enter a srcset. */
 export function zoomSourceSet(value: string, pixels: number): string | null {

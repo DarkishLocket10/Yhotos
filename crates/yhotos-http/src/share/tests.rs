@@ -2018,8 +2018,8 @@ async fn retained_photo_link_loses_capabilities_when_its_album_becomes_restricte
         album as _
     )
     .execute(&f.pool)
-        .await
-        .unwrap();
+    .await
+    .unwrap();
     f.invalidate();
     // The view-only album link still shows the photo, but the retained photo link
     // no longer covers it, so its like and flag capabilities must not be borrowed.

@@ -67,3 +67,15 @@ test('zoom retaining the same selected derivative keeps the pending initial upgr
   finish(); await pending;
   assert.deepEqual(displayed, ['decoded']);
 });
+
+test('zoom width excludes letterboxing for portrait and landscape photos', async () => {
+  const { containedWidth } = await import('../dist/test/lib/media.js');
+  // Portrait 4000x6000 photo in a wide 2000x1000 box is drawn 666.67 px wide, not 2000.
+  assert.ok(Math.abs(containedWidth(2000, 1000, 4000, 6000) - 2000 / 3) < 1e-9);
+  // Landscape photo limited by width keeps the box width.
+  assert.equal(containedWidth(1000, 1000, 6000, 4000), 1000);
+  // Missing or zero sizes fall back safely and never return zero.
+  assert.equal(containedWidth(800, 0, 4000, 6000), 800);
+  assert.equal(containedWidth(0, 0, 0, 0), 1);
+  assert.equal(containedWidth(800, 600, 0, 0), 800);
+});

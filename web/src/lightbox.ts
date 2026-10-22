@@ -1,5 +1,5 @@
 import { PageCursor, mergePhotos, parseGallery, hydrateGrid, swipeDirection, type Photo, type Gallery } from "./lib/gallery.js";
-import { safeMediaUrl, zoomSourceSet, DecodedMedia } from "./lib/media.js";
+import { containedWidth, safeMediaUrl, zoomSourceSet, DecodedMedia } from "./lib/media.js";
 import { enhance, plainClick, reducedData } from "./lib/lifecycle.js";
 enhance(signal => {
   const element = document.querySelector<HTMLDialogElement>("#lightbox");
@@ -40,7 +40,8 @@ enhance(signal => {
     $("[data-zoom]").textContent = scale > 1 ? "Reset zoom" : "Zoom";
   }
   function displayWidth(): number {
-    return Math.max(1, picture.querySelector<HTMLImageElement>("img")?.clientWidth || stage.clientWidth);
+    const box = picture.querySelector<HTMLImageElement>("img"), photo = photos[index];
+    return containedWidth(box?.clientWidth || stage.clientWidth, box?.clientHeight || stage.clientHeight, photo.image.width, photo.image.height);
   }
   function upgradeImage(): void {
     if (!dialog.open) return;
