@@ -72,6 +72,8 @@ fn config(dir: &std::path::Path) -> BenchResult<&'static Config> {
         session_key: format!("{}{}", Uuid::now_v7().simple(), Uuid::now_v7().simple()).into(),
         trust_proxy: false,
         global_stream_cap: 64,
+        write_timeout: Duration::from_secs(30),
+        transfer_deadline: Duration::from_mins(30),
         rate_limits: RateLimits {
             cheap_per_min: u32::MAX,
             expensive_per_min: u32::MAX,

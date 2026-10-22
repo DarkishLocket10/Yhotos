@@ -3,7 +3,7 @@
 
 use axum::{body::Body, extract::ConnectInfo, http::Request};
 use criterion::Criterion;
-use std::{hint::black_box, net::SocketAddr};
+use std::{hint::black_box, net::SocketAddr, time::Duration};
 use tower::ServiceExt;
 use yhotos_config::{Config, LogFormat, RateLimits, Upload};
 use yhotos_http::{AppState, public_router};
@@ -30,6 +30,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .into(),
         trust_proxy: false,
         global_stream_cap: 64,
+        write_timeout: Duration::from_secs(30),
+        transfer_deadline: Duration::from_mins(30),
         rate_limits: RateLimits {
             cheap_per_min: u32::MAX,
             expensive_per_min: u32::MAX,

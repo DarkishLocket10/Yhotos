@@ -285,7 +285,11 @@ async fn serve(
     }
     let stream = ReaderStream::with_capacity(file.take(range.len), BUFFER);
     *response.body_mut() = match permit {
-        Some(permit) => Body::from_stream(streams::GuardedStream::new(stream, permit)),
+        Some(permit) => Body::from_stream(streams::GuardedStream::new(
+            stream,
+            permit,
+            state.config.transfer_deadline,
+        )),
         None => Body::from_stream(stream),
     };
     Ok(response)

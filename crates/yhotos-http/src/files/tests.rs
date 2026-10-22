@@ -465,6 +465,44 @@ async fn missing_file_is_concealed_and_logs_error_with_request_id(pool: PgPool) 
 }
 
 #[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn originals_and_video_expire_at_the_configured_absolute_deadline(pool: PgPool) {
+    let f = Fixture::with_global_cap(pool, 2).await;
+    let app = crate::public_router(f.state.clone());
+    let mut original = app
+        .clone()
+        .oneshot(req(&f.original()))
+        .await
+        .unwrap()
+        .into_body();
+    let mut video = app
+        .clone()
+        .oneshot(req(&f.video()))
+        .await
+        .unwrap()
+        .into_body();
+    // Pause only after database/file setup. Both bodies remain unpolled,
+    // so no file reads or timer-based cache expiry can affect the assertion.
+    tokio::time::pause();
+    tokio::time::advance(f.state.config.transfer_deadline).await;
+    assert!(original.frame().await.unwrap().is_err());
+    assert!(video.frame().await.unwrap().is_err());
+    // Retaining failed bodies must not retain either the global or IP slots.
+    let _first = f
+        .state
+        .files
+        .streams
+        .acquire("127.0.0.1".parse().unwrap())
+        .unwrap();
+    let _second = f
+        .state
+        .files
+        .streams
+        .acquire("127.0.0.1".parse().unwrap())
+        .unwrap();
+    tokio::time::resume();
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
 async fn original_cap_lives_until_stream_drop_and_is_per_ip(pool: PgPool) {
     let f = Fixture::new(pool).await;
     let app = crate::public_router(f.state.clone());

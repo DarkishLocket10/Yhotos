@@ -66,6 +66,7 @@ time = "=0.3.55"
 log = "=0.4.34"
 moka = { version = "=0.12.15", default-features = false, features = ["future"] }
 tokio-util = { version = "=0.7.20", features = ["io"] }
+tokio-io-timeout = "=1.2.1"
 futures-core = "=0.3.34"
 
 [profile.release]
