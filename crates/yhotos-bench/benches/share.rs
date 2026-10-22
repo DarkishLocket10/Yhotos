@@ -78,6 +78,25 @@ fn config(dir: &std::path::Path, url: SecretString) -> BenchResult<&'static Conf
         log_format: LogFormat::Json,
     })))
 }
+async fn cleanup(
+    admin: &Db,
+    user: yhotos_core::UserId,
+    album: yhotos_core::AlbumId,
+) -> BenchResult<()> {
+    sqlx::query!("DELETE FROM share_links WHERE created_by=$1", user as _)
+        .execute(admin.pool())
+        .await?;
+    sqlx::query!("DELETE FROM photos WHERE album_id=$1", album as _)
+        .execute(admin.pool())
+        .await?;
+    sqlx::query!("DELETE FROM albums WHERE id=$1", album as _)
+        .execute(admin.pool())
+        .await?;
+    sqlx::query!("DELETE FROM users WHERE id=$1", user as _)
+        .execute(admin.pool())
+        .await?;
+    Ok(())
+}
 fn main() -> BenchResult<()> {
     let runtime = tokio::runtime::Runtime::new()?;
     let _context = runtime.enter();
@@ -105,6 +124,7 @@ fn main() -> BenchResult<()> {
     let state = AppState::new(config, public.pool().clone(), store, Some(auth));
     let app = public_router(state.clone());
     // Scope resolution must be independent of the landing's page-cache key.
+    let default_path = path.clone();
     let path = format!("{path}?sort=name");
     let response = runtime.block_on(request(&app, &path, ""))?;
     let cookie = response
@@ -115,10 +135,18 @@ fn main() -> BenchResult<()> {
         .collect::<Result<Vec<_>, _>>()?
         .join("; ");
     drop(response);
+    // Both sort keys share one cached grant set; repeats only insert an open.
+    runtime.block_on(first_byte(&app, &default_path, &cookie))?;
     runtime.block_on(first_byte(&app, &image, &cookie))?;
     let mut criterion = Criterion::default().configure_from_args();
     let mut failure = None;
     for (name, path, cold, cold_session) in [
+        (
+            "share/landing_warm_default_sort_including_open_write",
+            &default_path,
+            false,
+            false,
+        ),
         (
             "share/landing_warm_including_open_write",
             &path,
@@ -160,21 +188,7 @@ fn main() -> BenchResult<()> {
         });
     }
     criterion.final_summary();
-    runtime.block_on(async {
-        sqlx::query!("DELETE FROM share_links WHERE created_by=$1", user as _)
-            .execute(admin.pool())
-            .await?;
-        sqlx::query!("DELETE FROM photos WHERE album_id=$1", album as _)
-            .execute(admin.pool())
-            .await?;
-        sqlx::query!("DELETE FROM albums WHERE id=$1", album as _)
-            .execute(admin.pool())
-            .await?;
-        sqlx::query!("DELETE FROM users WHERE id=$1", user as _)
-            .execute(admin.pool())
-            .await?;
-        Ok::<_, sqlx::Error>(())
-    })?;
+    runtime.block_on(cleanup(&admin, user, album))?;
     if let Some(error) = failure {
         return Err(error);
     }

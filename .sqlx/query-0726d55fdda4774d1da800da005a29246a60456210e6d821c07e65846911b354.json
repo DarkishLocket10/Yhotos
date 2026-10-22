@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT unlocked_at FROM share_session_links WHERE share_link_id=$1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "unlocked_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "share_session_links",
+            "name": "unlocked_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0726d55fdda4774d1da800da005a29246a60456210e6d821c07e65846911b354"
+}

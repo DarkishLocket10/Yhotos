@@ -43,6 +43,7 @@ pub(crate) struct ScopedLink {
     pub target: ShareTarget,
     pub link_id: ShareLinkId,
     pub caps: LinkFlags,
+    pub passphrase_version: i64,
 }
 impl ScopedLink {
     pub(crate) fn principal(&self) -> Principal<'_> {
@@ -181,6 +182,7 @@ fn scoped(link: &ShareLinkRow) -> ScopedLink {
     ScopedLink {
         target: target(link),
         link_id: link.id,
+        passphrase_version: link.passphrase_version,
         caps: LinkFlags {
             view: link.allow_view,
             download: link.allow_download,
@@ -230,10 +232,11 @@ pub(crate) async fn resolve(state: &AppState, headers: &HeaderMap) -> Result<Lin
     let mut links = Links::default();
     for member in &session.links {
         let scope = auth.shares.scope(member).await;
-        if !scope.flags.view
-            || scope
-                .expires_at
-                .is_some_and(|t| t <= OffsetDateTime::now_utc().unix_timestamp())
+        if scope.passphrase_version != member.passphrase_version
+            || !scope.flags.view
+            || scope.expires_at.is_some_and(|t| {
+                i128::from(t) <= OffsetDateTime::now_utc().unix_timestamp_nanos() / 1000
+            })
         {
             continue;
         }
@@ -243,6 +246,7 @@ pub(crate) async fn resolve(state: &AppState, headers: &HeaderMap) -> Result<Lin
                 share_links::TargetKind::Photo => ShareTarget::Photo(PhotoId(scope.target_id)),
             },
             link_id: scope.link_id,
+            passphrase_version: member.passphrase_version,
             caps: LinkFlags {
                 view: scope.flags.view,
                 download: scope.flags.download,
@@ -315,14 +319,19 @@ async fn landing(
         auth::ua(request.headers()),
         OffsetDateTime::now_utc(),
     )?;
-    if s.landing.link.passphrase_hash.is_some()
-        && !links.0.iter().any(|l| l.link_id == s.landing.link.id)
-    {
-        let mut c = auth::required(&state)?
-            .db(Audience(false))?
-            .pool()
-            .acquire()
-            .await?;
+    let existing = carried_session(&state, request.headers()).await?;
+    let member = existing.as_ref().and_then(|(_, session)| {
+        session.links.iter().find(|l| {
+            l.link_id == s.landing.link.id
+                && l.passphrase_version == s.landing.link.passphrase_version
+                && links.0.iter().any(|scope| {
+                    scope.link_id == l.link_id && scope.passphrase_version == l.passphrase_version
+                })
+        })
+    });
+    let auth = auth::required(&state)?;
+    if s.landing.link.passphrase_hash.is_some() && member.is_none() {
+        let mut c = auth.db(Audience(false))?.pool().acquire().await?;
         share_links::record_open(&mut c, s.landing.link.id, &visitor, None, None).await?;
         return views::unlock(request.headers(), false);
     }
@@ -334,77 +343,120 @@ async fn landing(
         number,
         sort,
     )?;
-    issue_session(
-        &state,
-        &s.landing.link,
-        request.headers(),
-        auth::ip(&state, &request)?,
-        &mut response,
-        Some(&visitor),
-    )
-    .await?;
+    if let (Some((_, session)), Some(member)) = (&existing, member) {
+        // One required statistics statement, including a coalesced recency
+        // update when due. A GET can never insert a protected membership.
+        auth.shares
+            .record_open(&state, session.id, member, &visitor)
+            .await?;
+    } else {
+        // Only passphrase-free links reach this insertion path. The version
+        // guard in SQL also rejects a passphrase added after the page lookup.
+        let mut c = auth.db(Audience(false))?.pool().acquire().await?;
+        let mut tx = c.begin().await?;
+        share_links::record_open(&mut tx, s.landing.link.id, &visitor, None, None).await?;
+        let issued = issue_session(
+            &state,
+            &mut tx,
+            &s.landing.link,
+            existing,
+            auth::ip(&state, &request)?,
+            auth::ua(request.headers()),
+        )
+        .await?;
+        tx.commit().await?;
+        issued
+            .finish(&state, request.headers(), &mut response)
+            .await?;
+    }
     Ok(response)
 }
+async fn carried_session(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<Option<([u8; 32], Arc<share_links::LinkSession>)>, HttpError> {
+    let Some(hash) = auth::cookie(headers, COOKIE_NAME).and_then(|v| digest(v, TokenKind::Session))
+    else {
+        return Ok(None);
+    };
+    Ok(auth::required(state)?
+        .shares
+        .session(state, hash)
+        .await?
+        .filter(|s| valid_session(s, &hash))
+        .map(|s| (hash, s)))
+}
+struct IssuedSession {
+    epoch: u64,
+    revision: u64,
+    hash: [u8; 32],
+    session: share_links::LinkSession,
+    token: Option<Token>,
+}
+impl IssuedSession {
+    async fn finish(
+        self,
+        state: &AppState,
+        headers: &HeaderMap,
+        response: &mut Response,
+    ) -> Result<(), HttpError> {
+        auth::required(state)?
+            .shares
+            .remember_session(self.epoch, self.revision, self.hash, self.session)
+            .await;
+        let encoded = Zeroizing::new(if let Some(token) = self.token {
+            token.encode(TokenKind::Session)
+        } else {
+            auth::cookie(headers, COOKIE_NAME)
+                .ok_or(HttpError::NotFound)?
+                .to_owned()
+        });
+        auth::set_cookie(
+            response,
+            Audience(false).cookie(COOKIE_NAME, &encoded, false)?,
+        );
+        for name in legacy_names(headers) {
+            auth::set_cookie(response, Audience(false).cookie(name, "", true)?);
+        }
+        Ok(())
+    }
+}
+// Called in the transaction holding the verified link lock for protected links,
+// or with a passphrase-free snapshot whose version SQL checks before insertion.
 async fn issue_session(
     state: &AppState,
+    c: &mut sqlx::PgConnection,
     link: &ShareLinkRow,
-    headers: &HeaderMap,
+    existing: Option<([u8; 32], Arc<share_links::LinkSession>)>,
     ip: [u8; 32],
-    response: &mut Response,
-    visitor: Option<&[u8; 32]>,
-) -> Result<(), HttpError> {
+    ua: &str,
+) -> Result<IssuedSession, HttpError> {
     let auth = auth::required(state)?;
-    let carried = auth::cookie(headers, COOKIE_NAME).and_then(|v| digest(v, TokenKind::Session));
-    let existing = if let Some(hash) = carried {
-        auth.shares
-            .session(state, hash)
-            .await?
-            .filter(|s| valid_session(s, &hash))
-    } else {
-        None
-    };
-    let mut c = auth.db(Audience(false))?.pool().acquire().await?;
-    let mut tx = c.begin().await?;
-    if let Some(visitor) = visitor {
-        share_links::record_open(&mut tx, link.id, visitor, None, None).await?;
-    }
     let epoch = auth.shares.epoch();
-    let (hash, session, new_token) = if let (Some(existing), Some(hash)) = (existing, carried) {
-        if !share_links::unlock_session_link(&mut tx, existing.id, link).await? {
+    let (hash, session, token) = if let Some((hash, existing)) = existing {
+        if !share_links::unlock_session_link(c, existing.id, link).await? {
             return Err(HttpError::NotFound);
         }
-        let session = share_links::load_session(&mut tx, &hash)
+        let session = share_links::load_session(c, &hash)
             .await?
             .ok_or(HttpError::NotFound)?;
         (hash, session, None)
     } else {
         let token = Token::generate();
         let hash = *token.hash(TokenKind::Session).as_bytes();
-        let session = share_links::create_session(&mut tx, link, &hash, &ip, auth::ua(headers))
+        let session = share_links::create_session(c, link, &hash, &ip, ua)
             .await?
             .ok_or(HttpError::NotFound)?;
         (hash, session, Some(token))
     };
     let revision = auth.shares.session_revision(hash);
-    tx.commit().await?;
-    auth.shares
-        .remember_session(epoch, revision, hash, session)
-        .await;
-    let encoded = Zeroizing::new(if let Some(token) = new_token {
-        token.encode(TokenKind::Session)
-    } else {
-        auth::cookie(headers, COOKIE_NAME)
-            .ok_or(HttpError::NotFound)?
-            .to_owned()
-    });
-    auth::set_cookie(
-        response,
-        Audience(false).cookie(COOKIE_NAME, &encoded, false)?,
-    );
-    for name in legacy_names(headers) {
-        auth::set_cookie(response, Audience(false).cookie(name, "", true)?);
-    }
-    Ok(())
+    Ok(IssuedSession {
+        epoch,
+        revision,
+        hash,
+        session,
+        token,
+    })
 }
 // Prehashing permits the scope's "any string" passphrases without weakening or
 // changing the shared Argon2 primitive's 8..=256-byte input contract.
@@ -477,10 +529,7 @@ async fn unlock(
     } else {
         None
     };
-    let phc = s
-        .as_ref()
-        .filter(|s| active(&s.landing.link))
-        .and_then(|s| s.landing.link.passphrase_hash.clone());
+    let existing = carried_session(&state, &headers).await?;
     let mut c = auth.db(Audience(false))?.pool().acquire().await?;
     let mut tx = c.begin().await?;
     let mut lock = if let Some(hash) = hash {
@@ -489,6 +538,14 @@ async fn unlock(
     } else {
         UnlockState::default()
     };
+    let current = if let Some(s) = &s {
+        share_links::lock_for_unlock(&mut tx, s.landing.link.id).await?
+    } else {
+        None
+    };
+    let phc = current
+        .as_ref()
+        .and_then(|link| link.passphrase_hash.clone());
     let now = OffsetDateTime::now_utc().unix_timestamp();
     let locked = lock.locked(now);
     let password = passphrase(&input);
@@ -507,7 +564,7 @@ async fn unlock(
     })
     .await
     .map_err(|_| HttpError::Internal(anyhow::anyhow!("passphrase verification unavailable")))?;
-    let valid = s.as_ref().is_some_and(|s| active(&s.landing.link));
+    let valid = current.as_ref().is_some_and(active);
     if !success || !valid {
         if valid
             && !locked
@@ -539,8 +596,6 @@ async fn unlock(
         )
         .await?;
     }
-    tx.commit().await?;
-    drop(c);
     let s = s.ok_or(HttpError::NotFound)?;
     let mut response = views::page(
         &s,
@@ -558,15 +613,19 @@ async fn unlock(
         .insert(axum::extract::ConnectInfo(std::net::SocketAddr::new(
             peer, 0,
         )));
-    issue_session(
+    let issued = issue_session(
         &state,
-        &s.landing.link,
-        request.headers(),
+        &mut tx,
+        &current.ok_or(HttpError::NotFound)?,
+        existing,
         auth::ip(&state, &request)?,
-        &mut response,
-        None,
+        auth::ua(request.headers()),
     )
     .await?;
+    tx.commit().await?;
+    issued
+        .finish(&state, request.headers(), &mut response)
+        .await?;
     Ok(response)
 }
 async fn interact(

@@ -19,6 +19,7 @@ pub(crate) struct Shares {
     session_epoch: AtomicU64,
     session_versions: moka::sync::Cache<[u8; 32], Arc<AtomicU64>>,
     sessions: Cache<(u64, u64, [u8; 32]), Option<Arc<LinkSession>>>,
+    recency: moka::sync::Cache<(u64, uuid::Uuid, yhotos_core::ShareLinkId, i64), ()>,
     salt: Mutex<Salt>,
 }
 struct Salt {
@@ -50,6 +51,10 @@ impl Shares {
             sessions: Cache::builder()
                 .max_capacity(16384)
                 .time_to_live(std::time::Duration::from_secs(30))
+                .build(),
+            recency: moka::sync::Cache::builder()
+                .max_capacity(16384)
+                .time_to_live(std::time::Duration::from_secs(60))
                 .build(),
             salt: Mutex::new(Salt {
                 day: i64::MIN,
@@ -93,6 +98,7 @@ impl Shares {
         self.pages.invalidate_all();
         self.scopes.invalidate_all();
         self.sessions.invalidate_all();
+        self.recency.invalidate_all();
     }
     pub(crate) async fn scope(&self, link: &SessionLink) -> Arc<SessionLink> {
         self.scopes
@@ -188,8 +194,9 @@ impl Shares {
             {
                 if session.as_ref().is_some_and(|s| {
                     s.links.iter().any(|l| {
-                        l.expires_at
-                            .is_some_and(|t| t <= OffsetDateTime::now_utc().unix_timestamp())
+                        l.expires_at.is_some_and(|t| {
+                            i128::from(t) <= OffsetDateTime::now_utc().unix_timestamp_nanos() / 1000
+                        })
                     })
                 }) {
                     // Expiry is checked even on a warm session. Reload only the
@@ -202,6 +209,53 @@ impl Shares {
                 return Ok(session);
             }
         }
+    }
+    pub(crate) async fn record_open(
+        &self,
+        state: &AppState,
+        session: uuid::Uuid,
+        member: &SessionLink,
+        visitor: &[u8; 32],
+    ) -> Result<(), HttpError> {
+        let key = (
+            self.epoch(),
+            session,
+            member.link_id,
+            member.passphrase_version,
+        );
+        let mut refresh = false;
+        if OffsetDateTime::now_utc().unix_timestamp_nanos() / 1000 - i128::from(member.unlocked_at)
+            >= 60_000_000
+        {
+            // Only the caller initializing this entry includes the recency
+            // update. Other visits still record their own opens. SQL also
+            // enforces the minute bound across processes and cache eviction.
+            self.recency.get_with(key, || {
+                refresh = true;
+            });
+        }
+        let mut c = auth::required(state)?
+            .db(auth::Audience(false))?
+            .pool()
+            .acquire()
+            .await?;
+        if refresh {
+            if let Err(error) = share_links::record_open_with_recency(
+                &mut c,
+                session,
+                member.link_id,
+                member.passphrase_version,
+                visitor,
+            )
+            .await
+            {
+                self.recency.invalidate(&key);
+                return Err(error.into());
+            }
+        } else {
+            share_links::record_open(&mut c, member.link_id, visitor, None, None).await?;
+        }
+        Ok(())
     }
     pub(crate) fn visitor(
         &self,
