@@ -1,0 +1,100 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT variant,format,hdr,hash,width,height,bytes FROM derivatives WHERE photo_id=$1 ORDER BY variant,format,hdr",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "variant",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "derivatives",
+            "name": "variant"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "format",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "derivatives",
+            "name": "format"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "hdr",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "derivatives",
+            "name": "hdr"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "derivatives",
+            "name": "hash"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "width",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "derivatives",
+            "name": "width"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "height",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "derivatives",
+            "name": "height"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "derivatives",
+            "name": "bytes"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "80d6eef2e0287e4bfed7ba381e28b44d13476027768024172e786118adbc3354"
+}

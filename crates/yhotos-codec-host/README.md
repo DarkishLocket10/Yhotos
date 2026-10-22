@@ -66,3 +66,19 @@ decode error.
 The syscall list must be audited with `strace -f -c` inside that image whenever
 native codec versions change. This workstation has no running Docker daemon;
 Linux execution and the strace inventory have not been verified locally.
+
+
+HDR outputs use the existing encoder `hdr` flag. The report adds
+`hdr_skipped_reason` (a fixed enum or null) and `skipped_outputs` (name/reason).
+Only HDR outputs may be skipped; sources without maps use `no_gain_map` for
+those requested outputs and retain a null photo-level reason. Invalid map
+metadata preserves all SDR outputs and reports the reason. An unavailable HDR
+encoder skips just that format and its partial file is removed. The parent
+matches every output/skip against its trusted plan before publishing HDR rows.
+The default plan reserves nine optional HDR outputs at medium/large/xlarge,
+including xlarge JPEG, alongside the existing 23 required SDR outputs. The 2x
+SDR variants remain in that plan; HDR edges are configured separately.
+Matching SDR/HDR outputs share the resized working image and an immutable
+encoded-base snapshot (16 MiB each, 64 MiB total). Snapshot identity and encoder
+policy are checked inside the codec; cache misses use normal encoding. The
+report's `timings.hdr_base_reuses` records successful reuses.

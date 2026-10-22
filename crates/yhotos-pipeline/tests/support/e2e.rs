@@ -735,3 +735,66 @@ async fn explicit_exif_capture_offset_is_stored_and_overrides_default_timezone(p
     );
     empty_tmp(root.path()).await;
 }
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn gain_maps_publish_hdr_rows_verify_files_and_rerun_idempotently(pool: PgPool) {
+    for name in [
+        "../hdr/iso.jpg",
+        "../hdr/adobe.jpg",
+        "../hdr/apple.heic",
+        "gain-map.avif",
+        "../hdr/gain-map.jxl",
+    ] {
+        let (root, mut ingest, id) = setup(&pool, name).await;
+        ingest.ingest(id).await.unwrap();
+        let rows=sqlx::query!("SELECT variant,format,hdr,hash,width,height,bytes FROM derivatives WHERE photo_id=$1 ORDER BY variant,format,hdr",id.0).fetch_all(&pool).await.unwrap();
+        assert_eq!(rows.len(), 29, "{name}");
+        assert_eq!(rows.iter().filter(|r| r.hdr).count(), 6, "{name}");
+        for row in &rows {
+            if row.hdr {
+                assert!(["medium", "large", "xlarge"].contains(&row.variant.as_str()));
+                assert!(["jpeg", "jxl"].contains(&row.format.as_str()));
+            }
+            let hash: ContentHash = row.hash.parse().unwrap();
+            let path = ingest
+                .store
+                .path_derivative(&DerivativeKey {
+                    hash: &hash,
+                    variant: &row.variant,
+                    format: &row.format,
+                    hdr: row.hdr,
+                })
+                .unwrap();
+            let bytes = std::fs::read(path).unwrap();
+            assert_eq!(i64::try_from(bytes.len()).unwrap(), row.bytes);
+            assert_eq!(blake3::hash(&bytes).to_hex().as_str(), row.hash);
+        }
+        empty_tmp(root.path()).await;
+        let before = sqlx::query!(
+            "SELECT updated_at,derivative_plan FROM photos WHERE id=$1",
+            id.0
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let files = count_files(root.path());
+        ingest.ingest(id).await.unwrap();
+        let after = sqlx::query!(
+            "SELECT updated_at,derivative_plan FROM photos WHERE id=$1",
+            id.0
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(before.updated_at, after.updated_at);
+        assert_eq!(before.derivative_plan, after.derivative_plan);
+        assert_eq!(files, count_files(root.path()));
+        if name == "../hdr/iso.jpg" {
+            ingest.plan.variants.last_mut().unwrap().hdr = false;
+            ingest.ingest(id).await.unwrap();
+            let rows=sqlx::query!("SELECT variant,format,hdr,hash,width,height,bytes FROM derivatives WHERE photo_id=$1 ORDER BY variant,format,hdr",id.0).fetch_all(&pool).await.unwrap();
+            assert_eq!(rows.len(), 27);
+            assert!(!rows.iter().any(|r| r.hdr && r.variant == "xlarge"));
+        }
+    }
+}

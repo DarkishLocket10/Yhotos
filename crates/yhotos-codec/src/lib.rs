@@ -2,7 +2,11 @@
 //! Bounded image identification and color-managed, linear-light derivatives.
 
 mod bmff;
+mod gain_container;
+mod hdr;
+mod hdr_jpeg;
 mod headers;
+pub use hdr::{HdrSkippedReason, validate_gain_map, validate_gain_map_metadata};
 mod metadata;
 mod mpf;
 mod native;
@@ -17,7 +21,10 @@ pub use metadata::{Metadata, metadata};
 pub use palette::dominant_colors;
 pub use placeholder::thumbhash;
 use serde::{Deserialize, Serialize};
-use std::{path::Path, sync::Arc};
+use std::{
+    path::Path,
+    sync::{Arc, Weak},
+};
 
 /// Rejections contain no file paths, decoder messages, or other process internals.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -144,7 +151,7 @@ pub struct Identity {
     pub bits: u8,
     /// Alpha is preserved on decode and resize.
     pub has_alpha: bool,
-    /// Gain-map metadata was detected; HDR encoding remains unsupported.
+    /// Gain-map metadata was detected; extraction may still reject an invalid auxiliary map.
     pub has_gain_map: bool,
     /// Number of pages or frames in the container.
     pub pages: u32,
@@ -182,7 +189,9 @@ pub fn identify(path: &Path, limits: &Limits) -> Result<Identity, CodecError> {
         // libvips' JXL header loader scans through the pixel payload to count
         // frames and collect trailing boxes. The bounded libjxl header already
         // supplies decoder agreement and all still-image identity fields.
-        return native::identify_jxl(path, limits);
+        let mut id = native::identify_jxl(path, limits)?;
+        id.has_gain_map = gain_container::jxl_present(path).unwrap_or(true);
+        return Ok(id);
     }
     let has_gain_map = if matches!(kind, Kind::Heif | Kind::Avif) {
         false // The native loader's bounded BMFF preflight also checks gain maps.
@@ -225,11 +234,25 @@ pub fn identify(path: &Path, limits: &Limits) -> Result<Identity, CodecError> {
 /// Materialized 16-bit linear XYZ (1/256 unit) with separate unassociated alpha.
 /// Not `Send`/`Sync`: native image handles stay in the calling codec thread.
 pub struct Working {
+    identity: Arc<()>,
     image: native::Image,
     profile: Option<Arc<[u8]>>,
     alpha: bool,
+    gain_map: Option<hdr::GainMap>,
+    hdr_skipped_reason: Option<HdrSkippedReason>,
 }
 impl Working {
+    /// A fixed reason HDR extraction was skipped, while SDR pixels remain usable.
+    #[must_use]
+    pub const fn hdr_skipped_reason(&self) -> Option<HdrSkippedReason> {
+        self.hdr_skipped_reason
+    }
+    /// True only after a gain map and its metadata have both passed validation.
+    #[must_use]
+    pub const fn has_gain_map(&self) -> bool {
+        self.gain_map.is_some()
+    }
+
     /// Dimensions after applying EXIF orientation.
     ///
     /// # Errors
@@ -251,7 +274,14 @@ pub fn decode(path: &Path, id: &Identity, limits: &Limits) -> Result<Working, Co
     if matches!(id.kind, Kind::Raw(_)) {
         return raw::decode(path, limits);
     }
-    from_image(native::Image::load(path, &id.kind)?)
+    let mut working = from_image(native::Image::load(path, &id.kind)?)?;
+    if id.has_gain_map {
+        match hdr::extract(path, id, limits) {
+            Ok(gain_map) => working.gain_map = Some(gain_map),
+            Err(error) => working.hdr_skipped_reason = Some(error.into()),
+        }
+    }
+    Ok(working)
 }
 
 #[allow(clippy::needless_pass_by_value)] // Own the loaded image through materialization.
@@ -277,14 +307,17 @@ fn from_image(image: native::Image) -> Result<Working, CodecError> {
         xyz
     };
     Ok(Working {
+        identity: Arc::new(()),
         image: image.materialize()?,
         profile,
         alpha,
+        gain_map: None,
+        hdr_skipped_reason: None,
     })
 }
 
 /// Target long edge, optionally center cropped to a square; never upscales.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResizeSpec {
     /// Positive target long edge.
@@ -318,15 +351,23 @@ pub fn resize(w: &Working, spec: ResizeSpec) -> Result<Working, CodecError> {
         }
         image = image.cast(native::USHORT)?;
     }
+    let (gain_map, hdr_skipped_reason) = match w.gain_map.as_ref().map(|g| g.resized(spec, scale)) {
+        Some(Ok(map)) => (Some(map), w.hdr_skipped_reason),
+        Some(Err(error)) => (None, Some(error.into())),
+        None => (None, w.hdr_skipped_reason),
+    };
     Ok(Working {
+        identity: Arc::new(()),
         image,
         profile: w.profile.clone(),
         alpha: w.alpha,
+        gain_map,
+        hdr_skipped_reason,
     })
 }
 
-/// Encoder options; HDR requests always return Unsupported.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+/// Encoder options; unsupported HDR containers return Unsupported.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub enum Encode {
     /// AV1 still image, quality 1..=100, speed 0..=9.
@@ -336,7 +377,7 @@ pub enum Encode {
         /// AV1 speed 0..=9; higher is faster.
         speed: u8,
         #[serde(default)]
-        /// Reserved; true always returns Unsupported.
+        /// Carry a validated gain map when the encoder supports this container.
         hdr: bool,
     },
     /// JPEG XL, distance 0..=25, effort 1..=9.
@@ -346,7 +387,7 @@ pub enum Encode {
         /// Encoder effort 1..=9.
         effort: u8,
         #[serde(default)]
-        /// Reserved; true always returns Unsupported.
+        /// Carry a validated gain map when the encoder supports this container.
         hdr: bool,
     },
     /// JPEG fallback, quality 1..=100.
@@ -358,12 +399,50 @@ pub enum Encode {
         /// Allow chroma subsampling.
         chroma_subsampling: bool,
         #[serde(default)]
-        /// Reserved; true always returns Unsupported.
+        /// Carry a validated gain map when the encoder supports this container.
         hdr: bool,
     },
 }
-/// Metadata policy; all derivatives strip EXIF, GPS, XMP, and IPTC.
-#[derive(Debug, Clone, Copy)]
+impl Encode {
+    /// Whether this request requires a gain map.
+    #[must_use]
+    pub const fn hdr(self) -> bool {
+        match self {
+            Self::Avif { hdr, .. } | Self::Jxl { hdr, .. } | Self::Jpeg { hdr, .. } => hdr,
+        }
+    }
+    /// Retain every encoder setting while selecting the SDR base rendition.
+    #[must_use]
+    pub fn sdr(self) -> Self {
+        match self {
+            Self::Avif { quality, speed, .. } => Self::Avif {
+                quality,
+                speed,
+                hdr: false,
+            },
+            Self::Jxl {
+                distance, effort, ..
+            } => Self::Jxl {
+                distance,
+                effort,
+                hdr: false,
+            },
+            Self::Jpeg {
+                quality,
+                progressive,
+                chroma_subsampling,
+                ..
+            } => Self::Jpeg {
+                quality,
+                progressive,
+                chroma_subsampling,
+                hdr: false,
+            },
+        }
+    }
+}
+/// Source EXIF, GPS, XMP and IPTC are stripped; HDR metadata is regenerated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EncodeOpts {
     /// Preserve the source color profile, otherwise convert to sRGB.
     pub keep_icc: bool,
@@ -381,7 +460,7 @@ pub struct Encoded {
     pub height: u32,
 }
 
-/// Encode with only ICC retained. Filename never selects the encoder.
+/// Encode with ICC and validated HDR metadata retained. Filename never selects the encoder.
 ///
 /// # Errors
 /// Returns a typed rejection for invalid headers, exceeded limits, or failed native operations.
@@ -391,27 +470,142 @@ pub fn encode(
     opts: EncodeOpts,
     out: &Path,
 ) -> Result<Encoded, CodecError> {
-    if !opts.strip_metadata {
-        return Err(CodecError::Options);
-    }
+    encode_impl(w, enc, opts, out, None)
+}
+
+fn export_image(w: &Working, opts: EncodeOpts) -> Result<native::Image, CodecError> {
     let color = w.image.extract(0, 3)?.linear(1.0 / 256.0)?.xyz()?;
     let color = color.export(if opts.keep_icc {
         w.profile.as_deref()
     } else {
         None
     })?;
-    let image = if w.alpha {
-        color.join(&w.image.extract(3, 1)?)?
+    if w.alpha {
+        color.join(&w.image.extract(3, 1)?)
     } else {
-        color
-    };
-    image.save(enc, out)?;
+        Ok(color)
+    }
+}
+
+fn encode_impl(
+    w: &Working,
+    enc: Encode,
+    opts: EncodeOpts,
+    out: &Path,
+    base: Option<&[u8]>,
+) -> Result<Encoded, CodecError> {
+    if !opts.strip_metadata {
+        return Err(CodecError::Options);
+    }
+    if enc.hdr() {
+        let gain = w.gain_map.as_ref().ok_or(CodecError::Unsupported)?;
+        if !opts.keep_icc {
+            return Err(CodecError::Options);
+        }
+        match enc {
+            Encode::Jpeg { .. } => gain.image.gain_save(out)?,
+            Encode::Jxl { .. } => gain.image.gain_save_jxl(out)?,
+            Encode::Avif { .. } => return Err(CodecError::Unsupported),
+        }
+        let auxiliary = hdr::read(out, &Limits::default())?;
+        let base = if let Some(bytes) = base {
+            std::borrow::Cow::Borrowed(bytes)
+        } else {
+            export_image(w, opts)?.save(enc.sdr(), out)?;
+            std::borrow::Cow::Owned(hdr::read(out, &Limits::default())?)
+        };
+        let bytes = match enc {
+            Encode::Jpeg { .. } => hdr::mux(&base, &auxiliary, &gain.metadata)?,
+            Encode::Jxl { .. } => gain_container::jxl_mux(&base, &auxiliary, &gain.metadata)?,
+            Encode::Avif { .. } => return Err(CodecError::Unsupported),
+        };
+        std::fs::write(out, bytes).map_err(|_| CodecError::Io)?;
+    } else {
+        export_image(w, opts)?.save(enc, out)?;
+    }
     let (width, height) = w.dimensions()?;
     Ok(Encoded {
         bytes: std::fs::metadata(out).map_err(|_| CodecError::Io)?.len(),
         width,
         height,
     })
+}
+
+/// Immutable compressed SDR bytes tied to one working image and encoder policy.
+/// Only successful codec output in a private output directory can mint this value.
+pub struct SdrBase {
+    bytes: Vec<u8>,
+    identity: Weak<()>,
+    encoder: Encode,
+    options: EncodeOpts,
+}
+impl SdrBase {
+    /// True only for the same working image, SDR encoding settings and ICC policy.
+    #[must_use]
+    pub fn matches(&self, working: &Working, encoder: Encode, options: EncodeOpts) -> bool {
+        self.encoder == encoder.sdr()
+            && self.options == options
+            && self.identity.ptr_eq(&Arc::downgrade(&working.identity))
+    }
+    /// Exact retained byte length, bounded by the capture budget and a 16 MiB hard cap.
+    #[must_use]
+    pub fn bytes(&self) -> usize {
+        self.bytes.len()
+    }
+}
+/// Encode SDR and optionally retain an immutable base for an otherwise identical HDR output.
+/// Caller supplies a private output directory, as for the codec-host protocol.
+/// Exceeding the bounded cache budget preserves SDR output and returns no cached base.
+/// # Errors
+/// Rejects HDR requests, invalid options and normal encoding failures.
+pub fn encode_sdr_cached(
+    w: &Working,
+    enc: Encode,
+    opts: EncodeOpts,
+    out: &Path,
+    budget: usize,
+) -> Result<(Encoded, Option<SdrBase>), CodecError> {
+    if enc.hdr() {
+        return Err(CodecError::Options);
+    }
+    let encoded = encode(w, enc, opts, out)?;
+    let cap = budget.min(16 << 20);
+    let bytes = if encoded.bytes <= cap as u64 {
+        hdr::read(
+            out,
+            &Limits {
+                max_bytes: encoded.bytes,
+                ..Limits::default()
+            },
+        )
+        .ok()
+        .filter(|bytes| bytes.len() as u64 == encoded.bytes)
+    } else {
+        None
+    };
+    let base = bytes.map(|bytes| SdrBase {
+        bytes,
+        identity: Arc::downgrade(&w.identity),
+        encoder: enc,
+        options: opts,
+    });
+    Ok((encoded, base))
+}
+/// Reuse immutable SDR bytes without repeating color export and base compression.
+/// The opaque base must belong to this exact working image, encoder settings and ICC policy.
+/// # Errors
+/// Rejects a mismatched base or any normal HDR encoding failure.
+pub fn encode_reusing_sdr(
+    w: &Working,
+    enc: Encode,
+    opts: EncodeOpts,
+    out: &Path,
+    base: &SdrBase,
+) -> Result<Encoded, CodecError> {
+    if !enc.hdr() || !base.matches(w, enc, opts) {
+        return Err(CodecError::Mismatch);
+    }
+    encode_impl(w, enc, opts, out, Some(&base.bytes))
 }
 
 fn rgba(w: &Working, edge: u32) -> Result<(u32, u32, Vec<u8>), CodecError> {

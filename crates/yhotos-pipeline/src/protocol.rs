@@ -23,6 +23,10 @@ impl Default for Limits {
 }
 #[derive(Deserialize)]
 pub(crate) struct Report {
+    #[serde(default)]
+    pub hdr_skipped_reason: Option<HdrSkippedReason>,
+    #[serde(default)]
+    pub skipped_outputs: Vec<SkippedOutput>,
     pub identity: Identity,
     pub metadata: Metadata,
     pub thumbhash: String,
@@ -117,4 +121,19 @@ mod tests {
 pub(crate) enum VideoContainer {
     Mp4,
     Mov,
+}
+
+#[derive(Clone, Copy, Deserialize, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum HdrSkippedReason {
+    NoGainMap,
+    InvalidGainMap,
+    UnsupportedGainMap,
+    GainMapLimits,
+    EncoderUnavailable,
+}
+#[derive(Deserialize)]
+pub(crate) struct SkippedOutput {
+    pub name: String,
+    pub reason: HdrSkippedReason,
 }

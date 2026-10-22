@@ -54,3 +54,10 @@ path = "fuzz_targets/tus_headers.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "gain_map_metadata"
+path = "fuzz_targets/gain_map_metadata.rs"
+test = false
+doc = false
+bench = false

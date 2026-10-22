@@ -296,14 +296,12 @@ pub(crate) fn jpeg_header<R: Read>(mut reader: R) -> Result<Vec<u8>, CodecError>
     }
 }
 
-#[cfg(feature = "raw")]
 // Read only JPEG marker headers, stopping at SOF without entering entropy data.
 pub(crate) fn jpeg_dimensions(bytes: &[u8], limits: &Limits) -> Result<(u32, u32), CodecError> {
     let (w, h, _) = jpeg_frame(bytes, limits, &mut (16 << 20))?;
     Ok((w, h))
 }
 
-#[cfg(feature = "raw")]
 pub(crate) fn jpeg_frame<R: Read>(
     mut reader: R,
     limits: &Limits,

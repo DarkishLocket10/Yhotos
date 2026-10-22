@@ -155,6 +155,7 @@ impl Ingest {
                 pause.resume.notified().await;
             }
             let placeholder = self.validate_report(&report)?;
+            let outputs = Self::completed_plan(&outputs,&report)?;
             let verified = self.verify_outputs(dir.path(),&outputs,&report).await?;
             self.publish(photo_id,&photo.original_hash,photo.generation,&marker,&report,&outputs,&verified,&placeholder,followup_priority).await
         }.await;
@@ -171,6 +172,45 @@ impl Ingest {
             sqlx::query!("UPDATE photos SET status=$3::text::photo_status,failure_reason=$4 WHERE id=$1 AND original_hash=$2 AND generation=$5 AND status<>'ready'",photo_id.0,photo.original_hash,status,reason,photo.generation).execute(&self.db).await.map_err(|_|retry("photo failure update failed"))?;
         }
         result
+    }
+    fn completed_plan(
+        plans: &[plan::Planned],
+        report: &protocol::Report,
+    ) -> Result<Vec<plan::Planned>, JobError> {
+        let bad = || JobError::Fatal("invalid codec output selection".into());
+        if report.outputs.len() + report.skipped_outputs.len() != plans.len() {
+            return Err(bad());
+        }
+        if report.hdr_skipped_reason.is_some() && !report.identity.has_gain_map {
+            return Err(bad());
+        }
+        let mut completed = Vec::new();
+        for plan in plans {
+            let outputs = report
+                .outputs
+                .iter()
+                .filter(|o| o.name == plan.name)
+                .count();
+            let skipped = report
+                .skipped_outputs
+                .iter()
+                .filter(|o| o.name == plan.name)
+                .collect::<Vec<_>>();
+            match (outputs, skipped.as_slice()) {
+                (1, [])
+                    if !plan.hdr
+                        || report.identity.has_gain_map && report.hdr_skipped_reason.is_none() =>
+                {
+                    completed.push(plan.clone());
+                }
+                (0, [skip])
+                    if plan.hdr
+                        && ((skip.reason == protocol::HdrSkippedReason::NoGainMap)
+                            != report.identity.has_gain_map) => {}
+                _ => return Err(bad()),
+            }
+        }
+        Ok(completed)
     }
     fn validate_report(&self, r: &protocol::Report) -> Result<Vec<u8>, JobError> {
         let id = &r.identity;
@@ -255,5 +295,53 @@ impl JobHandler for Ingest {
                 reason: "not implemented".into(),
             }),
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+mod hdr_report_tests {
+    use super::*;
+    fn report(plans: &[plan::Planned], gain: bool) -> protocol::Report {
+        let outputs=plans.iter().filter(|p| !p.hdr).map(|p|serde_json::json!({"name":p.name,"width":1,"height":1,"bytes":1,"blake3":"0".repeat(64)})).collect::<Vec<_>>();
+        let skipped=plans.iter().filter(|p|p.hdr).map(|p|serde_json::json!({"name":p.name,"reason":if gain {"unsupported_gain_map"} else {"no_gain_map"}})).collect::<Vec<_>>();
+        serde_json::from_value(serde_json::json!({"identity":{"kind":"Jpeg","width":1,"height":1,"orientation":1,"bits":8,"pages":1,"has_gain_map":gain},"metadata":{},"thumbhash":"AAAAAA==","dominant_colors":[[0,0,0]],"outputs":outputs,"skipped_outputs":skipped,"hdr_skipped_reason":if gain {Some("unsupported_gain_map")} else {None}})).unwrap()
+    }
+    #[test]
+    fn optional_hdr_skips_preserve_required_sdr_outputs_for_both_source_kinds() {
+        let (_, plans) = VariantPlan::default().expand().unwrap();
+        for gain in [false, true] {
+            let report = report(&plans, gain);
+            let completed = Ingest::completed_plan(&plans, &report).unwrap();
+            assert_eq!(completed.len(), 23);
+            assert!(completed.iter().all(|p| !p.hdr));
+        }
+        assert_eq!(plans.iter().filter(|p| p.hdr).count(), 9);
+        assert!(
+            plans
+                .iter()
+                .filter(|p| p.hdr)
+                .all(|p| p.keep_icc && ["medium", "large", "xlarge"].contains(&p.variant.as_str()))
+        );
+    }
+    #[test]
+    fn report_cannot_skip_sdr_duplicate_names_or_invent_hdr_presence() {
+        let (_, plans) = VariantPlan::default().expand().unwrap();
+        let mut r = report(&plans, false);
+        r.skipped_outputs[0].name = r.outputs[0].name.clone();
+        r.outputs.remove(0);
+        assert!(Ingest::completed_plan(&plans, &r).is_err());
+        let mut r = report(&plans, false);
+        r.outputs[1].name = r.outputs[0].name.clone();
+        assert!(Ingest::completed_plan(&plans, &r).is_err());
+        let mut r = report(&plans, true);
+        r.identity.has_gain_map = false;
+        assert!(Ingest::completed_plan(&plans, &r).is_err());
+        let mut r = report(&plans, true);
+        r.skipped_outputs[0].reason = protocol::HdrSkippedReason::NoGainMap;
+        assert!(Ingest::completed_plan(&plans, &r).is_err());
+        let mut r = report(&plans, false);
+        r.skipped_outputs[0].name = "unexpected.jpeg.hdr".into();
+        assert!(Ingest::completed_plan(&plans, &r).is_err());
     }
 }

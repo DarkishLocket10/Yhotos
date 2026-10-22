@@ -591,7 +591,6 @@ impl<F: Read + Seek> Tiff<F> {
         let bytes = self.read(offset, size)?;
         Ok(Some(Self::integer(&bytes, 0, size, e.layout.little)?))
     }
-    #[cfg(feature = "raw")]
     pub(crate) fn blob(
         &mut self,
         index: usize,
@@ -602,7 +601,6 @@ impl<F: Read + Seek> Tiff<F> {
             .map(|(offset, len)| self.read(offset, len.min(cap)))
             .transpose()
     }
-    #[cfg(feature = "raw")]
     pub(crate) fn blob_range(
         &self,
         index: usize,

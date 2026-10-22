@@ -20,15 +20,24 @@ impl Ingest {
         photo: PhotoId,
         plans: &[Planned],
     ) -> Result<bool, JobError> {
-        let rows=sqlx::query!("SELECT variant,format,hash,width,height,bytes FROM derivatives WHERE photo_id=$1 ORDER BY variant,format",photo.0).fetch_all(&self.db).await.map_err(|_|retry("derivative lookup failed"))?;
-        if rows.len() != plans.len() {
+        let rows=sqlx::query!("SELECT variant,format,hdr,hash,width,height,bytes FROM derivatives WHERE photo_id=$1 ORDER BY variant,format,hdr",photo.0).fetch_all(&self.db).await.map_err(|_|retry("derivative lookup failed"))?;
+        if rows.len() > plans.len()
+            || rows.len() < plans.iter().filter(|p| !p.hdr).count()
+            || rows.iter().any(|row| {
+                !plans.iter().any(|p| {
+                    p.variant == row.variant && p.format.as_str() == row.format && p.hdr == row.hdr
+                })
+            })
+        {
             return Ok(false);
         }
         for plan in plans {
-            let Some(row) = rows
-                .iter()
-                .find(|r| r.variant == plan.variant && r.format == plan.format.as_str())
-            else {
+            let Some(row) = rows.iter().find(|r| {
+                r.variant == plan.variant && r.format == plan.format.as_str() && r.hdr == plan.hdr
+            }) else {
+                if plan.hdr {
+                    continue;
+                }
                 return Ok(false);
             };
             let Ok(hash) = row.hash.parse::<ContentHash>() else {
@@ -41,7 +50,7 @@ impl Ingest {
                 hash: &hash,
                 variant: &plan.variant,
                 format: plan.format.as_str(),
-                hdr: false,
+                hdr: plan.hdr,
             };
             let Ok(file) = self
                 .store
@@ -176,6 +185,7 @@ impl Ingest {
         let mut ids = Vec::new();
         let mut variants = Vec::new();
         let mut formats = Vec::new();
+        let mut hdrs = Vec::new();
         let mut hashes = Vec::new();
         let mut widths = Vec::new();
         let mut heights = Vec::new();
@@ -192,7 +202,7 @@ impl Ingest {
                         hash,
                         variant: &plan.variant,
                         format: plan.format.as_str(),
-                        hdr: false,
+                        hdr: plan.hdr,
                     },
                     &verified.dir.path().join(&plan.name),
                 )
@@ -200,6 +210,7 @@ impl Ingest {
                 .map_err(|_| retry("derivative placement failed"))?;
             ids.push(uuid::Uuid::now_v7());
             variants.push(plan.variant.clone());
+            hdrs.push(plan.hdr);
             formats.push(plan.format.as_str().to_owned());
             hashes.push(hash.to_string());
             widths.push(
@@ -250,8 +261,8 @@ impl Ingest {
             return Ok(());
         }
         // Remove only obsolete plan entries; upsert preserves identities of retained entries.
-        sqlx::query!("DELETE FROM derivatives WHERE photo_id=$1 AND (hdr OR (variant,format) NOT IN (SELECT * FROM UNNEST($2::text[],$3::text[])))",photo.0,&variants,&formats).execute(&mut *tx).await.map_err(|_|retry("derivative cleanup failed"))?;
-        sqlx::query!("INSERT INTO derivatives(id,photo_id,variant,format,hdr,hash,width,height,bytes) SELECT id,$1,variant,format,false,hash,width,height,bytes FROM UNNEST($2::uuid[],$3::text[],$4::text[],$5::text[],$6::int[],$7::int[],$8::bigint[]) AS d(id,variant,format,hash,width,height,bytes) ON CONFLICT(photo_id,variant,format,hdr) DO UPDATE SET hash=excluded.hash,width=excluded.width,height=excluded.height,bytes=excluded.bytes",photo.0,&ids,&variants,&formats,&hashes,&widths,&heights,&sizes).execute(&mut *tx).await.map_err(|_|retry("derivative publication failed"))?;
+        sqlx::query!("DELETE FROM derivatives WHERE photo_id=$1 AND (variant,format,hdr) NOT IN (SELECT * FROM UNNEST($2::text[],$3::text[],$4::boolean[]))",photo.0,&variants,&formats,&hdrs).execute(&mut *tx).await.map_err(|_|retry("derivative cleanup failed"))?;
+        sqlx::query!("INSERT INTO derivatives(id,photo_id,variant,format,hdr,hash,width,height,bytes) SELECT id,$1,variant,format,hdr,hash,width,height,bytes FROM UNNEST($2::uuid[],$3::text[],$4::text[],$5::text[],$6::int[],$7::int[],$8::bigint[],$9::boolean[]) AS d(id,variant,format,hash,width,height,bytes,hdr) ON CONFLICT(photo_id,variant,format,hdr) DO UPDATE SET hash=excluded.hash,width=excluded.width,height=excluded.height,bytes=excluded.bytes",photo.0,&ids,&variants,&formats,&hashes,&widths,&heights,&sizes,&hdrs).execute(&mut *tx).await.map_err(|_|retry("derivative publication failed"))?;
         let mut followups = vec![
             Job::MlEmbed { photo_id: photo },
             Job::MlFaces { photo_id: photo },

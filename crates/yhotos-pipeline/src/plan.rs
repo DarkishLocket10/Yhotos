@@ -22,7 +22,7 @@ impl Format {
             Self::Jpeg => "jpeg",
         }
     }
-    pub(crate) fn encode(self, long_edge: u32) -> serde_json::Value {
+    pub(crate) fn encode(self, long_edge: u32, hdr: bool) -> serde_json::Value {
         // Large outputs include headroom for the Linux production AV1 build,
         // which scored 0.979201 at Q84/2560px and 0.978236 at Q83/3200px.
         // Q90 raises both failing settings by at least six quality points.
@@ -35,7 +35,7 @@ impl Format {
                     0..=1600 => 60,
                     _ => 90,
                 };
-                serde_json::json!({"Avif":{"quality":quality,"speed":6,"hdr":false}})
+                serde_json::json!({"Avif":{"quality":quality,"speed":6,"hdr":hdr}})
             }
             Self::Jxl => {
                 let distance = match long_edge {
@@ -44,11 +44,11 @@ impl Format {
                     2049..=2560 => 0.65,
                     _ => 0.78,
                 };
-                serde_json::json!({"Jxl":{"distance":distance,"effort":7,"hdr":false}})
+                serde_json::json!({"Jxl":{"distance":distance,"effort":7,"hdr":hdr}})
             }
             Self::Jpeg => {
                 let quality = if long_edge > 1600 { 99 } else { 90 };
-                serde_json::json!({"Jpeg":{"quality":quality,"progressive":true,"chroma_subsampling":false,"hdr":false}})
+                serde_json::json!({"Jpeg":{"quality":quality,"progressive":true,"chroma_subsampling":false,"hdr":hdr}})
             }
         }
     }
@@ -67,6 +67,9 @@ pub struct Variant {
     pub formats: Vec<Format>,
     /// Also generate twice the long edge.
     pub scale2x: bool,
+    /// Add HDR outputs at this variant when the source has a valid gain map.
+    #[serde(default)]
+    pub hdr: bool,
 }
 /// Serializable plan whose digest changes when any output or encoder policy changes.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -91,6 +94,7 @@ impl Default for VariantPlan {
                 long_edge,
                 square,
                 scale2x,
+                hdr: matches!(name, "medium" | "large" | "xlarge"),
                 formats: if name == "xlarge" {
                     vec![Format::Avif, Format::Jxl]
                 } else {
@@ -101,7 +105,9 @@ impl Default for VariantPlan {
         }
     }
 }
+#[derive(Clone)]
 pub(crate) struct Planned {
+    pub hdr: bool,
     pub variant: String,
     pub name: String,
     pub format: Format,
@@ -145,6 +151,7 @@ impl VariantPlan {
                         return Err(JobError::Fatal("duplicate variant".into()));
                     }
                     outputs.push(Planned {
+                        hdr: false,
                         variant,
                         name,
                         format: *format,
@@ -152,7 +159,32 @@ impl VariantPlan {
                         square: v.square,
                         // The sRGB conversion applies to JPEG outputs below medium by
                         // their actual (scaled) size, so small2x keeps the source profile.
-                        keep_icc: *format != Format::Jpeg || v.long_edge * scale >= 1280,
+                        // A paired HDR base must retain identical device color even when
+                        // a configured HDR edge is smaller than the defaults.
+                        keep_icc: *format != Format::Jpeg
+                            || v.long_edge * scale >= 1280
+                            || v.hdr && scale == 1,
+                    });
+                }
+            }
+            if v.hdr {
+                let mut formats = v.formats.clone();
+                if !formats.contains(&Format::Jpeg) {
+                    formats.push(Format::Jpeg);
+                }
+                for format in formats {
+                    let name = format!("{}.{}.hdr", v.name, format.as_str());
+                    if !seen.insert(name.clone()) {
+                        return Err(JobError::Fatal("duplicate variant".into()));
+                    }
+                    outputs.push(Planned {
+                        hdr: true,
+                        variant: v.name.clone(),
+                        name,
+                        format,
+                        long_edge: v.long_edge,
+                        square: v.square,
+                        keep_icc: true,
                     });
                 }
             }
@@ -160,10 +192,11 @@ impl VariantPlan {
         if outputs.is_empty() || outputs.len() > 32 {
             return Err(JobError::Fatal("invalid output count".into()));
         }
-        // Encoder policy revision 4 invalidates derivatives made with the old
+        // Encoder policy revision 5 adds HDR outputs and invalidates the old
+        // SDR-only plan. Revision 4 invalidates derivatives made with the old
         // large-output settings or the old small2x JPEG profile conversion, even
         // when the configured sizes are unchanged.
-        let bytes = serde_json::to_vec(&(4, self))
+        let bytes = serde_json::to_vec(&(5, self))
             .map_err(|_| JobError::Fatal("invalid variant plan".into()))?;
         Ok((blake3::hash(&bytes).to_hex().to_string(), outputs))
     }
@@ -177,7 +210,7 @@ mod tests {
     fn default_plan_has_expected_sizes_encoders_and_stable_version() {
         let mut plan = VariantPlan::default();
         let (hash, outputs) = plan.expand().unwrap();
-        assert_eq!(outputs.len(), 23);
+        assert_eq!(outputs.len(), 32);
         assert_eq!(
             outputs
                 .iter()
@@ -188,7 +221,7 @@ mod tests {
         assert!(
             !outputs
                 .iter()
-                .any(|o| o.variant == "xlarge" && o.format == Format::Jpeg)
+                .any(|o| o.variant == "xlarge" && o.format == Format::Jpeg && !o.hdr)
         );
         assert_eq!(plan.expand().unwrap().0, hash);
         plan.variants[0].long_edge += 1;
@@ -233,5 +266,24 @@ mod icc_policy_tests {
                 .filter(|o| o.format != Format::Jpeg)
                 .all(|o| o.keep_icc)
         );
+    }
+    #[test]
+    fn custom_hdr_edges_keep_the_same_profile_in_both_jpeg_renditions() {
+        let mut plan = VariantPlan::default();
+        let medium = plan
+            .variants
+            .iter_mut()
+            .find(|v| v.name == "medium")
+            .unwrap();
+        medium.long_edge = 1000;
+        let (_, outputs) = plan.expand().unwrap();
+        let paired = outputs
+            .iter()
+            .filter(|o| o.variant == "medium" && o.format == Format::Jpeg)
+            .collect::<Vec<_>>();
+        assert_eq!(paired.len(), 2);
+        assert!(paired.iter().any(|o| o.hdr));
+        assert!(paired.iter().any(|o| !o.hdr));
+        assert!(paired.iter().all(|o| o.long_edge == 1000 && o.keep_icc));
     }
 }

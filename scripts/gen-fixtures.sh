@@ -3,6 +3,12 @@
 set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 export VIPS_CONCURRENCY=2 LC_ALL=C SOURCE_DATE_EPOCH=0
+if [[ "${1:-}" == "--hdr-benchmark" ]]; then
+    exec python3 fixtures/hdr/generate.py --benchmark "${2:?supply a benchmark output path}"
+fi
+if [[ "${1:-}" == "--hdr" ]]; then
+    exec python3 fixtures/hdr/generate.py
+fi
 python3 - <<'PY'
 import ctypes as C, ctypes.util, hashlib, json, pathlib, shlex, struct, subprocess, tempfile, zlib
 root=pathlib.Path.cwd(); dest=root/'fixtures/images'; dest.mkdir(parents=True,exist_ok=True)
@@ -207,3 +213,5 @@ int main(int argc, char **argv) {
     manifest={str(p.relative_to(dest)):hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(dest.rglob('*')) if p.is_file() and p.suffix!='.md'}
     print(json.dumps(manifest,indent=2))
 PY
+
+python3 fixtures/hdr/generate.py

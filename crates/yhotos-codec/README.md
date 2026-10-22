@@ -47,7 +47,7 @@ Display P3 (12/13), BT.2020 PQ (9/16), and BT.2020 HLG (9/18). Matrix codes
 applies only primaries and transfer. Other combinations return `Unsupported`.
 PQ is normalized to its 10000-nit peak; HLG uses scene-linear inverse OETF
 without a display OOTF or tone map. Transfers 16/18 themselves flag HDR inputs;
-reserved HDR output requests still return `Unsupported`.
+HDR output requires a validated SDR-base gain map.
 
 The materialized working image is unsigned 16-bit linear libvips D65 XYZ, scaled by 256
 (about 0.004 XYZ units per step). Alpha is unassociated unsigned 16-bit. Each
@@ -55,7 +55,7 @@ resize starts from that original working image, center crops before a square
 resize, and uses premultiplied alpha and Lanczos3. Export color-manages XYZ back
 to the source RGB profile, or explicitly to sRGB. CMYK and gray profiles are
 used at import and converted to an embedded sRGB profile for RGB-only output codecs. Only ICC is retained by encoders;
-metadata-bearing derivative requests and reserved HDR requests are rejected.
+metadata-bearing derivative requests are rejected.
 Native handles own a reference, cannot cross threads, and never outlive global
 initialization. Native errors are mapped to fixed public errors.
 
@@ -177,3 +177,62 @@ larger than 16 MiB outside the timed loop; no large binary fixture is committed.
 The ThumbHash DCT and packing follow the MIT-licensed reference by Evan Wallace:
 https://github.com/evanw/thumbhash . Reference vectors were generated with the
 unmodified JavaScript implementation, including alpha and non-square cases.
+
+
+## HDR gain maps (task 019)
+
+Requires the system `libuhdr` API >=1.4 (CI pins libultrahdr 2.0.0 by archive
+SHA-256). The JPEG writer constructs MPF plus both ISO 21496-1 and Adobe hdrgm
+XMP even when the installed reference library was built to write only ISO.
+Compressed SDR scan bytes and ICC are retained unchanged from the same encoder
+settings. HDR color export requires `keep_icc=true`.
+
+JPEG extraction validates MPF extents and ISO/XMP metadata before native gain
+pixel decode. Adobe scalars and three-channel RDF sequences normalize to ISO
+log2 min/max boosts and headroom, gamma and offsets. Conflicting ISO/XMP values,
+zero denominators, nonfinite/out-of-range coefficients and unknown versions
+produce a fixed `hdr_skipped_reason`; they leave SDR processing available.
+HEIC Apple `auxC`/`auxl` associations, EXIF MakerNote 33/48 and the namespaced
+HDRGainMapVersion are validated before decoding the auxiliary item. Apple's
+Rec.709 samples and linear headroom multiplier are converted to an ISO log map.
+The ISO `tmap` item reader supports file/idat construction and 16/32-bit item ids.
+JXL `jhgm` boxes use a bounded Rust bundle reader/writer and the existing libjxl
+pixel decoder, without depending on non-exported extras helpers. Alternative
+JXL color encodings/ICC profiles and ISO alternate application color spaces that
+require a second color pipeline are
+reported as unsupported and remain SDR-only.
+
+Gain maps bypass ICC conversion, share base orientation/cropping/resize scale,
+and retain their lower resolution. Metadata/headroom carries over unchanged.
+Input/encoded HDR buffers are capped at 256 MiB, box metadata at 16 MiB, XMP at
+64 KiB/32 levels/4096 events, items/boxes/extents at 4096, and ISO coefficients
+at 256 bytes. All parsing and native codec work belongs in the sandboxed host.
+AVIF HDR encoding returns Unsupported because libvips/libheif in the supported
+builds does not expose a gain-map writer; its SDR output remains mandatory.
+JPEG and JXL HDR encoding are supported.
+
+The host reuses an encoded SDR base only for the same working image, resize,
+encoder settings and ICC policy. Opaque immutable snapshots are capped at 16 MiB
+each and 64 MiB per job. Capture is optional: exceeding either limit preserves
+the SDR output and falls back to a normal HDR encode. Reuse avoids color export
+and base recompression and guarantees the embedded SDR pixels match the paired
+derivative.
+
+Reference tests compare three linear luminance samples with libultrahdr's
+half-float HDR decoder, allowing `0.01 + 0.04 * original_luminance` (one percent
+of SDR white plus four percent relative error for JPEG quantization, ICC
+rounding, resized gain-map quantization and resampling). Apple/tmap expectations
+are computed from documented source coefficients and samples independently of
+normalization. SDR decoded color samples and embedded ICC must be exactly equal
+to the paired SDR derivative. Tests include all default HDR edges and a smaller
+edge that actually resizes the small fixtures, and a JXL-to-JPEG HDR round trip.
+
+`cargo bench -p yhotos-bench --bench hdr` measures paired SDR/HDR JPEG and JXL
+encodes. HDR measurements reuse the paired SDR base where the default plan has
+one; xlarge JPEG measures the complete HDR encode because that plan has no SDR
+xlarge JPEG. The full pipeline benchmark includes capture and reuse overhead.
+Use an absolute `YHOTOS_HDR_BENCH_FIXTURE` path for a large gain-map original.
+`scripts/gen-fixtures.sh --hdr-benchmark "$PWD/target/hdr-24mp.jpg"` creates a
+6000x4000 benchmark input by upscaling/cropping the committed photographic fixture
+and adding a quarter-resolution gain map. This measures the 24 MP working set;
+it is not a substitute for the tower's native 24 MP/eight-photo throughput gate.

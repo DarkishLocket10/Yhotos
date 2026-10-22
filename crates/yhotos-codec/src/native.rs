@@ -14,7 +14,7 @@ use std::{
     sync::OnceLock,
 };
 #[allow(warnings, clippy::all, clippy::pedantic)]
-mod ffi {
+pub(crate) mod ffi {
     include!(concat!(env!("OUT_DIR"), "/native.rs"));
 }
 pub(crate) const UCHAR: i32 = ffi::VipsBandFormat_VIPS_FORMAT_UCHAR;
@@ -146,6 +146,226 @@ impl Image {
         }
         Ok(image)
     }
+    pub(crate) fn gain_jpeg(
+        bytes: &[u8],
+        limits: &crate::Limits,
+        orientation: u8,
+    ) -> Result<Self, CodecError> {
+        let image = Self::jpeg(bytes, limits)?;
+        if image.format() != UCHAR || !matches!(image.bands(), 1 | 3) || image.has_alpha() {
+            return Err(CodecError::Unsupported);
+        }
+        image.oriented(orientation)
+    }
+    pub(crate) fn oriented(&self, orientation: u8) -> Result<Self, CodecError> {
+        let image = self.copy()?;
+        // SAFETY: the private header is live, the validated EXIF orientation is copied.
+        unsafe {
+            ffi::vips_image_set_int(
+                image.0.as_ptr(),
+                c"orientation".as_ptr(),
+                i32::from(orientation),
+            );
+        }
+        image.autorot()?.materialize()
+    }
+    pub(crate) fn gain_jxl(bytes: &[u8], limits: &crate::Limits) -> Result<Self, CodecError> {
+        let identity = identify_jxl_reader(bytes, limits)?;
+        if identity.has_alpha {
+            return Err(CodecError::Unsupported);
+        }
+        init()?;
+        let image = operation!(|out| ffi::vips_jxlload_buffer(
+            bytes.as_ptr().cast_mut().cast(),
+            bytes.len(),
+            out,
+            c"fail_on".as_ptr(),
+            3i32,
+            END
+        ))?;
+        if !matches!(image.bands(), 1 | 3) {
+            return Err(CodecError::Unsupported);
+        }
+        let image = match image.format() {
+            UCHAR => image,
+            USHORT => image.linear_offset(1.0 / 257.0, 0.5)?.cast(UCHAR)?,
+            _ => return Err(CodecError::Unsupported),
+        };
+        // Evaluation completes while the borrowed compressed slice remains live.
+        image.gain_header()?.materialize()
+    }
+    pub(crate) fn gain_heif(
+        path: &Path,
+        id: u32,
+        limits: &crate::Limits,
+    ) -> Result<Self, CodecError> {
+        let path = path_string(path)?;
+        init()?;
+        // SAFETY: context owns all parsed container state; out pointers start null, are checked
+        // before use, and are released exactly once below on success and every error path.
+        // Header dimensions are bounded before decode. The library guarantees stride*height
+        // allocated bytes for the requested interleaved RGB plane; copied rows cannot escape it.
+        unsafe {
+            let context = NonNull::new(ffi::heif_context_alloc()).ok_or(CodecError::Decode)?;
+            let mut handle = ptr::null_mut();
+            let mut decoded = ptr::null_mut();
+            let result = (|| {
+                if ffi::heif_context_read_from_file(context.as_ptr(), path.as_ptr(), ptr::null())
+                    .code
+                    != 0
+                    || ffi::heif_context_get_image_handle(context.as_ptr(), id, &mut handle).code
+                        != 0
+                    || handle.is_null()
+                {
+                    return Err(CodecError::Decode);
+                }
+                let w = u32::try_from(ffi::heif_image_handle_get_width(handle))
+                    .map_err(|_| CodecError::Limits)?;
+                let h = u32::try_from(ffi::heif_image_handle_get_height(handle))
+                    .map_err(|_| CodecError::Limits)?;
+                limits.check(w, h, 1)?;
+                if ffi::heif_decode_image(
+                    handle,
+                    &mut decoded,
+                    ffi::heif_colorspace_heif_colorspace_RGB,
+                    ffi::heif_chroma_heif_chroma_interleaved_RGB,
+                    ptr::null(),
+                )
+                .code
+                    != 0
+                    || decoded.is_null()
+                {
+                    return Err(CodecError::Decode);
+                }
+                if ffi::heif_image_get_width(decoded, ffi::heif_channel_heif_channel_interleaved)
+                    != i32::try_from(w).map_err(|_| CodecError::Limits)?
+                    || ffi::heif_image_get_height(
+                        decoded,
+                        ffi::heif_channel_heif_channel_interleaved,
+                    ) != i32::try_from(h).map_err(|_| CodecError::Limits)?
+                {
+                    return Err(CodecError::Decode);
+                }
+                let mut stride = 0;
+                let data = ffi::heif_image_get_plane_readonly(
+                    decoded,
+                    ffi::heif_channel_heif_channel_interleaved,
+                    &mut stride,
+                );
+                let stride = usize::try_from(stride).map_err(|_| CodecError::Limits)?;
+                let row = w as usize * 3;
+                if data.is_null()
+                    || stride < row
+                    || stride.checked_mul(h as usize).is_none_or(|n| n > 1 << 30)
+                {
+                    return Err(CodecError::Limits);
+                }
+                let mut bytes = Vec::with_capacity(row * h as usize);
+                for y in 0..h as usize {
+                    bytes.extend_from_slice(std::slice::from_raw_parts(data.add(y * stride), row));
+                }
+                Self::samples(&bytes, w, h, 3)
+            })();
+            if !decoded.is_null() {
+                ffi::heif_image_release(decoded);
+            }
+            if !handle.is_null() {
+                ffi::heif_image_handle_release(handle);
+            }
+            ffi::heif_context_free(context.as_ptr());
+            result
+        }
+    }
+    pub(crate) fn samples(
+        bytes: &[u8],
+        width: u32,
+        height: u32,
+        bands: u32,
+    ) -> Result<Self, CodecError> {
+        init()?;
+        crate::Limits::default().check(width, height, 1)?;
+        if !matches!(bands, 1 | 3)
+            || bytes.len() != width as usize * height as usize * bands as usize
+        {
+            return Err(CodecError::Decode);
+        }
+        // SAFETY: dimensions and channel count cover exactly the checked slice; vips copies it.
+        let image = Self::result(0, unsafe {
+            ffi::vips_image_new_from_memory_copy(
+                bytes.as_ptr().cast(),
+                bytes.len(),
+                width as i32,
+                height as i32,
+                bands as i32,
+                UCHAR,
+            )
+        })?;
+        operation!(|out| ffi::vips_copy(
+            image.0.as_ptr(),
+            out,
+            c"interpretation".as_ptr(),
+            if bands == 1 {
+                ffi::VipsInterpretation_VIPS_INTERPRETATION_B_W
+            } else {
+                ffi::VipsInterpretation_VIPS_INTERPRETATION_sRGB
+            },
+            END
+        ))
+    }
+    fn gain_header(&self) -> Result<Self, CodecError> {
+        let bands = self.bands();
+        if self.format() != UCHAR || !matches!(bands, 1 | 3) {
+            return Err(CodecError::Unsupported);
+        }
+        let image = operation!(|out| ffi::vips_copy(
+            self.0.as_ptr(),
+            out,
+            c"interpretation".as_ptr(),
+            if bands == 1 {
+                ffi::VipsInterpretation_VIPS_INTERPRETATION_B_W
+            } else {
+                ffi::VipsInterpretation_VIPS_INTERPRETATION_sRGB
+            },
+            END
+        ))?;
+        // SAFETY: the live private header is owned here; remove releases only its ICC metadata.
+        unsafe {
+            ffi::vips_image_remove(image.0.as_ptr(), c"icc-profile-data".as_ptr());
+        }
+        Ok(image)
+    }
+    pub(crate) fn gain_save_jxl(&self, path: &Path) -> Result<(), CodecError> {
+        self.gain_header()?.save(
+            Encode::Jxl {
+                distance: 0.0,
+                effort: 3,
+                hdr: false,
+            },
+            path,
+        )
+    }
+    pub(crate) fn gain_save(&self, path: &Path) -> Result<(), CodecError> {
+        let path = path_string(path)?;
+        // SAFETY: owned image and path remain live; all promoted varargs match their option types.
+        let status = unsafe {
+            ffi::vips_jpegsave(
+                self.0.as_ptr(),
+                path.as_ptr(),
+                c"Q".as_ptr(),
+                100i32,
+                c"subsample_mode".as_ptr(),
+                ffi::VipsForeignSubsample_VIPS_FOREIGN_SUBSAMPLE_OFF,
+                c"keep".as_ptr(),
+                ffi::VipsForeignKeep_VIPS_FOREIGN_KEEP_NONE,
+                END,
+            )
+        };
+        if status == 0 {
+            Ok(())
+        } else {
+            Err(CodecError::Encode)
+        }
+    }
     fn with_profile(&self, profile: &[u8]) -> Result<Self, CodecError> {
         let image = self.copy()?;
         // SAFETY: image owns a private header; set_blob_copy copies this bounded ICC slice.
@@ -160,7 +380,6 @@ impl Image {
         }
         Ok(image)
     }
-    #[cfg(feature = "raw")]
     fn jpeg(bytes: &[u8], limits: &crate::Limits) -> Result<Self, CodecError> {
         let dimensions = crate::headers::jpeg_dimensions(bytes, limits)?;
         init()?;
