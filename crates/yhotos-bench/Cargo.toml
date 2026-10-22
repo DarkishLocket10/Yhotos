@@ -18,6 +18,7 @@ time.workspace = true
 yhotos-core = { path = "../yhotos-core" }
 yhotos-config = { path = "../yhotos-config" }
 yhotos-http = { path = "../yhotos-http" }
+yhotos-storage = { path = "../yhotos-storage" }
 axum.workspace = true
 tokio.workspace = true
 tower = { workspace = true, features = ["util"] }
@@ -38,4 +39,8 @@ harness = false
 
 [[bench]]
 name = "jobs"
+harness = false
+
+[[bench]]
+name = "storage"
 harness = false

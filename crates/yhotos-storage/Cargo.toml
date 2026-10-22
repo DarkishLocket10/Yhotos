@@ -7,3 +7,10 @@ rust-version.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+blake3.workspace = true
+tempfile.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs", "io-util"] }
+uuid.workspace = true

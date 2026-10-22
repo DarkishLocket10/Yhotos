@@ -3562,6 +3562,7 @@ dependencies = [
  "yhotos-core",
  "yhotos-db",
  "yhotos-http",
+ "yhotos-storage",
 ]
 
 [[package]]
@@ -3674,6 +3675,13 @@ dependencies = [
 [[package]]
 name = "yhotos-storage"
 version = "0.1.0"
+dependencies = [
+ "blake3",
+ "tempfile",
+ "thiserror 2.0.21",
+ "tokio",
+ "uuid",
+]
 
 [[package]]
 name = "yhotos-worker"
