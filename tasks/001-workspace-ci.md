@@ -41,7 +41,7 @@ Crates: every crate in architecture section 2 exists with a `Cargo.toml`, a `lib
 
 `scripts/check.sh` (bash, `set -euo pipefail`): `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo test --workspace --all-features`, `cargo deny check`, `cargo audit`, `gitleaks detect --no-banner --redact` if `gitleaks` is on PATH (warn and continue if not). Exits non-zero on the first failure and prints which step failed.
 
-`deny.toml`: advisories deny unmaintained and yanked; licenses allow list `MIT, Apache-2.0, Apache-2.0 WITH LLVM-exception, BSD-2-Clause, BSD-3-Clause, ISC, Zlib, Unicode-3.0, MPL-2.0, AGPL-3.0`, everything else denied; `sources` allow only crates.io; `bans` multiple-versions = warn.
+`deny.toml`: advisories deny unmaintained and yanked; licenses allow list `MIT, Apache-2.0, Apache-2.0 WITH LLVM-exception, BSD-2-Clause, BSD-3-Clause, ISC, Zlib, Unicode-3.0, MPL-2.0, AGPL-3.0-only`, everything else denied; `sources` allow only crates.io; `bans` multiple-versions = warn.
 
 `.github/workflows/ci.yml`: triggers `pull_request` and `push` to `main`. Top-level `permissions: contents: read`. Jobs: `check` (fmt, clippy), `test` (with a `postgres:16` service, `DATABASE_URL` env, `sqlx` offline mode acceptable), `deny` (`EmbarkStudios/cargo-deny-action`), `audit` (`rustsec/audit-check` or `cargo audit`), `gitleaks` (`gitleaks/gitleaks-action`). Every action pinned to a full commit SHA with a version comment. Cache with `Swatinem/rust-cache`. Concurrency group per ref with cancel-in-progress.
 
