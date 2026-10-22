@@ -1,5 +1,5 @@
 //! Browser-only tiles and visible photo clusters. No outbound HTTP client exists.
-use super::{Options as PageOptions, cached, context};
+use super::{Options as PageOptions, cache_response, cached, context};
 use crate::{
     AppState,
     error::HttpError,
@@ -10,7 +10,7 @@ use askama::Template;
 use axum::{
     Extension, Json,
     extract::{Path, Query, State},
-    http::{HeaderMap, HeaderValue, header},
+    http::HeaderMap,
     response::{IntoResponse, Response},
 };
 use yhotos_db::map::{self, Bounds, PlaceCount};
@@ -57,7 +57,7 @@ pub(crate) async fn page(
     }
     .render()
     .map_err(|e| HttpError::Internal(e.into()))?;
-    cached(html, &headers, &identity, "")
+    cached(html, &headers, &identity, "map,visibility")
 }
 #[derive(serde::Deserialize)]
 pub(crate) struct Options {
@@ -82,24 +82,7 @@ pub(crate) async fn tiles(
     let features=clusters.into_iter().map(|c|serde_json::json!({"type":"Feature","geometry":{"type":"Point","coordinates":[c.lon,c.lat]},"properties":{"count":c.count,"short_id":c.short_id,"thumb_hash":c.thumb_hash,"terminal":c.terminal}})).collect::<Vec<_>>();
     let response =
         Json(serde_json::json!({"type":"FeatureCollection","features":features})).into_response();
-    Ok(json_cache(response, &headers, &identity))
-}
-
-fn json_cache(mut response: Response, headers: &HeaderMap, identity: &SessionIdentity) -> Response {
-    let private =
-        headers.contains_key(header::COOKIE) || !matches!(identity, SessionIdentity::Anonymous);
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static(if private {
-            "private, no-store"
-        } else {
-            "public, max-age=300"
-        }),
-    );
-    response
-        .headers_mut()
-        .insert(header::VARY, HeaderValue::from_static("Cookie"));
-    response
+    cache_response(response, &headers, &identity, "map,visibility")
 }
 
 /// Validated at the HTTP boundary before SQL, as with the cluster bbox.
@@ -134,7 +117,12 @@ pub(crate) async fn point_photos(
     )
     .await?
     .ok_or(HttpError::NotFound)?;
-    Ok(json_cache(Json(page).into_response(), &headers, &identity))
+    cache_response(
+        Json(page).into_response(),
+        &headers,
+        &identity,
+        "map,visibility",
+    )
 }
 pub(crate) async fn place(
     State(state): State<AppState>,
@@ -152,5 +140,10 @@ pub(crate) async fn place(
         .ok_or(HttpError::NotFound)?;
     let nonce = nonce.to_string();
     let html = super::view::render_place(&page, place, number, &context(&nonce, &state)?)?;
-    cached(html, &headers, &identity, "")
+    cached(
+        html,
+        &headers,
+        &identity,
+        &format!("places,place:{place},visibility"),
+    )
 }

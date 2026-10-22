@@ -214,6 +214,19 @@ async fn map_request(app: &axum::Router) -> Result<(), Box<dyn Error>> {
     if response.status() != axum::http::StatusCode::OK {
         return Err("map benchmark request failed".into());
     }
+    if response
+        .headers()
+        .get("cache-tag")
+        .and_then(|h| h.to_str().ok())
+        != Some("map,visibility")
+        || response
+            .headers()
+            .get(axum::http::header::CACHE_CONTROL)
+            .and_then(|h| h.to_str().ok())
+            != Some("public, max-age=60, stale-while-revalidate=600")
+    {
+        return Err("map benchmark cache contract failed".into());
+    }
     black_box(response.into_body().collect().await?);
     Ok(())
 }

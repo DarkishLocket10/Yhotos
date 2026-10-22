@@ -9,7 +9,14 @@ DATABASE_URL=... scripts/geo-import.sh /local/path/cities500.txt
 Use an administrative connection. The script validates 19-column UTF-8 rows,
 streams a bulk COPY into a temporary table, then upserts in one transaction.
 It never downloads anything. Re-importing updates existing GeoNames identities.
+Missing region codes remain empty text through `COPY FORCE_NOT_NULL (admin1)`.
 Keep GeoNames attribution and NOTICE with deployments.
+
+Run `python3 -m unittest discover -s deploy/geo -p 'test_*.py'` with `DATABASE_URL`
+set after applying migrations to exercise the real import twice against an
+isolated schema, including a city with no region code. Without `DATABASE_URL`
+the PostgreSQL test is skipped; parser tests still run. CI's database job runs
+the real import test after migrations.
 
 `geo.reverse` jobs use the imported local table, within 50 km, weighted by city
 population. Photos without both GPS coordinates are a no-op. Re-running jobs
@@ -46,3 +53,17 @@ invisible photos. Calendar counts and covers use the same visibility CTE.
 
 Calendar dates use UTC, with posted_at substituted for absent taken_at. Month
 and day grids are paginated at 60 photos, while all date counts remain complete.
+
+Public map HTML and both JSON routes use `Cache-Tag: map,visibility`; calendar
+pages use `calendar,visibility`; place pages use `places,place:<id>,visibility`.
+All use `public, max-age=60, stale-while-revalidate=600` and `Vary: Cookie`;
+cookie or authenticated responses are `private, no-store`. The shared visibility
+tag covers aggregates spanning arbitrarily many albums without unbounded headers.
+
+The edge purger is a missing prerequisite in this worktree: `CachePurger` and
+its Cloudflare implementation are specified in task 020 but do not exist yet.
+That mechanism must purge `visibility` (or all affected aggregate tags above)
+on visibility/grant changes, photo/album moves, deletion/restoration, GPS/place
+changes, and reverse-geocoding updates. Cache headers alone do not remove an
+already cached location. Task 015 cannot verify mutation-triggered edge purges
+until that API and its mutation integration are available.

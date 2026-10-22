@@ -1223,6 +1223,7 @@ async fn calendar_snapshots_dates_and_one_query_per_level(pool: PgPool) {
         let (response, queries) = crate::files::tests::count_queries(f.get(path)).await;
         assert_eq!(response.status(), StatusCode::OK, "{path}");
         assert_eq!(queries, 1, "{path}");
+        assert_geo_cache(&response, "calendar,visibility");
         let selection = super::calendar::selection(path).unwrap();
         let page = calendar::page(
             &mut f.state.pool.acquire().await.unwrap(),
@@ -1255,6 +1256,38 @@ async fn calendar_snapshots_dates_and_one_query_per_level(pool: PgPool) {
     );
     assert!(Selection::new(Some(2024), Some(2), Some(29)).is_some());
 }
+
+fn assert_geo_cache(response: &axum::response::Response, tags: &str) {
+    assert_eq!(
+        response.headers()[header::CACHE_CONTROL],
+        "public, max-age=60, stale-while-revalidate=600"
+    );
+    assert_eq!(response.headers()[header::VARY], "Cookie");
+    assert_eq!(response.headers()["cache-tag"], tags);
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn empty_aggregate_pages_keep_tags_and_calendar_sessions_are_private(pool: PgPool) {
+    let f = Fixture::new(pool, 0).await;
+    for (path, tags) in [
+        ("/map", "map,visibility"),
+        (
+            "/map/tiles.json?bbox=-80,43,-79,44&zoom=1",
+            "map,visibility",
+        ),
+        ("/calendar", "calendar,visibility"),
+    ] {
+        let response = f.get(path).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_geo_cache(&response, tags);
+        let response = f.get_as_user(path).await;
+        assert_eq!(
+            response.headers()[header::CACHE_CONTROL],
+            "private, no-store"
+        );
+        assert_eq!(response.headers()[header::VARY], "Cookie");
+    }
+}
 #[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
 async fn map_fallback_csp_json_and_private_cache(pool: PgPool) {
     let f = Fixture::new(pool, 3).await;
@@ -1278,6 +1311,7 @@ async fn map_fallback_csp_json_and_private_cache(pool: PgPool) {
     drop(conn);
     let response = f.get("/map").await;
     assert_eq!(response.status(), StatusCode::OK);
+    assert_geo_cache(&response, "map,visibility");
     let csp = response.headers()[header::CONTENT_SECURITY_POLICY]
         .to_str()
         .unwrap();
@@ -1296,6 +1330,7 @@ async fn map_fallback_csp_json_and_private_cache(pool: PgPool) {
     let href = format!("/places/{href}");
     let response = f.get(&href).await;
     assert_eq!(response.status(), StatusCode::OK);
+    assert_geo_cache(&response, &format!("places,place:{place},visibility"));
     let place_html = body(response).await;
     assert!(place_html.contains("href=\"/map\">Photo map</a>"));
     assert!(place_html.contains("Toronto, Ontario, CA"));
@@ -1324,10 +1359,7 @@ async fn map_fallback_csp_json_and_private_cache(pool: PgPool) {
     assert!(html.contains("data-tiles="));
     let path = "/map/tiles.json?bbox=-80,43,-79,44&zoom=1";
     let response = f.get(path).await;
-    assert_eq!(
-        response.headers()[header::CACHE_CONTROL],
-        "public, max-age=300"
-    );
+    assert_geo_cache(&response, "map,visibility");
     let json: serde_json::Value = serde_json::from_str(&body(response).await).unwrap();
     assert_eq!(json["features"][0]["properties"]["count"], 2);
     let response = f.get_as_user(path).await;
@@ -1346,10 +1378,7 @@ async fn map_fallback_csp_json_and_private_cache(pool: PgPool) {
     let chooser = format!("/map/photos.json?lon={}&lat={}", point[0], point[1]);
     let response = f.get(&chooser).await;
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response.headers()[header::CACHE_CONTROL],
-        "public, max-age=300"
-    );
+    assert_geo_cache(&response, "map,visibility");
     let json: serde_json::Value = serde_json::from_str(&body(response).await).unwrap();
     assert_eq!(json["total"], 2);
     assert_eq!(json["photos"].as_array().unwrap().len(), 2);

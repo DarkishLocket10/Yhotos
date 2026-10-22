@@ -12,6 +12,28 @@ import time
 from urllib.parse import urlsplit, unquote, parse_qsl
 
 
+def database_env():
+    """Keep PostgreSQL connection values out of command arguments and errors."""
+    url = urlsplit(os.environ["DATABASE_URL"])
+    if url.scheme not in ("postgres", "postgresql") or not url.hostname:
+        raise ValueError("PostgreSQL URL required")
+    env = dict(os.environ, PGHOST=unquote(url.hostname), PGPORT=str(url.port or 5432),
+               PGDATABASE=unquote(url.path.lstrip("/")))
+    if url.username is not None:
+        env["PGUSER"] = unquote(url.username)
+    if url.password is not None:
+        env["PGPASSWORD"] = unquote(url.password)
+    params = {"host":"PGHOST", "port":"PGPORT", "user":"PGUSER", "password":"PGPASSWORD",
+              "dbname":"PGDATABASE", "sslmode":"PGSSLMODE", "sslrootcert":"PGSSLROOTCERT",
+              "sslcert":"PGSSLCERT", "sslkey":"PGSSLKEY", "options":"PGOPTIONS",
+              "connect_timeout":"PGCONNECT_TIMEOUT", "application_name":"PGAPPNAME"}
+    for key, value in parse_qsl(url.query, keep_blank_values=True):
+        if key not in params:
+            raise ValueError("unsupported database URL option")
+        env[params[key]] = value
+    return env
+
+
 def main():
     started = time.monotonic()
     if len(sys.argv) != 2 or not os.environ.get("DATABASE_URL"):
@@ -22,7 +44,7 @@ def main():
     # Spool validated data before opening a transaction; bounded process memory.
     with tempfile.TemporaryFile(mode="w+", encoding="utf-8", newline="") as sql:
         sql.write("BEGIN;\nCREATE TEMP TABLE geo_import (LIKE gazetteer EXCLUDING GENERATED);\n")
-        sql.write("COPY geo_import (geonameid,name,admin1,country,lat,lon,population) FROM STDIN WITH (FORMAT csv);\n")
+        sql.write("COPY geo_import (geonameid,name,admin1,country,lat,lon,population) FROM STDIN WITH (FORMAT csv, FORCE_NOT_NULL (admin1));\n")
         writer = csv.writer(sql, lineterminator="\n")
         count = 0
         with source.open(encoding="utf-8", newline="") as data:
@@ -52,23 +74,7 @@ def main():
                   "ANALYZE gazetteer;\nCOMMIT;\n")
         sql.seek(0)
         # URL stays in the child's environment; neither argv nor errors print it.
-        url = urlsplit(os.environ["DATABASE_URL"])
-        if url.scheme not in ("postgres", "postgresql") or not url.hostname:
-            raise ValueError("PostgreSQL URL required")
-        env = dict(os.environ, PGHOST=unquote(url.hostname), PGPORT=str(url.port or 5432),
-                   PGDATABASE=unquote(url.path.lstrip("/")))
-        if url.username is not None:
-            env["PGUSER"] = unquote(url.username)
-        if url.password is not None:
-            env["PGPASSWORD"] = unquote(url.password)
-        params = {"host":"PGHOST", "port":"PGPORT", "user":"PGUSER", "password":"PGPASSWORD",
-                  "dbname":"PGDATABASE", "sslmode":"PGSSLMODE", "sslrootcert":"PGSSLROOTCERT",
-                  "sslcert":"PGSSLCERT", "sslkey":"PGSSLKEY", "options":"PGOPTIONS",
-                  "connect_timeout":"PGCONNECT_TIMEOUT", "application_name":"PGAPPNAME"}
-        for key, value in parse_qsl(url.query, keep_blank_values=True):
-            if key not in params:
-                raise ValueError("unsupported database URL option")
-            env[params[key]] = value
+        env = database_env()
         result = subprocess.run(["psql", "-X", "--no-password", "-v", "ON_ERROR_STOP=1", "-q"],
                                 stdin=sql, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env, check=False)
         if result.returncode:

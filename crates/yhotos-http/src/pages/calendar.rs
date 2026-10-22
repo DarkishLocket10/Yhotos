@@ -45,5 +45,5 @@ pub(crate) async fn page(
         .ok_or(HttpError::NotFound)?;
     let nonce = nonce.to_string();
     let html = render_calendar(&page, selection, number, &context(&nonce, &state)?)?;
-    cached(html, &headers, &identity, "")
+    cached(html, &headers, &identity, "calendar,visibility")
 }

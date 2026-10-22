@@ -102,9 +102,17 @@ fn cached(
     identity: &SessionIdentity,
     tags: &str,
 ) -> Result<Response, HttpError> {
+    cache_response(Html(html).into_response(), headers, identity, tags)
+}
+
+fn cache_response(
+    mut response: Response,
+    headers: &HeaderMap,
+    identity: &SessionIdentity,
+    tags: &str,
+) -> Result<Response, HttpError> {
     let private =
         headers.contains_key(header::COOKIE) || !matches!(identity, SessionIdentity::Anonymous);
-    let mut response = Html(html).into_response();
     response.headers_mut().insert(
         header::CACHE_CONTROL,
         HeaderValue::from_static(if private {
