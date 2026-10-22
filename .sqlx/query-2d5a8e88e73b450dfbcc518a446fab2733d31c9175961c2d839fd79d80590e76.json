@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE photos SET original_hash=$2, original_name=$3, original_bytes=$4, mime=$5, kind=$6 WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text",
+        "Int8",
+        "Text",
+        {
+          "Custom": {
+            "name": "media_kind",
+            "kind": {
+              "Enum": [
+                "image",
+                "raw",
+                "video"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2d5a8e88e73b450dfbcc518a446fab2733d31c9175961c2d839fd79d80590e76"
+}

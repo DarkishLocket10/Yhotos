@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE flags SET resolution='dismissed',resolved_at=now() WHERE false",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "d9392bb71a6d1f1059a8407f574e149bf534367e32b460b34196f7d75088080f"
+}

@@ -1,0 +1,477 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO photos (id,short_id,album_id,title,original_hash,original_name,original_bytes,mime,kind)\n      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id as \"id: _\", created_at, updated_at, short_id as \"short_id: _\", album_id as \"album_id: _\", title, description, taken_at, posted_at, sort_order, visibility as \"visibility: _\", original_hash, original_name, original_bytes, mime, kind as \"kind: _\", width, height, orientation, is_hdr, has_gain_map, icc_name, camera_make, camera_model, lens, focal_mm, aperture, shutter, iso, gps_lat, gps_lon, place_id, dominant_colors, placeholder, deleted_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: _",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "short_id: _",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "short_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "album_id: _",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "album_id"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "title",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "title"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "description",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "taken_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "taken_at"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "posted_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "posted_at"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "sort_order",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "sort_order"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "visibility: _",
+        "type_info": {
+          "Custom": {
+            "name": "visibility",
+            "kind": {
+              "Enum": [
+                "inherit",
+                "public",
+                "restricted"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "visibility"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "original_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "original_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "original_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "original_name"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "original_bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "original_bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "mime",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "mime"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "kind: _",
+        "type_info": {
+          "Custom": {
+            "name": "media_kind",
+            "kind": {
+              "Enum": [
+                "image",
+                "raw",
+                "video"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "width",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "width"
+          }
+        }
+      },
+      {
+        "ordinal": 17,
+        "name": "height",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "height"
+          }
+        }
+      },
+      {
+        "ordinal": 18,
+        "name": "orientation",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "orientation"
+          }
+        }
+      },
+      {
+        "ordinal": 19,
+        "name": "is_hdr",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "is_hdr"
+          }
+        }
+      },
+      {
+        "ordinal": 20,
+        "name": "has_gain_map",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "has_gain_map"
+          }
+        }
+      },
+      {
+        "ordinal": 21,
+        "name": "icc_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "icc_name"
+          }
+        }
+      },
+      {
+        "ordinal": 22,
+        "name": "camera_make",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "camera_make"
+          }
+        }
+      },
+      {
+        "ordinal": 23,
+        "name": "camera_model",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "camera_model"
+          }
+        }
+      },
+      {
+        "ordinal": 24,
+        "name": "lens",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "lens"
+          }
+        }
+      },
+      {
+        "ordinal": 25,
+        "name": "focal_mm",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "focal_mm"
+          }
+        }
+      },
+      {
+        "ordinal": 26,
+        "name": "aperture",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "aperture"
+          }
+        }
+      },
+      {
+        "ordinal": 27,
+        "name": "shutter",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "shutter"
+          }
+        }
+      },
+      {
+        "ordinal": 28,
+        "name": "iso",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "iso"
+          }
+        }
+      },
+      {
+        "ordinal": 29,
+        "name": "gps_lat",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "gps_lat"
+          }
+        }
+      },
+      {
+        "ordinal": 30,
+        "name": "gps_lon",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "gps_lon"
+          }
+        }
+      },
+      {
+        "ordinal": 31,
+        "name": "place_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "place_id"
+          }
+        }
+      },
+      {
+        "ordinal": 32,
+        "name": "dominant_colors",
+        "type_info": "Int4Array",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "dominant_colors"
+          }
+        }
+      },
+      {
+        "ordinal": 33,
+        "name": "placeholder",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "placeholder"
+          }
+        }
+      },
+      {
+        "ordinal": 34,
+        "name": "deleted_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "deleted_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Uuid",
+        "Text",
+        "Text",
+        "Text",
+        "Int8",
+        "Text",
+        {
+          "Custom": {
+            "name": "media_kind",
+            "kind": {
+              "Enum": [
+                "image",
+                "raw",
+                "video"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "a25027cdfe1a2976c48c09a26a08930300f5db8bcad7b355b3aba8be493bea6d"
+}

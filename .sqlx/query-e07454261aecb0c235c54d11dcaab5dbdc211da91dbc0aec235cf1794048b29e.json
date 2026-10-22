@@ -1,0 +1,194 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id as \"id: _\", created_at, updated_at, token_hash, target_kind as \"target_kind: _\", target_id, passphrase_hash, expires_at, allow_view, allow_download, allow_like, allow_flag, revoked_at, created_by as \"created_by: _\" FROM share_links WHERE token_hash=$1 AND revoked_at IS NULL",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: _",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "token_hash",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "token_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "target_kind: _",
+        "type_info": {
+          "Custom": {
+            "name": "target_kind",
+            "kind": {
+              "Enum": [
+                "album",
+                "photo"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "target_kind"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "target_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "target_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "passphrase_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "passphrase_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "expires_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "expires_at"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "allow_view",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "allow_view"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "allow_download",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "allow_download"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "allow_like",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "allow_like"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "allow_flag",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "allow_flag"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "revoked_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "revoked_at"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "created_by: _",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "share_links",
+            "name": "created_by"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "e07454261aecb0c235c54d11dcaab5dbdc211da91dbc0aec235cf1794048b29e"
+}

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE sessions SET token_hash=$1::bytea WHERE false",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0dfc279adfcd9b532ad55e48fb10d5d0ddfd3883413814e1a33270bd3913ca59"
+}

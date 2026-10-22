@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT a.attname::text AS \"column!\",has_column_privilege('yhotos_public','sessions',a.attname,'UPDATE') AS \"allowed!\" FROM pg_attribute a WHERE a.attrelid='sessions'::regclass AND a.attnum>0 AND NOT a.attisdropped",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "column!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "allowed!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "f5ac753073697f4e2f245aa520b4e2ccec3dfc78b1bbb04c189d10f0ed966237"
+}

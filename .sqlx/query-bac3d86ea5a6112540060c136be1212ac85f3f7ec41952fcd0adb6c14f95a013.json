@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE jobs SET locked_at=NULL,locked_by=NULL,finished_at=CASE WHEN attempts>=max_attempts THEN now() ELSE NULL END,error=CASE WHEN attempts>=max_attempts THEN 'worker lock expired after final attempt' ELSE error END WHERE locked_at < $1 AND finished_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "bac3d86ea5a6112540060c136be1212ac85f3f7ec41952fcd0adb6c14f95a013"
+}

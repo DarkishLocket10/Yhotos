@@ -1,0 +1,33 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT $1::citext AS \"slug!: Slug\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "slug!: Slug",
+        "type_info": {
+          "Custom": {
+            "name": "citext",
+            "kind": "Simple"
+          }
+        },
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        {
+          "Custom": {
+            "name": "citext",
+            "kind": "Simple"
+          }
+        }
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "1457846064cb18b1eb41603c3cc7da88326cdb90e84be56f48457e8e12020f8b"
+}

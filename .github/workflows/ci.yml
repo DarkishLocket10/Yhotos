@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  SQLX_OFFLINE: 'true'
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -41,7 +44,7 @@ jobs:
     runs-on: ubuntu-24.04
     services:
       postgres:
-        image: postgres:16
+        image: pgvector/pgvector:pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
         env:
           POSTGRES_USER: yhotos
           POSTGRES_DB: yhotos_test
@@ -55,7 +58,7 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      DATABASE_URL: postgres://yhotos@127.0.0.1:5432/yhotos_test
+      DATABASE_URL: postgres://yhotos@127.0.0.1:5432/yhotos_test?sslmode=disable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -63,6 +66,10 @@ jobs:
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: Install pinned SQLx CLI
+        run: cargo install sqlx-cli --version 0.9.0 --locked --no-default-features --features postgres,rustls
+      - name: Apply database migrations
+        run: cargo sqlx migrate run --source crates/yhotos-db/migrations
       - name: Test workspace
         run: cargo test --workspace --all-features
       - name: Test public build without admin routes

@@ -1,0 +1,56 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT r.rolname::text AS \"role!\",c.relname::text AS \"table!\",\n        has_table_privilege(r.oid,c.oid,'SELECT') AS \"select!\",\n        has_table_privilege(r.oid,c.oid,'INSERT') AS \"insert!\",\n        has_table_privilege(r.oid,c.oid,'UPDATE') AS \"update!\",\n        has_table_privilege(r.oid,c.oid,'DELETE') AS \"delete!\"\n        FROM pg_roles r CROSS JOIN pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace\n        WHERE r.rolname IN ('yhotos_public','yhotos_admin','yhotos_worker')\n          AND n.nspname='public' AND c.relkind='r' AND c.relname<>'_sqlx_migrations'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "role!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "table!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "select!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "insert!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "update!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "delete!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "81237bb4b611ce244c9b8baaaea5f09f00c17679be02bd18b1f134bcf5689cee"
+}

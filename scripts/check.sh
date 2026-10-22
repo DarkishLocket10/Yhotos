@@ -16,6 +16,14 @@ run_step() {
     fi
 }
 
+# A disposable pgvector service is started automatically unless the caller
+# supplies DATABASE_URL. See deploy/dev/README.md for credentials and CLI setup.
+if [[ -z "${DATABASE_URL:-}" ]]; then
+    source deploy/dev/start.sh
+fi
+run_step migrations cargo sqlx migrate run --source crates/yhotos-db/migrations
+export SQLX_OFFLINE=true
+
 run_step fmt cargo fmt --all --check
 run_step clippy cargo clippy --workspace --all-targets --all-features -- -D warnings
 run_step test cargo test --workspace --all-features

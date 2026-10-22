@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM derivatives WHERE photo_id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "23d8f8bfd09a24aa7410ecd53276af07fb052572ba371d3bc923f5c1470582fe"
+}

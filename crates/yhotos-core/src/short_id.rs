@@ -58,6 +58,37 @@ impl FromStr for ShortId {
     }
 }
 
+#[cfg(feature = "sqlx")]
+mod postgres {
+    use super::ShortId;
+    use sqlx::{
+        Decode, Encode, Postgres, Type,
+        encode::IsNull,
+        error::BoxDynError,
+        postgres::{PgArgumentBuffer, PgTypeInfo, PgValueRef},
+    };
+
+    impl Type<Postgres> for ShortId {
+        fn type_info() -> PgTypeInfo {
+            PgTypeInfo::with_name("text")
+        }
+        fn compatible(ty: &PgTypeInfo) -> bool {
+            <String as Type<Postgres>>::compatible(ty) || *ty == Self::type_info()
+        }
+    }
+    impl Encode<'_, Postgres> for ShortId {
+        fn encode_by_ref(&self, buf: &mut PgArgumentBuffer) -> Result<IsNull, BoxDynError> {
+            <&str as Encode<Postgres>>::encode(std::str::from_utf8(&self.0)?, buf)
+        }
+    }
+    impl Decode<'_, Postgres> for ShortId {
+        fn decode(value: PgValueRef<'_>) -> Result<Self, BoxDynError> {
+            let text = <&str as Decode<Postgres>>::decode(value)?;
+            Ok(text.parse()?)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]

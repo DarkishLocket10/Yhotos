@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE photos SET title='changed' WHERE false",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "1e4d987f96746191d6ad0bf34016d5b70b28e9d71e0fe935780e2f169126152a"
+}

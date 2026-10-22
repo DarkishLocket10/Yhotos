@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE flags SET resolution=$2,resolved_at=now() WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        {
+          "Custom": {
+            "name": "flag_resolution",
+            "kind": {
+              "Enum": [
+                "replaced",
+                "reedited",
+                "removed",
+                "visibility",
+                "dismissed"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ddabf2340e7bf1c0b244ea7a39f4b3b828af65d5206c0bce2de163d7036dccd3"
+}

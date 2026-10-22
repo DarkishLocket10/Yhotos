@@ -1,0 +1,116 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH RECURSIVE chain AS (SELECT a.*, 0 AS depth, ARRAY[a.id] AS visited FROM albums a WHERE id=$1 UNION ALL SELECT a.*, c.depth+1, c.visited || a.id FROM albums a JOIN chain c ON c.parent_id=a.id WHERE NOT a.id=ANY(c.visited)) SELECT id as \"id!: _\", created_at AS \"created_at!\", updated_at AS \"updated_at!\", parent_id as \"parent_id: _\", slug as \"slug!: _\", title AS \"title!\", description AS \"description!\", sort_order AS \"sort_order!\", cover_photo_id as \"cover_photo_id: _\", visibility as \"visibility!: _\", manual_order AS \"manual_order!\", deleted_at FROM chain WHERE depth>0 ORDER BY depth",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!: _",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "created_at!",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "updated_at!",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "parent_id: _",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "slug!: _",
+        "type_info": {
+          "Custom": {
+            "name": "citext",
+            "kind": "Simple"
+          }
+        },
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "title!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "description!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "sort_order!",
+        "type_info": "Int4",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
+        "name": "cover_photo_id: _",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 9,
+        "name": "visibility!: _",
+        "type_info": {
+          "Custom": {
+            "name": "visibility",
+            "kind": {
+              "Enum": [
+                "inherit",
+                "public",
+                "restricted"
+              ]
+            }
+          }
+        },
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 10,
+        "name": "manual_order!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 11,
+        "name": "deleted_at",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "f974679ac5f6a797f5aff01d78c06e8b6ba386147fc93cf0deb5ee3040966e5d"
+}

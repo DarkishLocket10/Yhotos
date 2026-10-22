@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO jobs(id,kind,payload,run_after) SELECT id,CASE WHEN position<=10 THEN 'ingest' ELSE 'other' END,'{}',CASE WHEN position<=10 THEN now() ELSE now()+interval '1 day' END FROM unnest($1::uuid[]) WITH ORDINALITY AS j(id,position)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4db97a54d343a1076566eb75b2844cdba0cc988978ecff184670e8efc4de24be"
+}

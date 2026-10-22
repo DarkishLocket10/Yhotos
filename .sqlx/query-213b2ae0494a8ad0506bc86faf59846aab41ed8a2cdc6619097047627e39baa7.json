@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SET LOCAL ROLE yhotos_public",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "213b2ae0494a8ad0506bc86faf59846aab41ed8a2cdc6619097047627e39baa7"
+}

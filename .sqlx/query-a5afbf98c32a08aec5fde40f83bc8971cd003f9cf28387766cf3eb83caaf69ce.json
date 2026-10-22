@@ -1,0 +1,27 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO photo_grants(id,photo_id,principal_kind,principal_id) VALUES ($1,$2,$3,$4) ON CONFLICT (photo_id,principal_kind,principal_id) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        {
+          "Custom": {
+            "name": "principal_kind",
+            "kind": {
+              "Enum": [
+                "user",
+                "group"
+              ]
+            }
+          }
+        },
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a5afbf98c32a08aec5fde40f83bc8971cd003f9cf28387766cf3eb83caaf69ce"
+}

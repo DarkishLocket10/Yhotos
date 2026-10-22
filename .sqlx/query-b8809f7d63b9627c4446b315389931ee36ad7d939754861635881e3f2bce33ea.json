@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE albums a SET sort_order=(o.position-1)::integer FROM unnest($2::uuid[]) WITH ORDINALITY AS o(id,position) WHERE a.id=o.id AND a.parent_id IS NOT DISTINCT FROM $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b8809f7d63b9627c4446b315389931ee36ad7d939754861635881e3f2bce33ea"
+}

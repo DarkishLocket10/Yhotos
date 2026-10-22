@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT rolcanlogin FROM pg_roles WHERE rolname IN ('yhotos_public','yhotos_admin','yhotos_worker')",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "rolcanlogin",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "pg_roles",
+            "name": "rolcanlogin"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "ead007ee443a2fcab0db7154d310564dc9eec0166193a4c38a9f52127f477046"
+}

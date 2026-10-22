@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO share_link_opens(id,share_link_id,visitor_hash,country,city) VALUES ($1,$2,$3,$4,$5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Bytea",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3215aaaff3e355f88fc48fc2817a6fad7cee0b5bdf4d8f84baffd7d4e95be4c0"
+}

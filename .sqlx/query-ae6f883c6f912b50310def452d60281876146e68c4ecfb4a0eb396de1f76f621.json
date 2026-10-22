@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM likes WHERE photo_id=$1 AND (user_id=$2 OR share_link_id=$3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ae6f883c6f912b50310def452d60281876146e68c4ecfb4a0eb396de1f76f621"
+}

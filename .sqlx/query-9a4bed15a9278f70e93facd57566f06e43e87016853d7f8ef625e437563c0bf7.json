@@ -1,0 +1,50 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT target_kind AS \"target_kind: TargetKind\",target_id FROM legacy_redirects WHERE pattern=$1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "target_kind: TargetKind",
+        "type_info": {
+          "Custom": {
+            "name": "target_kind",
+            "kind": {
+              "Enum": [
+                "album",
+                "photo"
+              ]
+            }
+          }
+        },
+        "origin": {
+          "Table": {
+            "table": "legacy_redirects",
+            "name": "target_kind"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "target_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "legacy_redirects",
+            "name": "target_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "9a4bed15a9278f70e93facd57566f06e43e87016853d7f8ef625e437563c0bf7"
+}

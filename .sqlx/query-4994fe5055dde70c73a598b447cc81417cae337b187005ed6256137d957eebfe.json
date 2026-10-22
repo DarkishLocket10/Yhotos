@@ -1,0 +1,72 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT $1::uuid AS \"album!: AlbumId\", $1::uuid AS \"photo!: PhotoId\", $1::uuid AS \"user!: UserId\", $1::uuid AS \"group!: GroupId\", $1::uuid AS \"tag!: TagId\", $1::uuid AS \"job!: JobId\", $1::uuid AS \"session!: SessionId\", $1::uuid AS \"link!: ShareLinkId\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "album!: AlbumId",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "photo!: PhotoId",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "user!: UserId",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "group!: GroupId",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "tag!: TagId",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "job!: JobId",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "session!: SessionId",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "link!: ShareLinkId",
+        "type_info": "Uuid",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "4994fe5055dde70c73a598b447cc81417cae337b187005ed6256137d957eebfe"
+}

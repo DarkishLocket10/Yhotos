@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT current_setting('statement_timeout') AS \"timeout!\",current_setting('application_name') AS \"app!\",current_setting('idle_in_transaction_session_timeout') AS \"idle!\",current_user::text AS \"role!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "timeout!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "app!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "idle!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "role!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "fcae9469318ed0e30f86d2c1c23c866be705f194b2483bf4fdd9150080e152a5"
+}
