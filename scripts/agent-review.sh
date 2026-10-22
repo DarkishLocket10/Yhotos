@@ -45,6 +45,7 @@ codex exec review \
   -m gpt-6-astra \
   -c "model_reasoning_effort=\"$EFFORT\"" \
   -c 'approval_policy="never"' \
+  -c 'mcp_servers={}' \
   --title "$TASK_ID $SLUG" \
   - < "$REPO_ROOT/scripts/review-prompt.md" > "$OUT" 2>&1 || true
 

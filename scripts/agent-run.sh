@@ -99,6 +99,7 @@ codex exec \
   -m "$MODEL" \
   -c "model_reasoning_effort=\"$EFFORT\"" \
   -c 'approval_policy="never"' \
+  -c 'mcp_servers={}' \
   -s workspace-write \
   --output-last-message "$LAST_MSG" \
   - < "$PROMPT_FILE"
