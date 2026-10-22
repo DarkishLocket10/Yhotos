@@ -1988,3 +1988,52 @@ async fn warm_protected_landings_only_write_opens_and_coalesce_recency(pool: PgP
     assert_eq!(reply.status, StatusCode::OK);
     assert_eq!(queries, 1);
 }
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn retained_photo_link_loses_capabilities_when_its_album_becomes_restricted(pool: PgPool) {
+    let f = Fixture::new(pool).await;
+    let album = f.album(None, "later-restricted", Visibility::Public).await;
+    let (photo, _, _) = Fixture::add_photo(&f.pool, &f.state, album, "Linked photo").await;
+    let (_, photo_link) = f.link(ShareTarget::Photo(photo), None, flags()).await;
+    let (_, album_link) = f
+        .link(
+            ShareTarget::Album(album),
+            None,
+            LinkFlags {
+                view: true,
+                ..LinkFlags::default()
+            },
+        )
+        .await;
+    let mut client = Client::default();
+    assert_eq!(client.get(&f.app, &photo_link).await.status, StatusCode::OK);
+    assert_eq!(client.get(&f.app, &album_link).await.status, StatusCode::OK);
+    // While the album is public, the photo link independently covers the photo.
+    assert_eq!(
+        client.action(&f.app, photo, "like").await.status,
+        StatusCode::OK
+    );
+    sqlx::query!(
+        "UPDATE albums SET visibility='restricted'::visibility WHERE id=$1",
+        album as _
+    )
+    .execute(&f.pool)
+        .await
+        .unwrap();
+    f.invalidate();
+    // The view-only album link still shows the photo, but the retained photo link
+    // no longer covers it, so its like and flag capabilities must not be borrowed.
+    let page = client
+        .get(
+            &f.app,
+            &format!("/p/{}", yhotos_core::ShortId::from_photo_id(photo)),
+        )
+        .await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    for control in ["Download photo", "Like photo", "Flag photo"] {
+        assert!(!page.text().contains(control), "{control}");
+    }
+    for action in ["like", "flag"] {
+        concealed(&client.action(&f.app, photo, action).await).await;
+    }
+}

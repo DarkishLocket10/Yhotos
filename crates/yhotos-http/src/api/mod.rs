@@ -31,7 +31,7 @@ pub(crate) fn caps(photo: &PagePhoto, identity: &SessionIdentity, links: &Links)
         links.0.iter().any(|link| {
             link.caps.view
                 && match link.target {
-                    ShareTarget::Photo(id) => id == photo.id,
+                    ShareTarget::Photo(id) => photo.photo_link_view && id == photo.id,
                     ShareTarget::Album(id) => photo.shared_albums.contains(&id),
                 }
                 && action(link)

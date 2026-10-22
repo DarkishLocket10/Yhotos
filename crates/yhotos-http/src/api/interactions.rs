@@ -13,6 +13,7 @@ use yhotos_db::{
 struct InteractionPhoto {
     id: yhotos_core::PhotoId,
     account_view: bool,
+    photo_link_view: bool,
     shared_albums: Vec<yhotos_core::AlbumId>,
 }
 impl From<&PagePhoto> for InteractionPhoto {
@@ -20,6 +21,7 @@ impl From<&PagePhoto> for InteractionPhoto {
         Self {
             id: photo.id,
             account_view: photo.account_view,
+            photo_link_view: photo.photo_link_view,
             shared_albums: photo.shared_albums.clone(),
         }
     }
@@ -58,7 +60,7 @@ fn actor(
             link.caps.view
                 && (if flag { link.caps.flag } else { link.caps.like })
                 && match link.target {
-                    ShareTarget::Photo(id) => id == photo.id,
+                    ShareTarget::Photo(id) => photo.photo_link_view && id == photo.id,
                     ShareTarget::Album(id) => photo.shared_albums.contains(&id),
                 }
         })
@@ -140,7 +142,7 @@ async fn visible_photo(
             p.id=ANY(i.shared_photos) AND cardinality(a.restricted_ids)=0 AS photo_link_view,
             i.admin
           FROM photo p CROSS JOIN scope a CROSS JOIN identity i WHERE a.complete
-        ) SELECT id AS "id: yhotos_core::PhotoId", account_view AS "account_view!",
+        ) SELECT id AS "id: yhotos_core::PhotoId", account_view AS "account_view!", photo_link_view AS "photo_link_view!",
           shared_albums AS "shared_albums!" FROM authorized
           WHERE admin OR ordinary_view OR photo_link_view OR cardinality(shared_albums)>0"#,
         bindings.user,
@@ -157,6 +159,7 @@ async fn visible_photo(
     Ok(row.map(|row| InteractionPhoto {
         id: row.id,
         account_view: row.account_view,
+        photo_link_view: row.photo_link_view,
         shared_albums: row
             .shared_albums
             .into_iter()

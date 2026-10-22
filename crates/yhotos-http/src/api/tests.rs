@@ -116,6 +116,7 @@ fn capability_union_requires_an_independently_covering_scope() {
     use yhotos_core::{ShareLinkId, access::ShareTarget};
     use yhotos_db::share_links::LinkFlags;
     let mut photo = fixture_photo();
+    photo.photo_link_view = true;
     let identity = SessionIdentity::Anonymous;
     let links = Links(vec![ScopedLink {
         target: ShareTarget::Photo(photo.id),
@@ -132,6 +133,10 @@ fn capability_union_requires_an_independently_covering_scope() {
     assert!(cap.like);
     assert!(!cap.download);
     assert!(!cap.flag);
+    // A linked photo whose album chain is restricted is not covered by its photo link.
+    photo.photo_link_view = false;
+    assert!(!caps(&photo, &identity, &links).like);
+    photo.photo_link_view = true;
     photo.id = yhotos_core::PhotoId::new();
     assert!(!caps(&photo, &identity, &links).like);
     photo.account_view = true;
