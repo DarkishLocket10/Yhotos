@@ -19,7 +19,17 @@ pub struct PlaceCount {
     /// Visible photo count only.
     pub count: u64,
 }
-/// Lists all visible places with one query, including without JavaScript.
+/// Places listed per server-rendered map fallback page.
+pub const PLACES_PER_PAGE: u32 = 200;
+/// One bounded page of visible places and the total visible place count.
+#[derive(Debug)]
+pub struct PlacesPage {
+    /// Distinct places with at least one visible photo.
+    pub total: u64,
+    /// This page, ordered by name, country and id.
+    pub places: Vec<PlaceCount>,
+}
+/// Lists the first page of visible places, including without JavaScript.
 ///
 /// # Errors
 /// Returns connection or invalid stored data errors.
@@ -27,20 +37,35 @@ pub async fn places(
     conn: &mut PgConnection,
     principal: &Principal<'_>,
 ) -> Result<Vec<PlaceCount>, DbError> {
-    places_for(conn, &crate::access_sql::visible_photos(principal)).await
+    Ok(
+        places_for(conn, &crate::access_sql::visible_photos(principal), 1)
+            .await?
+            .places,
+    )
 }
-/// Lists places visible to the union of independently verified principals.
+/// Lists one page of places visible to the union of independently verified principals,
+/// counting and paging after visibility filtering and grouping, in one query.
 ///
 /// # Errors
-/// Returns connection or invalid stored data errors.
+/// Rejects page zero; returns connection or invalid stored data errors.
 pub async fn places_for(
     conn: &mut PgConnection,
     p: &crate::access_sql::Bindings,
-) -> Result<Vec<PlaceCount>, DbError> {
-    let row = crate::visible_page_query!(r#"SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY name,country,id),'[]'::jsonb) AS "payload!"
-      FROM (SELECT l.id,l.name,l.admin1,l.country,count(*) AS count FROM places l
-        JOIN visible_photos p ON p.place_id=l.id GROUP BY l.id) t"#,p).fetch_one(conn).await?;
-    serde_json::from_value(row.payload).map_err(|_| DbError::InvalidInput)
+    number: u32,
+) -> Result<PlacesPage, DbError> {
+    let offset =
+        i64::from(number.checked_sub(1).ok_or(DbError::InvalidInput)?) * i64::from(PLACES_PER_PAGE);
+    let row = crate::visible_page_query!(r#"SELECT
+        (SELECT count(*) FROM (SELECT 1 FROM places l JOIN visible_photos p ON p.place_id=l.id GROUP BY l.id) c) AS "total!",
+        coalesce((SELECT jsonb_agg(to_jsonb(t) ORDER BY name,country,id) FROM
+          (SELECT l.id,l.name,l.admin1,l.country,count(*) AS count FROM places l
+            JOIN visible_photos p ON p.place_id=l.id GROUP BY l.id
+            ORDER BY l.name,l.country,l.id LIMIT $6 OFFSET $7) t),'[]'::jsonb) AS "payload!""#,
+        p, i64::from(PLACES_PER_PAGE), offset).fetch_one(conn).await?;
+    Ok(PlacesPage {
+        total: u64::try_from(row.total).map_err(|_| DbError::InvalidInput)?,
+        places: serde_json::from_value(row.payload).map_err(|_| DbError::InvalidInput)?,
+    })
 }
 /// A centroid and representative, computed exclusively from visible rows.
 #[derive(Debug, serde::Deserialize, serde::Serialize)]

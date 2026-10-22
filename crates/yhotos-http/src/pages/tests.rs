@@ -1675,3 +1675,44 @@ async fn api_like_unlike_and_concurrent_flags_are_idempotent(pool: PgPool) {
         StatusCode::OK
     );
 }
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn map_place_list_paginates_after_visibility_and_stays_under_budget(pool: PgPool) {
+    let f = Fixture::new(pool, 410).await;
+    let mut conn = f.state.pool.acquire().await.unwrap();
+    // One distinct place per photo; the restricted photo's place must not be listed or counted.
+    sqlx::query!("INSERT INTO places(id,name,admin1,country,lat,lon) SELECT id,'Place '||lpad(sort_order::text,4,'0'),'ON','CA',43.65,-79.38 FROM photos")
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    sqlx::query!("UPDATE photos SET place_id=id")
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    photos::set_visibility(
+        &mut conn,
+        &[PhotoId(Uuid::from_u128(410))],
+        Visibility::Restricted,
+    )
+    .await
+    .unwrap();
+    drop(conn);
+    let first = body(f.get("/map").await).await;
+    assert_eq!(first.matches("<li><a href=\"/places/").count(), 200);
+    assert!(first.contains("rel=\"next\" href=\"/map?page=2\""));
+    assert!(!first.contains("rel=\"prev\""));
+    let mut compressed = GzEncoder::new(Vec::new(), Compression::default());
+    compressed.write_all(first.as_bytes()).unwrap();
+    assert!(compressed.finish().unwrap().len() < 30 * 1024);
+    let second = body(f.get("/map?page=2").await).await;
+    assert_eq!(second.matches("<li><a href=\"/places/").count(), 200);
+    let third = body(f.get("/map?page=3").await).await;
+    // 410 photos, one restricted: 409 visible places.
+    assert_eq!(third.matches("<li><a href=\"/places/").count(), 9);
+    assert!(third.contains("rel=\"prev\" href=\"/map?page=2\""));
+    assert!(!third.contains("rel=\"next\""));
+    assert!(!third.contains(&Uuid::from_u128(410).to_string()));
+    for path in ["/map?page=4", "/map?page=0", "/map?page=x"] {
+        assert_eq!(f.get(path).await.status(), StatusCode::NOT_FOUND, "{path}");
+    }
+}

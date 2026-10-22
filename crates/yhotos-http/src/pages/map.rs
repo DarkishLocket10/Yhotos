@@ -24,6 +24,9 @@ struct MapTemplate<'a> {
     description: &'static str,
     styles: &'static str,
     places: Vec<(PlaceCount, String)>,
+    number: u32,
+    previous: Option<String>,
+    next: Option<String>,
     tiles: &'a str,
     map_script: &'static str,
     map_css: &'static str,
@@ -34,11 +37,21 @@ pub(crate) async fn page(
     Extension(nonce): Extension<Nonce>,
     Extension(identity): Extension<SessionIdentity>,
     Extension(links): Extension<Links>,
+    Query(options): Query<PageOptions>,
     headers: HeaderMap,
 ) -> Result<Response, HttpError> {
+    let number = options.number()?;
     let mut conn = state.pool.acquire().await?;
-    let places = map::places_for(&mut conn, &bindings(&identity, &links))
-        .await?
+    let page = map::places_for(&mut conn, &bindings(&identity, &links), number).await?;
+    // Past the last page is indistinguishable from any other missing page.
+    if number > 1 && page.places.is_empty() {
+        return Err(HttpError::NotFound);
+    }
+    let previous = (number > 1).then(|| format!("/map?page={}", number - 1));
+    let next = (u64::from(number) * u64::from(map::PLACES_PER_PAGE) < page.total)
+        .then(|| format!("/map?page={}", number + 1));
+    let places = page
+        .places
         .into_iter()
         .map(|place| {
             let href = format!("/places/{}", place.id);
@@ -52,6 +65,9 @@ pub(crate) async fn page(
         description: "Browse photos by location",
         styles: "",
         places,
+        number,
+        previous,
+        next,
         tiles: &state.config.map_tiles.template,
         map_script: static_assets::map_script_url()?,
         map_css: static_assets::map_css_url()?,
