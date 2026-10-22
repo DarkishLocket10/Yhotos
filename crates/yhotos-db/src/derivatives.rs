@@ -21,14 +21,10 @@ pub async fn lookup(
     file_owners(conn, hash, "derivative", variant, format, hdr).await
 }
 
-/// Returns live owners of a non-HLS MP4 rendition with database-derived metadata.
+/// Returns live owners of non-HLS MP4 bytes by hash, independently of codec.
 ///
 /// # Errors
 /// Returns invalid stored metadata or database failures.
-pub async fn lookup_video(
-    conn: &mut PgConnection,
-    hash: &str,
-    codec: &str,
-) -> Result<Vec<OwnerRow>, DbError> {
-    file_owners(conn, hash, "video", codec, "mp4", false).await
+pub async fn lookup_video(conn: &mut PgConnection, hash: &str) -> Result<Vec<OwnerRow>, DbError> {
+    file_owners(conn, hash, "video", "", "mp4", false).await
 }

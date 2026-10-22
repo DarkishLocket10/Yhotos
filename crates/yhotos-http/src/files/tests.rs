@@ -335,7 +335,7 @@ async fn invalid_hashes_and_selectors_never_reach_database_or_missing_store() {
     );
     dir.close().unwrap();
     state.pool.close().await;
-    let app = crate::public_router(state);
+    let app = crate::public_router(state.clone());
     for hash in [
         "A".repeat(64),
         "a".repeat(63),
@@ -369,6 +369,17 @@ async fn invalid_hashes_and_selectors_never_reach_database_or_missing_store() {
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
+    for name in ["x".repeat(256), "%C3%A9".repeat(128), "x".repeat(4096)] {
+        let response = app
+            .clone()
+            .oneshot(req(&format!("/o/{}/{name}", "a".repeat(64))))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(bytes(response).await, "Not found");
+    }
+    state.files.rows.run_pending_tasks().await;
+    assert_eq!(state.files.rows.entry_count(), 0);
 }
 
 // Keep callsite interest enabled for the lifetime of the test process. A task
@@ -529,7 +540,7 @@ fn disposition_sanitizes_quotes_newlines_unicode_and_path_separators() {
 }
 
 #[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
-async fn one_cold_query_zero_warm_queries_and_full_path_cache_key(pool: PgPool) {
+async fn one_cold_query_zero_warm_queries_and_validated_lookup_cache_key(pool: PgPool) {
     init_capture();
     let logging_pool = PgPoolOptions::new()
         .max_connections(1)
@@ -550,9 +561,21 @@ async fn one_cold_query_zero_warm_queries_and_full_path_cache_key(pool: PgPool) 
     CAPTURE
         .scope(capture, async {
             let app = crate::public_router(f.state.clone());
-            for path in [f.derivative(), f.original(), f.video()] {
+            for paths in [
+                vec![
+                    f.derivative(),
+                    format!("/i/{}/%73mall.jpeg", f.hash),
+                    format!("/i/{}/small.%6apeg", f.hash),
+                ],
+                vec![
+                    f.original(),
+                    format!("/o/{}/other.jpg", f.hash),
+                    format!("/o/{}/{}", f.hash, "x".repeat(255)),
+                ],
+                vec![f.video(); 3],
+            ] {
                 let before = counter.load(Ordering::Relaxed);
-                for _ in 0..3 {
+                for path in paths {
                     let response = app.clone().oneshot(req(&path)).await.unwrap();
                     assert_eq!(response.status(), StatusCode::OK);
                     assert_eq!(bytes(response).await.len(), 1024);
@@ -567,6 +590,78 @@ async fn one_cold_query_zero_warm_queries_and_full_path_cache_key(pool: PgPool) 
             assert_eq!(counter.load(Ordering::Relaxed), 4);
         })
         .await;
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn missing_original_filename_aliases_do_not_grow_metadata_cache(pool: PgPool) {
+    let f = Fixture::new(pool).await;
+    let app = crate::public_router(f.state.clone());
+    let hash = "e".repeat(64);
+    for name in ["x".repeat(256), "%C3%A9".repeat(128), "x".repeat(4096)] {
+        let response = app
+            .clone()
+            .oneshot(req(&format!("/o/{hash}/{name}")))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        f.state.files.rows.run_pending_tasks().await;
+        assert_eq!(f.state.files.rows.entry_count(), 0);
+    }
+    // Negative metadata is cached once per hash, independently of display text,
+    // percent encoding, or the query that controls Content-Disposition.
+    for name in [
+        "first.jpg".into(),
+        "%66irst.jpg".into(),
+        "other.jpg?download=1".into(),
+        "x".repeat(255),
+        format!("{}x", "%C3%A9".repeat(127)),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(req(&format!("/o/{hash}/{name}")))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert_eq!(bytes(response).await, "Not found");
+        f.state.files.rows.run_pending_tasks().await;
+        assert_eq!(f.state.files.rows.entry_count(), 1);
+    }
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn derivative_cache_distinguishes_variant_format_and_hdr(pool: PgPool) {
+    let f = Fixture::new(pool).await;
+    let app = crate::public_router(f.state.clone());
+    for (index, name) in ["small.jpeg", "medium.jpeg", "small.avif", "small.jpeg.hdr"]
+        .into_iter()
+        .enumerate()
+    {
+        let response = app
+            .clone()
+            .oneshot(req(&format!("/i/{}/{name}", "e".repeat(64))))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        f.state.files.rows.run_pending_tasks().await;
+        assert_eq!(f.state.files.rows.entry_count(), (index + 1) as u64);
+    }
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn video_metadata_uses_hash_even_when_requested_codec_is_missing(pool: PgPool) {
+    let f = Fixture::new(pool).await;
+    let app = crate::public_router(f.state.clone());
+    let missing = app
+        .clone()
+        .oneshot(req(&format!("/v/{}/av1.mp4", f.hash)))
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    let response = app.oneshot(req(&f.video())).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(bytes(response).await.as_ref(), f.bytes);
+    f.state.files.rows.run_pending_tasks().await;
+    assert_eq!(f.state.files.rows.entry_count(), 1);
 }
 
 #[sqlx::test(migrator = "yhotos_db::MIGRATOR")]

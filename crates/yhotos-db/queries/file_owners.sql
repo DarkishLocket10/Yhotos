@@ -10,7 +10,7 @@ WITH RECURSIVE selected AS (
         AND d.variant = $3 AND d.format = $4 AND d.hdr = $5
     UNION ALL
     SELECT v.photo_id, v.bytes, 'video/mp4', v.width, v.height
-    FROM video_renditions v WHERE $2 = 'video' AND v.hash = $1 AND v.codec = $3 AND NOT v.hls
+    FROM video_renditions v WHERE $2 = 'video' AND v.hash = $1 AND NOT v.hls
 ), chain AS (
     SELECT s.photo_id, a.id, a.parent_id, a.visibility, a.deleted_at,
            0 AS depth, ARRAY[a.id] AS visited

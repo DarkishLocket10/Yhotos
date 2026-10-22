@@ -31,10 +31,10 @@ use yhotos_storage::{Area, ContentHash, DerivativeKey};
 
 const BUFFER: usize = 256 * 1024;
 
-/// Bounded full-path metadata caching, with no principal-specific response caching.
+/// Bounded metadata caching by validated lookup, with no principal-specific responses.
 #[derive(Clone)]
 pub struct FileCache {
-    rows: Cache<String, Arc<Vec<OwnerRow>>>,
+    rows: Cache<LookupKey, Arc<Vec<OwnerRow>>>,
     streams: Arc<streams::Streams>,
 }
 impl Default for FileCache {
@@ -61,6 +61,18 @@ impl FileCache {
     }
 }
 
+#[derive(Clone, Eq, Hash, PartialEq)]
+enum LookupKey {
+    Original(ContentHash),
+    Derivative {
+        hash: ContentHash,
+        variant: String,
+        format: String,
+        hdr: bool,
+    },
+    Video(ContentHash),
+}
+
 struct Selector {
     hash: ContentHash,
     area: Area,
@@ -72,7 +84,13 @@ impl Selector {
     fn parse(hash: &str, name: &str, area: Area) -> Result<Self, HttpError> {
         let hash = hash.parse().map_err(|_| HttpError::NotFound)?;
         let (variant, format, hdr) = match area {
-            Area::Originals => ("", "", false),
+            Area::Originals => {
+                // The decoded filename is display-only and never part of a lookup.
+                if name.len() > 255 {
+                    return Err(HttpError::NotFound);
+                }
+                ("", "", false)
+            }
             Area::Derivatives => {
                 let (name, hdr) = name
                     .strip_suffix(".hdr")
@@ -107,6 +125,19 @@ impl Selector {
             format: format.into(),
             hdr,
         })
+    }
+
+    fn lookup_key(&self) -> LookupKey {
+        match self.area {
+            Area::Originals => LookupKey::Original(self.hash),
+            Area::Derivatives => LookupKey::Derivative {
+                hash: self.hash,
+                variant: self.variant.clone(),
+                format: self.format.clone(),
+                hdr: self.hdr,
+            },
+            Area::Video => LookupKey::Video(self.hash),
+        }
     }
 }
 
@@ -194,7 +225,7 @@ async fn serve(
     selector: Selector,
     request: Request,
 ) -> Result<Response, HttpError> {
-    let owners = lookup(state, &selector, request.uri().path()).await?;
+    let owners = lookup(state, &selector).await?;
     // Prefer an anonymously visible owner so shared public content has stable
     // cache policy even when another owner is restricted or the viewer is admin.
     let public_owner = owners
@@ -259,15 +290,11 @@ async fn serve(
     };
     Ok(response)
 }
-async fn lookup(
-    state: &AppState,
-    selector: &Selector,
-    path: &str,
-) -> Result<Arc<Vec<OwnerRow>>, HttpError> {
+async fn lookup(state: &AppState, selector: &Selector) -> Result<Arc<Vec<OwnerRow>>, HttpError> {
     state
         .files
         .rows
-        .try_get_with(path.to_owned(), async {
+        .try_get_with(selector.lookup_key(), async {
             let mut conn = state
                 .pool
                 .acquire()
@@ -286,9 +313,7 @@ async fn lookup(
                     )
                     .await?
                 }
-                Area::Video => {
-                    derivatives::lookup_video(&mut conn, &hash, &selector.variant).await?
-                }
+                Area::Video => derivatives::lookup_video(&mut conn, &hash).await?,
             };
             Ok::<_, yhotos_db::DbError>(Arc::new(rows))
         })
