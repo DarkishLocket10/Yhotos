@@ -1,11 +1,13 @@
 #![forbid(unsafe_code)]
 
-//! Domain types, ids, errors, permissions, slugs, time. No IO.
+//! Domain values and access decisions, without IO or an async runtime.
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn skeleton_has_expected_crate_name() {
-        assert_eq!(env!("CARGO_PKG_NAME"), "yhotos-core");
-    }
-}
+pub mod access;
+pub mod error;
+pub mod ids;
+pub mod short_id;
+pub mod slug;
+
+pub use ids::*;
+pub use short_id::ShortId;
+pub use slug::Slug;

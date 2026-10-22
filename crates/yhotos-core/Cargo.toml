@@ -7,3 +7,18 @@ rust-version.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+default = []
+sqlx = ["dep:sqlx"]
+
+[dependencies]
+uuid.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+deunicode.workspace = true
+sqlx = { workspace = true, optional = true }
+
+[dev-dependencies]
+proptest.workspace = true
+serde_json.workspace = true
