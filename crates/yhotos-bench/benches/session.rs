@@ -114,8 +114,37 @@ fn main() -> Result<(), Box<dyn Error>> {
             });
         });
     }
+    bench_login_pages(&mut criterion, &runtime, &app, peer)?;
     runtime.block_on(sessions::revoke_all(&mut conn, user.id))?;
     criterion.final_summary();
+    Ok(())
+}
+fn bench_login_pages(
+    criterion: &mut Criterion,
+    runtime: &tokio::runtime::Runtime,
+    app: &axum::Router,
+    peer: SocketAddr,
+) -> Result<(), Box<dyn Error>> {
+    let csrf = yhotos_http::middleware::csrf::CsrfToken::generate()?;
+    let csrf_cookie = format!("__Host-yhotos-csrf={}", csrf.form_value());
+    for (label, cookie) in [
+        ("auth/login_page_new_csrf", None),
+        ("auth/login_page_existing_csrf", Some(&csrf_cookie)),
+    ] {
+        criterion.bench_function(label, |b| {
+            b.iter(|| {
+                let mut r = Request::builder().uri("/login");
+                if let Some(cookie) = cookie {
+                    r = r.header(header::COOKIE, cookie);
+                }
+                let result = r.body(Body::empty()).map(|mut r| {
+                    r.extensions_mut().insert(ConnectInfo(peer));
+                    runtime.block_on(app.clone().oneshot(r))
+                });
+                std::hint::black_box(result)
+            });
+        });
+    }
     Ok(())
 }
 fn encode_standard(bytes: &[u8; 32]) -> String {

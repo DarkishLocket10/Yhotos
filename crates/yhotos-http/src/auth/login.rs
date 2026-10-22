@@ -28,12 +28,13 @@ pub(crate) async fn form(
     Extension(a): Extension<Audience>,
     current: Option<Extension<Current>>,
     Query(query): Query<Destination>,
+    headers: HeaderMap,
 ) -> Result<Response, HttpError> {
     if current.is_some() {
         return Ok(redirect(a.root()));
     }
     let _ = required(&state)?;
-    views::login(a, next_path(&query.next).as_deref().unwrap_or(""))
+    views::login(a, &headers, next_path(&query.next).as_deref().unwrap_or(""))
 }
 #[derive(Deserialize)]
 struct Credentials {
@@ -364,7 +365,7 @@ pub(crate) async fn mfa_form(
     if sessions::pending_get(&mut tx, &hash, a.0).await?.is_none() {
         return Ok(redirect(a.login()));
     }
-    views::mfa(a, nonce)
+    views::mfa(a, &headers, nonce)
 }
 #[derive(Deserialize)]
 struct Code {

@@ -6,7 +6,7 @@ use axum::{
     Form,
     body::{Body, to_bytes},
     extract::{FromRequest, Request, State},
-    http::{HeaderValue, Method, header},
+    http::{HeaderMap, HeaderValue, Method, header},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -16,7 +16,7 @@ use subtle::ConstantTimeEq;
 
 const COOKIE: &str = "__Host-yhotos-csrf";
 
-/// A fresh random form token; its secret value is never Debug-printed.
+/// A canonical 256-bit form token; its secret value is never Debug-printed.
 #[derive(Clone)]
 pub struct CsrfToken(String);
 impl CsrfToken {
@@ -29,6 +29,13 @@ impl CsrfToken {
         getrandom::fill(&mut random)
             .map_err(|e| HttpError::Internal(anyhow::anyhow!("CSRF entropy unavailable: {e}")))?;
         Ok(Self(URL_SAFE_NO_PAD.encode(random)))
+    }
+    /// Reuses a single valid cookie so rendering another page preserves open forms.
+    pub(crate) fn for_page(headers: &HeaderMap) -> Result<Self, HttpError> {
+        match cookie_token(headers).filter(|value| canonical_token(value)) {
+            Some(value) => Ok(Self(value.to_owned())),
+            None => Self::generate(),
+        }
     }
     /// Borrows the token solely for rendering the form's hidden field.
     #[must_use]
@@ -53,9 +60,9 @@ struct FormToken {
     #[serde(rename = "_csrf")]
     token: String,
 }
-fn cookie_token(request: &Request) -> Option<&str> {
+fn cookie_token(headers: &HeaderMap) -> Option<&str> {
     let mut found = None;
-    for header in request.headers().get_all(header::COOKIE) {
+    for header in headers.get_all(header::COOKIE) {
         for pair in header.to_str().ok()?.split(';') {
             let Some((name, value)) = pair.trim().split_once('=') else {
                 continue;
@@ -119,9 +126,11 @@ pub(crate) async fn protect(
             .and_then(|v| v.to_str().ok());
         let valid = site == Some("same-origin")
             && origin == Some(expected.as_str())
-            && token.zip(cookie_token(&request)).is_some_and(|(t, c)| {
-                canonical_token(t) && bool::from(t.as_bytes().ct_eq(c.as_bytes()))
-            });
+            && token
+                .zip(cookie_token(request.headers()))
+                .is_some_and(|(t, c)| {
+                    canonical_token(t) && bool::from(t.as_bytes().ct_eq(c.as_bytes()))
+                });
         return if valid {
             next.run(request).await
         } else {
@@ -133,7 +142,7 @@ pub(crate) async fn protect(
     if content_type.split(';').next() != Some("application/x-www-form-urlencoded") {
         return HttpError::Csrf.into_response();
     }
-    let Some(cookie) = cookie_token(&request)
+    let Some(cookie) = cookie_token(request.headers())
         .filter(|s| canonical_token(s))
         .map(str::to_owned)
     else {
@@ -159,4 +168,50 @@ pub(crate) async fn protect(
     }
     next.run(Request::from_parts(parts, Body::from(bytes)))
         .await
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::{CsrfToken, HeaderMap, HeaderValue, canonical_token, header};
+
+    #[test]
+    fn pages_reuse_only_a_single_canonical_cookie() {
+        let valid = CsrfToken::generate().unwrap();
+        let cookie = format!("__Host-yhotos-csrf={}", valid.form_value());
+        let mut headers = HeaderMap::new();
+        headers.insert(header::COOKIE, HeaderValue::from_str(&cookie).unwrap());
+        assert_eq!(
+            CsrfToken::for_page(&headers).unwrap().form_value(),
+            valid.form_value()
+        );
+
+        let mut noncanonical = valid.form_value().to_owned();
+        noncanonical.pop();
+        noncanonical.push('B'); // Nonzero unused bits in the final base64 symbol.
+        for value in [
+            String::new(),
+            "malformed".into(),
+            format!("{}=", valid.form_value()),
+            noncanonical,
+            format!("{}; {cookie}", valid.form_value()),
+        ] {
+            headers.insert(
+                header::COOKIE,
+                HeaderValue::from_str(&format!("__Host-yhotos-csrf={value}")).unwrap(),
+            );
+            let token = CsrfToken::for_page(&headers).unwrap();
+            assert!(canonical_token(token.form_value()));
+            assert_ne!(token.form_value(), valid.form_value());
+        }
+        headers.insert(header::COOKIE, HeaderValue::from_str(&cookie).unwrap());
+        headers.append(header::COOKIE, HeaderValue::from_str(&cookie).unwrap());
+        assert_ne!(
+            CsrfToken::for_page(&headers).unwrap().form_value(),
+            valid.form_value()
+        );
+        assert!(canonical_token(
+            CsrfToken::for_page(&HeaderMap::new()).unwrap().form_value()
+        ));
+    }
 }

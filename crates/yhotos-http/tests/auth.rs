@@ -30,6 +30,7 @@ struct Client {
     pool: PgPool,
     db: Arc<Db>,
     jar: BTreeMap<String, String>,
+    csrf: String,
     network: SocketAddr,
     origin: String,
 }
@@ -37,6 +38,13 @@ struct Reply {
     status: StatusCode,
     headers: axum::http::HeaderMap,
     body: String,
+}
+impl Reply {
+    fn csrf(&self) -> Option<&str> {
+        self.body
+            .split_once("name=\"_csrf\" value=\"")
+            .and_then(|(_, value)| value.split_once('"').map(|(token, _)| token))
+    }
 }
 impl Client {
     async fn new(pool: PgPool, admin: bool) -> Self {
@@ -94,6 +102,7 @@ impl Client {
             pool,
             db,
             jar: BTreeMap::new(),
+            csrf: String::new(),
             network: "127.0.0.1:1234".parse().unwrap(),
             origin: if admin {
                 "https://admin.example.test:8443"
@@ -115,6 +124,7 @@ impl Client {
             pool: self.pool.clone(),
             db: self.db.clone(),
             jar: BTreeMap::new(),
+            csrf: String::new(),
             network: self.network,
             origin: if admin {
                 "https://admin.example.test:8443"
@@ -130,6 +140,7 @@ impl Client {
         } else {
             "/admin"
         };
+        self.get(&format!("{prefix}/u/password")).await;
         let start = self
             .json(
                 &format!("{prefix}/u/security/passkey/start"),
@@ -148,6 +159,7 @@ impl Client {
             )
             .await;
         assert_eq!(finish.status, StatusCode::OK, "{}", finish.body);
+        self.get(&format!("{prefix}/u/security")).await;
     }
     async fn enroll_totp(&mut self) -> totp::Secret {
         let admin = self.origin != "https://example.test";
@@ -169,6 +181,7 @@ impl Client {
                 .await,
             base,
         );
+        self.get(base).await;
         secret
     }
     async fn pending_totp_secret(&self, admin: bool) -> totp::Secret {
@@ -217,13 +230,7 @@ impl Client {
                 builder = builder
                     .header(header::ORIGIN, &self.origin)
                     .header("sec-fetch-site", "same-origin")
-                    .header(
-                        "x-csrf-token",
-                        self.jar
-                            .get("__Host-yhotos-csrf")
-                            .cloned()
-                            .unwrap_or_default(),
-                    );
+                    .header("x-csrf-token", &self.csrf);
             }
         }
         let mut request = builder.body(Body::from(body)).unwrap();
@@ -253,23 +260,25 @@ impl Client {
                 .to_vec(),
         )
         .unwrap();
-        Reply {
+        let reply = Reply {
             status,
             headers,
             body,
+        };
+        if let Some(token) = reply.csrf() {
+            token.clone_into(&mut self.csrf);
         }
+        reply
     }
     async fn get(&mut self, path: &str) -> Reply {
         self.send("GET", path, String::new(), false).await
     }
     async fn post(&mut self, path: &str, fields: &[(&str, &str)]) -> Reply {
+        self.post_with_csrf(path, fields, &self.csrf.clone()).await
+    }
+    async fn post_with_csrf(&mut self, path: &str, fields: &[(&str, &str)], csrf: &str) -> Reply {
         let mut form = url::form_urlencoded::Serializer::new(String::new());
-        form.append_pair(
-            "_csrf",
-            self.jar
-                .get("__Host-yhotos-csrf")
-                .map_or("", String::as_str),
-        );
+        form.append_pair("_csrf", csrf);
         for (k, v) in fields {
             form.append_pair(k, v);
         }
@@ -333,7 +342,14 @@ impl Client {
     }
     async fn login(&mut self, username: &str, password: &SecretString, admin: bool) -> Reply {
         let path = if admin { "/admin/login" } else { "/login" };
-        self.get(path).await;
+        if self.get(path).await.csrf().is_none() {
+            self.get(if admin {
+                "/admin/u/password"
+            } else {
+                "/u/password"
+            })
+            .await;
+        }
         self.post(
             path,
             &[
@@ -366,6 +382,78 @@ fn location(reply: &Reply, path: &str) {
 fn auth_headers(reply: &Reply) {
     assert_eq!(reply.headers[header::CACHE_CONTROL], "no-store");
     assert_eq!(reply.headers[header::REFERRER_POLICY], "no-referrer");
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn auth_forms_remain_valid_after_loading_another_auth_page(pool: PgPool) {
+    let audiences: &[bool] = if cfg!(feature = "admin") {
+        &[false, true]
+    } else {
+        &[false]
+    };
+    for &admin in audiences {
+        let mut c = Client::new(pool.clone(), admin).await;
+        let (_, name, password) = c.seed(false, admin).await;
+        let prefix = if admin { "/admin" } else { "" };
+        let login = format!("{prefix}/login");
+        let first = c.get(&login).await;
+        let second = c.get(&login).await;
+        let signed_in = c
+            .post_with_csrf(
+                &login,
+                &[("username", &name), ("password", password.expose_secret())],
+                first.csrf().unwrap(),
+            )
+            .await;
+        location(&signed_in, if admin { "/admin/setup-mfa" } else { "/" });
+        assert_eq!(first.csrf(), second.csrf());
+
+        let change = format!("{prefix}/u/password");
+        let first = c.get(&change).await;
+        assert_ne!(first.csrf(), second.csrf(), "login must rotate CSRF");
+        let second = c
+            .get(if admin {
+                "/admin/setup-mfa"
+            } else {
+                "/u/security"
+            })
+            .await;
+        let new = yhotos_auth::generate_temp_password();
+        let changed = c
+            .post_with_csrf(
+                &change,
+                &[
+                    ("current_password", password.expose_secret()),
+                    ("new_password", new.expose_secret()),
+                ],
+                first.csrf().unwrap(),
+            )
+            .await;
+        location(&changed, if admin { "/admin/setup-mfa" } else { "/" });
+        assert_eq!(first.csrf(), second.csrf());
+
+        let first = c
+            .get(if admin {
+                "/admin/setup-mfa"
+            } else {
+                "/u/security"
+            })
+            .await;
+        assert_ne!(
+            first.csrf(),
+            second.csrf(),
+            "password change must rotate CSRF"
+        );
+        let second = c.get(&format!("{prefix}/u/security/totp")).await;
+        location(
+            &c.post_with_csrf(&format!("{prefix}/logout"), &[], first.csrf().unwrap())
+                .await,
+            &login,
+        );
+        assert_eq!(first.csrf(), second.csrf());
+        let logged_out = c.get(&login).await;
+        assert_ne!(logged_out.csrf(), first.csrf(), "logout must rotate CSRF");
+    }
 }
 
 #[sqlx::test(migrations = "../yhotos-db/migrations")]
@@ -550,6 +638,7 @@ async fn expiry_invalid_cookies_csrf_and_redirect_validation(pool: PgPool) {
             .await,
             "/",
         );
+        c.get("/u/security").await;
     }
     c.get("/login").await;
     location(
@@ -637,11 +726,16 @@ async fn totp_enrollment_login_replay_attempt_limit_and_removal_reauth(pool: PgP
         pending_token.hash(TokenKind::PendingLogin).as_bytes(),
         pending_token.hash(TokenKind::Session).as_bytes()
     );
-    c.get("/login/mfa").await;
+    let first = c.get("/login/mfa").await;
+    c.get("/login").await;
     assert_eq!(
-        c.post("/login/mfa", &[("code", code.expose_secret())])
-            .await
-            .status,
+        c.post_with_csrf(
+            "/login/mfa",
+            &[("code", code.expose_secret())],
+            first.csrf().unwrap(),
+        )
+        .await
+        .status,
         StatusCode::UNAUTHORIZED
     );
     // A drift-window code for the next step can be used immediately, without sleep.
@@ -723,16 +817,25 @@ async fn passkey_roundtrip_single_use_and_json_csrf(pool: PgPool) {
         )
         .await;
     assert_eq!(finish.status, StatusCode::OK, "{}", finish.body);
-    assert_ne!(
+    assert_eq!(
+        c.json(
+            "/u/security/passkey/finish",
+            serde_json::to_value(&response).unwrap()
+        )
+        .await
+        .status,
+        StatusCode::FORBIDDEN
+    );
+    c.get("/u/security").await;
+    assert_eq!(
         c.json(
             "/u/security/passkey/finish",
             serde_json::to_value(response).unwrap()
         )
         .await
         .status,
-        StatusCode::OK
+        StatusCode::BAD_REQUEST
     );
-    c.get("/u/security").await;
     c.post("/logout", &[]).await;
     location(&c.login(&name, &pw, false).await, "/login/mfa");
     c.get("/login/mfa").await;
@@ -751,6 +854,7 @@ async fn passkey_roundtrip_single_use_and_json_csrf(pool: PgPool) {
         .await
         .unwrap();
     assert!(methods.first().unwrap().sign_count > 0);
+    c.get("/u/security").await;
     assert_eq!(
         c.json(
             "/login/mfa/passkey/finish",
@@ -1168,6 +1272,7 @@ async fn unicode_username_and_account_lockout_across_spelling_and_ip_changes(poo
     .await
     .unwrap();
     location(&c.login(&name, &pw, false).await, "/");
+    c.get("/u/security").await;
     c.post("/logout", &[]).await;
     let wrong = yhotos_auth::generate_temp_password();
     for attempt in 1..=5 {
@@ -1705,6 +1810,7 @@ async fn session_and_account_eviction_preserve_other_users_warm_caches(pool: PgP
     let remote = b.state.auth.as_ref().unwrap().clone();
     for password_change in [false, true] {
         a.login(&a_name, &a_password, false).await;
+        a.get("/u/security").await;
         let a_session = a.session(false).await;
         for auth in [&local, &remote] {
             auth.load(&a_session.token_hash).await.unwrap().unwrap();
@@ -1902,6 +2008,7 @@ async fn password_change_failures_share_ip_lockout_and_reauth_resets_success(poo
     let mut c = Client::new(pool, false).await;
     let (_, name, password) = c.seed(false, false).await;
     c.login(&name, &password, false).await;
+    c.get("/u/password").await;
     let wrong = yhotos_auth::generate_temp_password();
     for _ in 0..4 {
         assert_eq!(
@@ -1991,7 +2098,9 @@ async fn overlapping_passkey_ceremonies_cannot_roll_back_the_counter(pool: PgPoo
         .await,
         "/",
     );
+    c.get("/u/security").await;
     c.post("/logout", &[]).await;
+    c.get("/login").await;
     c.jar.insert("yc".into(), pending);
     assert_eq!(
         c.json(

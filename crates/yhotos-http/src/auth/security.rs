@@ -2,7 +2,7 @@ use super::{
     AppState, Audience, Auth, ExposeSecret, HttpError, IntoResponse, Request, Response,
     SecretString, login, now, redirect, required, sessions, set_cookie, ua, views,
 };
-use super::{HeaderValue, PgConnection, Token, TokenKind};
+use super::{HeaderMap, HeaderValue, PgConnection, Token, TokenKind};
 use crate::middleware::session::Current;
 use axum::{
     Extension, Form, Json,
@@ -42,13 +42,15 @@ pub(crate) async fn logout(
     let mut response = redirect(a.login());
     set_cookie(&mut response, a.cookie(a.cookie_name(&state), "", true)?);
     set_cookie(&mut response, a.cookie(a.pending_cookie(), "", true)?);
+    let _ = super::csrf(&mut response, a)?;
     Ok(response)
 }
 pub(crate) async fn password_form(
     Extension(a): Extension<Audience>,
     current: Current,
+    headers: HeaderMap,
 ) -> Result<Response, HttpError> {
-    views::password(a, current.0.must_change_password)
+    views::password(a, &headers, current.0.must_change_password)
 }
 #[derive(Deserialize)]
 pub(crate) struct PasswordChange {
@@ -157,6 +159,7 @@ pub(crate) async fn index(
     Extension(a): Extension<Audience>,
     current: Current,
     Extension(nonce): Extension<crate::middleware::security_headers::Nonce>,
+    headers: HeaderMap,
 ) -> Result<Response, HttpError> {
     let auth = required(&state)?;
     let mut c = auth.db(a)?.pool().acquire().await?;
@@ -167,15 +170,23 @@ pub(crate) async fn index(
         .into_iter()
         .filter(|method| method.rp_id.as_deref().is_none_or(|id| id == rp))
         .collect::<Vec<_>>();
-    views::security(a, &sessions, &methods, current.0.session.id, nonce)
+    views::security(
+        a,
+        &headers,
+        &sessions,
+        &methods,
+        current.0.session.id,
+        nonce,
+    )
 }
 #[cfg(feature = "admin")]
 pub(crate) async fn setup(
     Extension(a): Extension<Audience>,
     _current: Current,
     Extension(nonce): Extension<crate::middleware::security_headers::Nonce>,
+    headers: HeaderMap,
 ) -> Result<Response, HttpError> {
-    views::setup(a, nonce)
+    views::setup(a, &headers, nonce)
 }
 #[derive(Deserialize)]
 pub(crate) struct Reauth {
@@ -268,6 +279,7 @@ pub(crate) async fn totp_form(
     State(state): State<AppState>,
     Extension(a): Extension<Audience>,
     current: Current,
+    headers: HeaderMap,
 ) -> Result<Response, HttpError> {
     let auth = required(&state)?;
     let mut tx = auth.db(a)?.pool().begin().await?;
@@ -294,7 +306,7 @@ pub(crate) async fn totp_form(
         .render::<qrcode::render::svg::Color>()
         .min_dimensions(240, 240)
         .build();
-    views::totp(a, uri.expose_secret(), &qr)
+    views::totp(a, &headers, uri.expose_secret(), &qr)
 }
 #[derive(Deserialize)]
 pub(crate) struct Code {
@@ -347,6 +359,7 @@ pub(crate) async fn totp_finish(
         auth.invalidate_user(current.0.session.user_id);
         let mut response = redirect(a.security());
         set_cookie(&mut response, cookie);
+        let _ = super::csrf(&mut response, a)?;
         Ok(response)
     } else {
         tx.commit().await?;
@@ -433,6 +446,7 @@ pub(crate) async fn passkey_finish(
     auth.invalidate_user(current.0.session.user_id);
     let mut response = Json(json!({"next":a.security()})).into_response();
     set_cookie(&mut response, cookie);
+    let _ = super::csrf(&mut response, a)?;
     Ok(response)
 }
 pub(crate) async fn remove(
@@ -470,6 +484,7 @@ pub(crate) async fn remove(
     auth.invalidate_user(current.0.session.user_id);
     let mut response = redirect(a.security());
     set_cookie(&mut response, cookie);
+    let _ = super::csrf(&mut response, a)?;
     Ok(response)
 }
 

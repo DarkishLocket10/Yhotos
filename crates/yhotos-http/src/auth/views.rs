@@ -1,4 +1,6 @@
-use super::{Audience, CsrfToken, HttpError, IntoResponse, Response, sessions, set_cookie};
+use super::{
+    Audience, CsrfToken, HeaderMap, HttpError, IntoResponse, Response, sessions, set_cookie,
+};
 use crate::middleware::security_headers::Nonce;
 use askama::Template;
 use axum::response::Html;
@@ -11,8 +13,8 @@ struct Login<'a> {
     action: &'a str,
     next: &'a str,
 }
-pub(super) fn login(a: Audience, next: &str) -> Result<Response, HttpError> {
-    page(a, |csrf| {
+pub(super) fn login(a: Audience, headers: &HeaderMap, next: &str) -> Result<Response, HttpError> {
+    page(a, headers, |csrf| {
         Login {
             csrf,
             action: a.login(),
@@ -29,8 +31,12 @@ struct Password<'a> {
     action: &'a str,
     forced: bool,
 }
-pub(super) fn password(a: Audience, forced: bool) -> Result<Response, HttpError> {
-    page(a, |csrf| {
+pub(super) fn password(
+    a: Audience,
+    headers: &HeaderMap,
+    forced: bool,
+) -> Result<Response, HttpError> {
+    page(a, headers, |csrf| {
         Password {
             csrf,
             action: a.password(),
@@ -48,8 +54,13 @@ struct Totp<'a> {
     uri: &'a str,
     qr: &'a str,
 }
-pub(super) fn totp(a: Audience, uri: &str, qr: &str) -> Result<Response, HttpError> {
-    page(a, |csrf| {
+pub(super) fn totp(
+    a: Audience,
+    headers: &HeaderMap,
+    uri: &str,
+    qr: &str,
+) -> Result<Response, HttpError> {
+    page(a, headers, |csrf| {
         Totp {
             csrf,
             action: format!("{}/totp", a.security()),
@@ -68,8 +79,8 @@ struct Mfa<'a> {
     script: &'static str,
     nonce: Nonce,
 }
-pub(super) fn mfa(a: Audience, nonce: Nonce) -> Result<Response, HttpError> {
-    page(a, |csrf| {
+pub(super) fn mfa(a: Audience, headers: &HeaderMap, nonce: Nonce) -> Result<Response, HttpError> {
+    page(a, headers, |csrf| {
         Mfa {
             csrf,
             action: format!("{}/mfa", a.login()),
@@ -106,12 +117,13 @@ struct Security<'a> {
 }
 pub(super) fn security(
     a: Audience,
+    headers: &HeaderMap,
     sessions: &[sessions::Session],
     methods: &[yhotos_db::mfa::Method],
     id: uuid::Uuid,
     nonce: Nonce,
 ) -> Result<Response, HttpError> {
-    page(a, |csrf| {
+    page(a, headers, |csrf| {
         Security {
             csrf,
             base: a.security(),
@@ -146,8 +158,8 @@ pub(super) fn security(
     })
 }
 #[cfg(feature = "admin")]
-pub(super) fn setup(a: Audience, nonce: Nonce) -> Result<Response, HttpError> {
-    page(a, |csrf| {
+pub(super) fn setup(a: Audience, headers: &HeaderMap, nonce: Nonce) -> Result<Response, HttpError> {
+    page(a, headers, |csrf| {
         Security {
             csrf,
             base: a.security(),
@@ -164,9 +176,10 @@ pub(super) fn setup(a: Audience, nonce: Nonce) -> Result<Response, HttpError> {
 }
 fn page(
     a: Audience,
+    headers: &HeaderMap,
     render: impl FnOnce(&str) -> Result<String, HttpError>,
 ) -> Result<Response, HttpError> {
-    let token = CsrfToken::generate()?;
+    let token = CsrfToken::for_page(headers)?;
     let html = render(token.form_value())?;
     let mut response = Html(html).into_response();
     set_cookie(&mut response, token.cookie(a.0)?);
