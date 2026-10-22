@@ -491,6 +491,160 @@ async fn tus_interrupted_chunk_resumes_from_fsynced_database_offset_and_concurre
     c.no_pending().await;
 }
 
+// Signals only once PATCH has acquired its upload lock and started reading the body.
+struct GatedChunk {
+    bytes: Option<axum::body::Bytes>,
+    started: Option<tokio::sync::oneshot::Sender<()>>,
+    release: tokio::sync::oneshot::Receiver<()>,
+}
+impl futures_core::Stream for GatedChunk {
+    type Item = Result<axum::body::Bytes, std::io::Error>;
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        if self.bytes.is_none() {
+            return std::task::Poll::Ready(None);
+        }
+        if let Some(started) = self.started.take() {
+            started.send(()).unwrap();
+        }
+        std::task::ready!(std::future::Future::poll(
+            std::pin::Pin::new(&mut self.release),
+            cx
+        ))
+        .unwrap();
+        std::task::Poll::Ready(self.bytes.take().map(Ok))
+    }
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn tus_competing_final_chunks_return_one_result_and_one_conflict(pool: PgPool) {
+    let c = Client::new(pool).await;
+    let bytes = fixture("chart-srgb.png");
+    let url = c.start(bytes.len()).await;
+    assert_eq!(
+        c.patch(&url, 0, &bytes[..100]).await.status(),
+        StatusCode::NO_CONTENT
+    );
+    let (started, reading) = tokio::sync::oneshot::channel();
+    let (release, waiting) = tokio::sync::oneshot::channel();
+    let deadline = std::time::Duration::from_secs(5);
+    let headers = [
+        ("content-type", "application/offset+octet-stream".into()),
+        ("upload-offset", "100".into()),
+    ];
+    let (winner, loser) = tokio::join!(
+        c.send(
+            "PATCH",
+            &url,
+            &headers,
+            Body::from_stream(GatedChunk {
+                bytes: Some(bytes[100..].to_vec().into()),
+                started: Some(started),
+                release: waiting,
+            }),
+        ),
+        async {
+            tokio::time::timeout(deadline, reading)
+                .await
+                .unwrap()
+                .unwrap();
+            let response = tokio::time::timeout(deadline, c.patch(&url, 100, &bytes[100..])).await;
+            // Release before asserting so a blocking lookup cannot hang the test.
+            release.send(()).unwrap();
+            response.expect("competing final PATCH waited for the upload lock")
+        }
+    );
+    assert_eq!(winner.status(), StatusCode::NO_CONTENT);
+    assert_eq!(winner.headers()["upload-result"], "created");
+    assert!(
+        winner.headers()["location"]
+            .as_bytes()
+            .starts_with(b"/admin/api/photos/")
+    );
+    assert_eq!(loser.status(), StatusCode::CONFLICT);
+    assert!(!loser.headers().contains_key("upload-result"));
+    assert_eq!(
+        c.patch(&url, 100, &bytes[100..]).await.status(),
+        StatusCode::CONFLICT,
+        "a competitor arriving after commit must also get 409"
+    );
+    assert_eq!(
+        sqlx::query_scalar!("SELECT count(*) FROM photos")
+            .fetch_one(&c.pool)
+            .await
+            .unwrap(),
+        Some(1)
+    );
+    c.no_pending().await;
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn tus_completed_patch_conflicts_are_owner_scoped_and_expire(pool: PgPool) {
+    let c = Client::new(pool).await;
+    let other = Client::new(c.pool.clone()).await;
+    let bytes = fixture("chart-srgb.png");
+    let mut urls = Vec::new();
+    for result in ["created", "duplicate"] {
+        let url = c.start(bytes.len()).await;
+        let response = c.patch(&url, 0, &bytes).await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(response.headers()["upload-result"], result);
+        assert_eq!(
+            c.patch(&url, 0, &bytes).await.status(),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            other.patch(&url, 0, &bytes).await.status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            c.send("HEAD", &url, &[], Body::empty()).await.status(),
+            StatusCode::NOT_FOUND
+        );
+        urls.push(url);
+    }
+    assert_eq!(
+        c.patch(&format!("/admin/upload/{}", Uuid::now_v7()), 0, &bytes)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let id: Uuid = urls[0].rsplit('/').next().unwrap().parse().unwrap();
+    sqlx::query!(
+        "UPDATE completed_uploads SET expires_at=now()-interval '1 second' WHERE id=$1",
+        id
+    )
+    .execute(&c.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        c.patch(&urls[0], 0, &bytes).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    yhotos_pipeline::Ingest::new(
+        c.state.store.clone(),
+        c.pool.clone(),
+        env!("CARGO_BIN_EXE_yhotos-codec-host").into(),
+    )
+    .sweep_uploads()
+    .await
+    .unwrap();
+    assert_eq!(
+        sqlx::query_scalar!("SELECT count(*) FROM completed_uploads")
+            .fetch_one(&c.pool)
+            .await
+            .unwrap(),
+        Some(1)
+    );
+    assert_eq!(
+        c.patch(&urls[1], 0, &bytes).await.status(),
+        StatusCode::CONFLICT
+    );
+    c.no_pending().await;
+}
+
 #[sqlx::test(migrations = "../yhotos-db/migrations")]
 async fn tus_malicious_files_rejected_wrong_extension_accepted_and_names_sanitized(pool: PgPool) {
     let c = Client::new(pool).await;

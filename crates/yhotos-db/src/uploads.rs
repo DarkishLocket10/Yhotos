@@ -87,6 +87,23 @@ pub async fn lock_for_write(
     let Some(row) = lock(conn, id, user).await? else {
         return Ok(None);
     };
+    lock_live_album(conn, row).await
+}
+/// Locks an owned, unexpired upload without waiting, then locks its live destination.
+/// A missing row may have completed; callers must check `was_completed` before returning 404.
+/// # Errors
+/// Returns SQLSTATE 55P03 on upload lock contention, or other database errors.
+pub async fn lock_for_patch(
+    conn: &mut PgConnection,
+    id: Uuid,
+    user: UserId,
+) -> Result<Option<Upload>, DbError> {
+    let Some(row) = sqlx::query_as!(Upload,r#"SELECT id,user_id AS "user_id: _",album_id AS "album_id: _",filename,declared_bytes,received_bytes,mime_hint,tmp_path,metadata,expires_at,created_at FROM uploads WHERE id=$1 AND user_id=$2 AND expires_at>now() FOR UPDATE NOWAIT"#,id,user.0).fetch_optional(&mut *conn).await? else {
+        return Ok(None);
+    };
+    lock_live_album(conn, row).await
+}
+async fn lock_live_album(conn: &mut PgConnection, row: Upload) -> Result<Option<Upload>, DbError> {
     if sqlx::query!(
         "SELECT id FROM albums WHERE id=$1 AND deleted_at IS NULL FOR SHARE",
         row.album_id.0
@@ -117,6 +134,49 @@ pub async fn advance(conn: &mut PgConnection, id: Uuid, offset: i64) -> Result<(
 /// Returns database errors.
 pub async fn remove(conn: &mut PgConnection, id: Uuid) -> Result<(), DbError> {
     sqlx::query!("DELETE FROM uploads WHERE id=$1", id)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+/// Records successful completion in the same transaction that removes the upload.
+/// The owner-only marker also covers duplicate uploads and expires after 24 hours.
+/// # Errors
+/// Returns database errors.
+pub async fn record_completion(
+    conn: &mut PgConnection,
+    id: Uuid,
+    user: UserId,
+) -> Result<(), DbError> {
+    sqlx::query!(
+        "INSERT INTO completed_uploads(id,user_id) VALUES($1,$2)",
+        id,
+        user.0
+    )
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+/// Recognizes only recent completions belonging to the authenticated upload owner.
+/// # Errors
+/// Returns database errors.
+pub async fn was_completed(
+    conn: &mut PgConnection,
+    id: Uuid,
+    user: UserId,
+) -> Result<bool, DbError> {
+    Ok(sqlx::query_scalar!(
+        r#"SELECT EXISTS(SELECT 1 FROM completed_uploads WHERE id=$1 AND user_id=$2 AND expires_at>now()) AS "completed!""#,
+        id,
+        user.0
+    )
+    .fetch_one(conn)
+    .await?)
+}
+/// Removes completion markers after their fixed retention period.
+/// # Errors
+/// Returns database errors.
+pub async fn remove_expired_completions(conn: &mut PgConnection) -> Result<(), DbError> {
+    sqlx::query!("DELETE FROM completed_uploads WHERE expires_at<=now()")
         .execute(conn)
         .await?;
     Ok(())

@@ -106,6 +106,9 @@ impl Ingest {
                 .begin()
                 .await
                 .map_err(|_| retry("upload sweep failed"))?;
+            yhotos_db::uploads::remove_expired_completions(&mut tx)
+                .await
+                .map_err(|_| retry("upload sweep failed"))?;
             let rows = yhotos_db::uploads::expired(&mut tx)
                 .await
                 .map_err(|_| retry("upload sweep failed"))?;

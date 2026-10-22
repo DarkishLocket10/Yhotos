@@ -120,7 +120,7 @@ async fn grant_matrix_catalog_and_forbidden_statements(pool: PgPool) {
     .fetch_all(&pool)
     .await
     .unwrap();
-    assert_eq!(rows.len(), 32 * 3);
+    assert_eq!(rows.len(), 34 * 3);
     for row in rows {
         let actual = (row.select, row.insert, row.update, row.delete);
         let expected = match row.role.as_str() {
@@ -151,7 +151,8 @@ async fn grant_matrix_catalog_and_forbidden_statements(pool: PgPool) {
                 (true, true, true, true)
             }
             "yhotos_public" => (
-                !["user_mfa", "audit_log", "uploads"].contains(&row.table.as_str()),
+                !["user_mfa", "audit_log", "uploads", "completed_uploads"]
+                    .contains(&row.table.as_str()),
                 [
                     "events",
                     "likes",

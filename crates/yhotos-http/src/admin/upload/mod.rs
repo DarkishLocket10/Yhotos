@@ -284,9 +284,27 @@ async fn patch(
     let offset = number(request.headers(), "upload-offset")?;
     let mut tx = pool(&state)?.begin().await?;
     uploads::patch_deadline(&mut tx, state.config.worker.codec_timeout + 120).await?;
-    let mut row = uploads::lock_for_write(&mut tx, id, current.0.session.user_id)
-        .await?
-        .ok_or(HttpError::NotFound)?;
+    let row = uploads::lock_for_patch(&mut tx, id, current.0.session.user_id)
+        .await
+        .map_err(|error| match error {
+            yhotos_db::DbError::Sqlx(sqlx::Error::Database(ref database))
+                if database.code().as_deref() == Some("55P03") =>
+            {
+                HttpError::Upload(StatusCode::CONFLICT)
+            }
+            _ => HttpError::from(error),
+        })?;
+    let Some(mut row) = row else {
+        // Completion inserts the owner marker and deletes the upload atomically.
+        // A fresh statement snapshot also observes a winner that just committed.
+        return Err(
+            if uploads::was_completed(&mut tx, id, current.0.session.user_id).await? {
+                HttpError::Upload(StatusCode::CONFLICT)
+            } else {
+                HttpError::NotFound
+            },
+        );
+    };
     if offset != row.received_bytes {
         return Err(HttpError::Upload(StatusCode::CONFLICT));
     }
@@ -433,6 +451,7 @@ async fn complete(
         .map_err(internal)?;
         (photo, "created")
     };
+    uploads::record_completion(&mut tx, id, row.user_id).await?;
     uploads::remove(&mut tx, id).await?;
     tx.commit().await?;
     // A crash after commit leaves only an orphan directory; the hourly sweep removes it.

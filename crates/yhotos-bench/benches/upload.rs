@@ -34,8 +34,8 @@ fn upload(c: &mut Criterion) {
     });
     c.bench_function("tus_metadata_parse",|b|b.iter(||yhotos_http::admin::upload::headers::metadata(std::hint::black_box("filename cGhvdG8uanBn,album MDE5YTFiMzQtNGM1Ni03Nzg5LThiOTAtMTIzNDU2Nzg5YWJj,filetype aW1hZ2UvanBlZw=="))));
 }
-// Compare the previous owner-only lookup with the live-album check on the same
-// connection and rows. All fixture changes are rolled back after measurement.
+// Compare blocking lookups with PATCH's NOWAIT lookup on the same connection
+// and rows. All fixture changes are rolled back after measurement.
 fn write_authorization(c: &mut Criterion) {
     let Ok(url) = std::env::var("DATABASE_URL") else {
         eprintln!("Skipping tus write authorization benchmark: DATABASE_URL absent");
@@ -77,14 +77,18 @@ fn write_authorization(c: &mut Criterion) {
         ))
         .unwrap();
     let mut group = c.benchmark_group("tus_write_authorization");
-    for (name, check_album) in [("owner_only", false), ("owner_and_live_album", true)] {
+    for (name, lookup) in [
+        ("owner_only", 0),
+        ("owner_and_live_album", 1),
+        ("patch_nowait_and_live_album", 2),
+    ] {
         group.bench_function(name, |b| {
             b.iter(|| {
                 runtime.block_on(async {
-                    let locked = if check_album {
-                        uploads::lock_for_write(&mut tx, row.id, user.id).await
-                    } else {
-                        uploads::lock(&mut tx, row.id, user.id).await
+                    let locked = match lookup {
+                        0 => uploads::lock(&mut tx, row.id, user.id).await,
+                        1 => uploads::lock_for_write(&mut tx, row.id, user.id).await,
+                        _ => uploads::lock_for_patch(&mut tx, row.id, user.id).await,
                     }
                     .unwrap();
                     assert!(std::hint::black_box(locked).is_some());
