@@ -39,6 +39,7 @@ impl Reply {
     fn text(&self) -> &str {
         std::str::from_utf8(&self.body).unwrap()
     }
+    #[cfg(feature = "admin")]
     fn json(&self) -> serde_json::Value {
         serde_json::from_slice(&self.body).unwrap()
     }
@@ -103,7 +104,11 @@ impl Client {
                 .unwrap()
                 .split_once('=')
                 .unwrap();
-            self.jar.insert(k.into(), v.into());
+            if cookie.to_str().unwrap().contains("Max-Age=0") {
+                self.jar.remove(k);
+            } else {
+                self.jar.insert(k.into(), v.into());
+            }
         }
         Reply {
             status: response.status(),
@@ -510,13 +515,13 @@ async fn passphrase_lockout_cookie_scope_and_revocation(pool: PgPool) {
     drop(c);
     let unlocked = client.unlock(&f.app, &path, password.expose_secret()).await;
     assert_eq!(unlocked.status, StatusCode::OK, "{}", unlocked.text());
-    let name = cookie_name(link.id);
-    assert!(client.jar.contains_key(&name));
+    let name = COOKIE_NAME;
+    assert!(client.jar.contains_key(name));
     let cookie = unlocked
         .headers
         .get_all(header::SET_COOKIE)
         .iter()
-        .find(|v| v.to_str().unwrap().starts_with(&name))
+        .find(|v| v.to_str().unwrap().starts_with(name))
         .unwrap()
         .to_str()
         .unwrap();
@@ -527,14 +532,14 @@ async fn passphrase_lockout_cookie_scope_and_revocation(pool: PgPool) {
     assert_eq!(image.status, StatusCode::OK);
     assert_eq!(image.headers[header::CACHE_CONTROL], "private, no-store");
     let session = sqlx::query!(
-        "SELECT user_id,share_link_id FROM sessions WHERE share_link_id=$1",
+        "SELECT s.user_id,sl.share_link_id FROM sessions s JOIN share_session_links sl ON sl.session_id=s.id WHERE sl.share_link_id=$1",
         link.id.0
     )
     .fetch_one(&f.pool)
     .await
     .unwrap();
     assert!(session.user_id.is_none());
-    assert_eq!(session.share_link_id, Some(link.id.0));
+    assert_eq!(session.share_link_id, link.id.0);
     share_links::revoke(&mut f.pool.acquire().await.unwrap(), link.id)
         .await
         .unwrap();
@@ -800,7 +805,13 @@ async fn digest_only_cache_query_budgets_and_no_token_in_tracing(pool: PgPool) {
         // sqlx query telemetry is counted on this task, excluding background LISTEN.
         let shares = &f.state.auth.as_ref().unwrap().shares;
         let hash = row.token_hash.as_slice().try_into().unwrap();
-        assert!(shares.link(&f.state, hash).await.unwrap().is_some());
+        assert!(
+            shares
+                .page(&f.state, hash, 1, photos::PageSort::Taken)
+                .await
+                .unwrap()
+                .is_some()
+        );
         let count = || {
             observer
                 .0
@@ -812,7 +823,10 @@ async fn digest_only_cache_query_budgets_and_no_token_in_tracing(pool: PgPool) {
         };
         let cold = count();
         assert_eq!(cold, 1, "{:?}", observer.0.lock().unwrap());
-        shares.link(&f.state, hash).await.unwrap();
+        shares
+            .page(&f.state, hash, 1, photos::PageSort::Taken)
+            .await
+            .unwrap();
         assert_eq!(count(), cold);
         let mut client = Client::default();
         assert_eq!(client.get(&f.app, &path).await.status, StatusCode::OK);
@@ -824,7 +838,7 @@ async fn digest_only_cache_query_budgets_and_no_token_in_tracing(pool: PgPool) {
         assert_eq!(count(), before);
         let before = count();
         assert_eq!(client.get(&f.app, &path).await.status, StatusCode::OK);
-        assert_eq!(count(), before + 1); // Only required open write.
+        assert_eq!(count(), before + 4, "{:?}", observer.0.lock().unwrap()); // One transaction: open, LRU refresh and scope reload.
     }
     .with_subscriber(tracing_subscriber::registry().with(capture))
     .await;
@@ -910,7 +924,7 @@ async fn admin_create_patch_stats_revoke_and_listener_isolation(pool: PgPool) {
 #[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
 async fn session_binding_multiple_links_and_idle_absolute_hard_expiry(pool: PgPool) {
     let f = Fixture::new(pool).await;
-    let (row, path) = f.link(ShareTarget::Album(f.album), None, flags()).await;
+    let (_, path) = f.link(ShareTarget::Album(f.album), None, flags()).await;
     let other = f.album(None, "second", Visibility::Restricted).await;
     let (_, image, _) = Fixture::add_photo(&f.pool, &f.state, other, "Second scope").await;
     let password = yhotos_auth::generate_temp_password();
@@ -923,9 +937,15 @@ async fn session_binding_multiple_links_and_idle_absolute_hard_expiry(pool: PgPo
         .await;
     let mut client = Client::default();
     client.get(&f.app, &path).await;
-    let first = client.jar.get(&cookie_name(row.id)).unwrap().clone();
+    let first = client.jar.get(COOKIE_NAME).unwrap().clone();
     let mut rebound = Client::default();
-    rebound.jar.insert(cookie_name(protected.id), first.clone());
+    rebound.jar.insert(
+        format!(
+            "yl_{}",
+            yhotos_core::ShortId::from_photo_id(PhotoId(protected.id.0))
+        ),
+        first.clone(),
+    );
     let page = rebound.get(&f.app, &protected_path).await;
     assert!(!page.text().contains(&image));
     concealed(&rebound.get(&f.app, &image).await).await;
@@ -935,7 +955,7 @@ async fn session_binding_multiple_links_and_idle_absolute_hard_expiry(pool: PgPo
     let mut account = Client::default();
     account
         .jar
-        .insert(cookie_name(row.id), f.account(false).await);
+        .insert(COOKIE_NAME.into(), f.account(false).await);
     concealed(&account.get(&f.app, &f.image).await).await;
     client.get(&f.app, &protected_path).await;
     assert_eq!(
@@ -958,7 +978,7 @@ async fn session_binding_multiple_links_and_idle_absolute_hard_expiry(pool: PgPo
                 h.insert(header::COOKIE, client.cookie().parse().unwrap());
                 h
             },
-            &cookie_name(row.id),
+            COOKIE_NAME,
             TokenKind::Session,
         )
         .unwrap();
@@ -1001,7 +1021,7 @@ async fn passphrase_change_serializes_with_session_issuance(pool: PgPool) {
     let change = share_links::set_passphrase(&mut admin, row.id, Some(phc.as_str()));
     tokio::pin!(change);
     // The admin change waits for the issuing transaction. Once it acquires
-    // the link lock, its trigger sees and deletes the newly committed session.
+    // the link lock, its trigger sees and removes the newly committed grant.
     assert!(
         tokio::time::timeout(std::time::Duration::from_millis(50), &mut change)
             .await
@@ -1009,10 +1029,13 @@ async fn passphrase_change_serializes_with_session_issuance(pool: PgPool) {
     );
     tx.commit().await.unwrap();
     change.await.unwrap();
-    let count = sqlx::query_scalar!("SELECT count(*) FROM sessions WHERE id=$1", session.id)
-        .fetch_one(&f.pool)
-        .await
-        .unwrap();
+    let count = sqlx::query_scalar!(
+        "SELECT count(*) FROM share_session_links WHERE session_id=$1",
+        session.id
+    )
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
     assert_eq!(count, Some(0));
 }
 
@@ -1316,4 +1339,252 @@ async fn share_short_circuits_and_fallbacks_are_always_private() {
         .await;
     assert_eq!(csrf.status, StatusCode::FORBIDDEN);
     assert_eq!(csrf.headers[header::CACHE_CONTROL], "private, no-store");
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn one_cookie_seventeen_landings_home_and_sixty_link_lru(pool: PgPool) {
+    let f = Fixture::new(pool).await;
+    let other = f.album(None, "other", Visibility::Restricted).await;
+    let (_, other_image, _) = Fixture::add_photo(&f.pool, &f.state, other, "Other scope").await;
+    let mut client = Client::default();
+    // Old cookies, including malformed values, never authorize or block browsing.
+    for index in 0..80 {
+        client
+            .jar
+            .insert(format!("yl_{index:012}"), "malformed".into());
+    }
+    client
+        .jar
+        .insert("yl_old-name.with-dots".into(), "ignored".into());
+    assert_eq!(client.get(&f.app, "/").await.status, StatusCode::OK);
+    let mut visited = Vec::new();
+    let mut bearer = None;
+    for index in 0..60 {
+        let target = if index == 0 { f.album } else { other };
+        let (row, path) = f.link(ShareTarget::Album(target), None, flags()).await;
+        let page = client.get(&f.app, &path).await;
+        assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+        assert!(!client.jar.keys().any(|k| k.starts_with("yl_")));
+        assert_eq!(
+            client
+                .jar
+                .keys()
+                .filter(|k| k.as_str() == COOKIE_NAME)
+                .count(),
+            1
+        );
+        let current = client.jar[COOKIE_NAME].clone();
+        assert_eq!(bearer.get_or_insert_with(|| current.clone()), &current);
+        visited.push((row.id, path));
+        if index == 16 {
+            assert_eq!(client.get(&f.app, "/").await.status, StatusCode::OK);
+            assert_eq!(client.get(&f.app, &f.image).await.status, StatusCode::OK);
+        }
+        if index == 49 {
+            // A revisit, rather than creation order, determines the eviction order.
+            assert_eq!(
+                client.get(&f.app, &visited[5].1).await.status,
+                StatusCode::OK
+            );
+        }
+    }
+    let hash = digest(&client.jar[COOKIE_NAME], TokenKind::Session).unwrap();
+    let mut c = f.pool.acquire().await.unwrap();
+    let session = share_links::load_session(&mut c, &hash)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.links.len(), 50);
+    let sessions = sqlx::query_scalar!("SELECT count(*) FROM sessions WHERE is_share")
+        .fetch_one(&mut *c)
+        .await
+        .unwrap();
+    assert_eq!(sessions, Some(1));
+    for (index, (id, _)) in visited.iter().enumerate() {
+        assert_eq!(
+            session.links.iter().any(|l| l.link_id == *id),
+            index == 5 || index >= 11
+        );
+    }
+    drop(c);
+    assert_eq!(client.get(&f.app, "/").await.status, StatusCode::OK);
+    concealed(&client.get(&f.app, &f.image).await).await;
+    assert_eq!(
+        client.get(&f.app, &other_image).await.status,
+        StatusCode::OK
+    );
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn invalid_share_cookie_is_cleared_without_blocking_home(pool: PgPool) {
+    let f = Fixture::new(pool).await;
+    let mut client = Client::default();
+    for value in [
+        "invalid".to_owned(),
+        Token::generate().encode(TokenKind::Session),
+    ] {
+        client.jar.insert(COOKIE_NAME.into(), value);
+        let reply = client.get(&f.app, "/").await;
+        assert_eq!(reply.status, StatusCode::OK);
+        assert!(!client.jar.contains_key(COOKIE_NAME));
+        assert!(reply.headers.get_all(header::SET_COOKIE).iter().any(|h| {
+            let h = h.to_str().unwrap();
+            h.starts_with(COOKIE_NAME) && h.contains("Max-Age=0")
+        }));
+    }
+    let (_, path) = f.link(ShareTarget::Album(f.album), None, flags()).await;
+    client.get(&f.app, &path).await;
+    // Unrelated and duplicate legacy names must not cause a 400 or extra lookups.
+    for index in 0..80 {
+        client.jar.insert(format!("ignored_{index}"), "x".into());
+    }
+    assert_eq!(client.get(&f.app, "/").await.status, StatusCode::OK);
+    assert_eq!(client.get(&f.app, &f.image).await.status, StatusCode::OK);
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn changed_passphrase_and_expiry_remove_only_their_memberships(pool: PgPool) {
+    let f = Fixture::new(pool).await;
+    let other = f.album(None, "remaining", Visibility::Restricted).await;
+    let (_, other_image, _) = Fixture::add_photo(&f.pool, &f.state, other, "Remaining").await;
+    let (changed, changed_path) = f.link(ShareTarget::Album(f.album), None, flags()).await;
+    let (expired, expired_path) = f.link(ShareTarget::Album(f.album), None, flags()).await;
+    let (remaining, path) = f.link(ShareTarget::Album(other), None, flags()).await;
+    let mut client = Client::default();
+    for path in [&changed_path, &expired_path, &path] {
+        assert_eq!(client.get(&f.app, path).await.status, StatusCode::OK);
+    }
+    let password = yhotos_auth::generate_temp_password();
+    let phc = yhotos_auth::PasswordHasher::for_tests()
+        .hash_password(&passphrase(password.expose_secret()))
+        .unwrap();
+    let mut c = f.pool.acquire().await.unwrap();
+    share_links::set_passphrase(&mut c, changed.id, Some(phc.as_str()))
+        .await
+        .unwrap();
+    share_links::set_expiry(
+        &mut c,
+        expired.id,
+        Some(OffsetDateTime::now_utc() - time::Duration::seconds(1)),
+    )
+    .await
+    .unwrap();
+    drop(c);
+    f.invalidate();
+    concealed(&client.get(&f.app, &f.image).await).await;
+    assert_eq!(
+        client.get(&f.app, &other_image).await.status,
+        StatusCode::OK
+    );
+    let hash = digest(&client.jar[COOKIE_NAME], TokenKind::Session).unwrap();
+    let session = share_links::load_session(&mut f.pool.acquire().await.unwrap(), &hash)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(session.links.len(), 1);
+    assert_eq!(session.links[0].link_id, remaining.id);
+    let removed = sqlx::query_scalar!(
+        "SELECT count(*) FROM share_session_links WHERE share_link_id=ANY($1)",
+        &[changed.id.0, expired.id.0]
+    )
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    assert_eq!(removed, Some(0));
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn nondefault_landing_and_expired_caches_never_load_a_page_for_an_image(pool: PgPool) {
+    crate::files::tests::init_capture();
+    let f = Fixture::new(pool).await;
+    let (_, path) = f.link(ShareTarget::Album(f.album), None, flags()).await;
+    let hash = f.original.split('/').nth(2).unwrap();
+    photos::owner_of_hash(&mut f.state.pool.acquire().await.unwrap(), hash)
+        .await
+        .unwrap();
+    let mut client = Client::default();
+    let landing = client.get(&f.app, &format!("{path}?sort=name")).await;
+    assert_eq!(landing.status, StatusCode::OK);
+    let (image, queries) = crate::files::tests::count_queries(client.get(&f.app, &f.image)).await;
+    assert_eq!(image.status, StatusCode::OK);
+    assert_eq!(queries, 1); // Task 008 lookup only, despite a nondefault landing sort.
+    let (_, queries) = crate::files::tests::count_queries(client.get(&f.app, &f.image)).await;
+    assert_eq!(queries, 0);
+    // Exercise real TTL expiry, independently of revocation/explicit invalidation.
+    tokio::time::sleep(std::time::Duration::from_secs(31)).await;
+    let capture = Capture::default();
+    let observer = capture.clone();
+    f.state.files.invalidate_all();
+    let image = client
+        .get(&f.app, &f.image)
+        .with_subscriber(tracing_subscriber::registry().with(capture))
+        .await;
+    assert_eq!(image.status, StatusCode::OK);
+    let queries = observer
+        .0
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|s| s.starts_with("sqlx::query"))
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(queries.len(), 2, "{queries:?}"); // One small session-set read plus task 008.
+    assert!(
+        queries.iter().any(|s| s.contains("current_session")),
+        "{queries:?}"
+    );
+    assert!(
+        queries
+            .iter()
+            .all(|s| !s.contains("album_payload") && !s.contains("shared_link AS")),
+        "{queries:?}"
+    );
+    let (_, queries) = crate::files::tests::count_queries(client.get(&f.app, &f.image)).await;
+    assert_eq!(queries, 0);
+    // Every landing, including a warm nondefault page, reseeds the scope caches.
+    client.get(&f.app, &format!("{path}?sort=manual")).await;
+    f.state.files.invalidate_all();
+    let (_, queries) = crate::files::tests::count_queries(client.get(&f.app, &f.image)).await;
+    assert_eq!(queries, 1);
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn concurrent_unlocks_keep_the_database_set_bounded(pool: PgPool) {
+    let f = Fixture::new(pool).await;
+    let (first, _) = f.link(ShareTarget::Album(f.album), None, flags()).await;
+    let hash = *Token::generate().hash(TokenKind::Session).as_bytes();
+    let mut c = f.pool.acquire().await.unwrap();
+    let mut tx = c.begin().await.unwrap();
+    let session = share_links::create_session(&mut tx, &first, &hash, &[0; 32], "other")
+        .await
+        .unwrap()
+        .unwrap();
+    tx.commit().await.unwrap();
+    drop(c);
+    let mut tasks = tokio::task::JoinSet::new();
+    for _ in 0..59 {
+        let (row, _) = f.link(ShareTarget::Album(f.album), None, flags()).await;
+        let pool = f.pool.clone();
+        tasks.spawn(async move {
+            let mut c = pool.acquire().await.unwrap();
+            let mut tx = c.begin().await.unwrap();
+            assert!(
+                share_links::unlock_session_link(&mut tx, session.id, &row)
+                    .await
+                    .unwrap()
+            );
+            tx.commit().await.unwrap();
+        });
+    }
+    while let Some(result) = tasks.join_next().await {
+        result.unwrap();
+    }
+    let members = sqlx::query_scalar!(
+        "SELECT count(*) FROM share_session_links WHERE session_id=$1",
+        session.id
+    )
+    .fetch_one(&f.pool)
+    .await
+    .unwrap();
+    assert_eq!(members, Some(50));
 }

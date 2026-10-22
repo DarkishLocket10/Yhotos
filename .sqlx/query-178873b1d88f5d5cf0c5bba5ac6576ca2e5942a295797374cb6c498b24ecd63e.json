@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO share_session_links(session_id,share_link_id)\n SELECT $1,id FROM share_session_link($2,$3)\n ON CONFLICT (session_id,share_link_id) DO UPDATE SET unlocked_at=EXCLUDED.unlocked_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "178873b1d88f5d5cf0c5bba5ac6576ca2e5942a295797374cb6c498b24ecd63e"
+}

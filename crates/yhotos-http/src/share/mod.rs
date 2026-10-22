@@ -22,6 +22,7 @@ use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use sqlx::Connection;
 use std::sync::Arc;
+use subtle::ConstantTimeEq;
 use time::OffsetDateTime;
 use yhotos_auth::{PasswordHash, Token, TokenKind};
 use yhotos_core::{
@@ -168,12 +169,14 @@ pub(crate) fn decode_photos(value: serde_json::Value) -> Result<Vec<Photo>, Http
     }
     Ok(photos)
 }
+#[cfg(feature = "admin")]
 fn target(link: &ShareLinkRow) -> ShareTarget {
     match link.target_kind {
         share_links::TargetKind::Album => ShareTarget::Album(AlbumId(link.target_id)),
         share_links::TargetKind::Photo => ShareTarget::Photo(PhotoId(link.target_id)),
     }
 }
+#[cfg(feature = "admin")]
 fn scoped(link: &ShareLinkRow) -> ScopedLink {
     ScopedLink {
         target: target(link),
@@ -197,55 +200,74 @@ fn digest(value: &str, expected: TokenKind) -> Option<[u8; 32]> {
     let (kind, token) = Token::decode(value).ok()?;
     (kind == expected).then(|| *token.hash(kind).as_bytes())
 }
-fn cookie_name(id: ShareLinkId) -> String {
-    format!("yl_{}", yhotos_core::ShortId::from_photo_id(PhotoId(id.0)))
+/// A single bearer cookie holds no link ids or capabilities.
+pub(crate) const COOKIE_NAME: &str = "__Host-yhotos-share";
+fn valid_session(session: &share_links::LinkSession, hash: &[u8; 32]) -> bool {
+    let now = OffsetDateTime::now_utc();
+    bool::from(session.token_hash.as_slice().ct_eq(hash))
+        && session.expires_at > now
+        && session.last_seen_at > now - time::Duration::days(14)
+        && session.created_at > now - time::Duration::days(90)
+        && session.created_at <= session.last_seen_at
+        && session.created_at <= now
 }
 pub(crate) async fn resolve(state: &AppState, headers: &HeaderMap) -> Result<Links, HttpError> {
     let Some(auth) = &state.auth else {
         return Ok(Links::default());
     };
+    let Some(hash) = auth::cookie(headers, COOKIE_NAME).and_then(|v| digest(v, TokenKind::Session))
+    else {
+        return Ok(Links::default());
+    };
+    let Some(session) = auth
+        .shares
+        .session(state, hash)
+        .await?
+        .filter(|s| valid_session(s, &hash))
+    else {
+        return Ok(Links::default());
+    };
     let mut links = Links::default();
-    let mut count = 0;
-    for h in headers.get_all(header::COOKIE) {
-        let Ok(h) = h.to_str() else { continue };
-        for pair in h.split(';') {
-            let Some((name, _)) = pair.trim().split_once('=') else {
-                continue;
-            };
-            if !name.starts_with("yl_") || name.len() != 15 {
-                continue;
-            }
-            count += 1;
-            if count > 16 {
-                return Err(HttpError::BadRequest);
-            }
-            let Some(hash) =
-                auth::cookie(headers, name).and_then(|v| digest(v, TokenKind::Session))
-            else {
-                continue;
-            };
-            let Some(session) = auth.shares.session(state, hash).await? else {
-                continue;
-            };
-            if cookie_name(session.link_id) != name
-                || session.expires_at <= OffsetDateTime::now_utc()
-                || session.last_seen_at <= OffsetDateTime::now_utc() - time::Duration::days(14)
-                || session.created_at <= OffsetDateTime::now_utc() - time::Duration::days(90)
-            {
-                continue;
-            }
-            let Ok(hash) = session.link_hash.as_slice().try_into() else {
-                continue;
-            };
-            let Some(snapshot) = auth.shares.link(state, hash).await? else {
-                continue;
-            };
-            if active(&snapshot.landing.link) {
-                links.0.push(scoped(&snapshot.landing.link));
-            }
+    for member in &session.links {
+        let scope = auth.shares.scope(member).await;
+        if !scope.flags.view
+            || scope
+                .expires_at
+                .is_some_and(|t| t <= OffsetDateTime::now_utc().unix_timestamp())
+        {
+            continue;
         }
+        links.0.push(ScopedLink {
+            target: match scope.target_kind {
+                share_links::TargetKind::Album => ShareTarget::Album(AlbumId(scope.target_id)),
+                share_links::TargetKind::Photo => ShareTarget::Photo(PhotoId(scope.target_id)),
+            },
+            link_id: scope.link_id,
+            caps: LinkFlags {
+                view: scope.flags.view,
+                download: scope.flags.download,
+                like: scope.flags.like,
+                flag: scope.flags.flag,
+            },
+        });
     }
     Ok(links)
+}
+// Ignore all unknown values. Legacy names are accepted only as cookie names for
+// deletion; they never trigger token decoding, a query, or an authorization.
+fn legacy_names(headers: &HeaderMap) -> impl Iterator<Item = &str> {
+    headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|h| h.to_str().ok())
+        .flat_map(|h| h.split(';'))
+        .filter_map(|p| p.trim().split_once('=').map(|(name, _)| name))
+        .filter(|name| {
+            name.starts_with("yl_")
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&b))
+        })
 }
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
@@ -293,16 +315,15 @@ async fn landing(
         auth::ua(request.headers()),
         OffsetDateTime::now_utc(),
     )?;
-    let mut c = auth::required(&state)?
-        .db(Audience(false))?
-        .pool()
-        .acquire()
-        .await?;
-    share_links::record_open(&mut c, s.landing.link.id, &visitor, None, None).await?;
-    drop(c);
     if s.landing.link.passphrase_hash.is_some()
         && !links.0.iter().any(|l| l.link_id == s.landing.link.id)
     {
+        let mut c = auth::required(&state)?
+            .db(Audience(false))?
+            .pool()
+            .acquire()
+            .await?;
+        share_links::record_open(&mut c, s.landing.link.id, &visitor, None, None).await?;
         return views::unlock(request.headers(), false);
     }
     let mut response = views::page(
@@ -313,16 +334,15 @@ async fn landing(
         number,
         sort,
     )?;
-    if !links.0.iter().any(|l| l.link_id == s.landing.link.id) {
-        issue_session(
-            &state,
-            &s.landing.link,
-            request.headers(),
-            auth::ip(&state, &request)?,
-            &mut response,
-        )
-        .await?;
-    }
+    issue_session(
+        &state,
+        &s.landing.link,
+        request.headers(),
+        auth::ip(&state, &request)?,
+        &mut response,
+        Some(&visitor),
+    )
+    .await?;
     Ok(response)
 }
 async fn issue_session(
@@ -331,29 +351,59 @@ async fn issue_session(
     headers: &HeaderMap,
     ip: [u8; 32],
     response: &mut Response,
+    visitor: Option<&[u8; 32]>,
 ) -> Result<(), HttpError> {
-    let token = Token::generate();
-    let hash = *token.hash(TokenKind::Session).as_bytes();
-    let name = cookie_name(link.id);
-    let mut c = auth::required(state)?
-        .db(Audience(false))?
-        .pool()
-        .acquire()
-        .await?;
+    let auth = auth::required(state)?;
+    let carried = auth::cookie(headers, COOKIE_NAME).and_then(|v| digest(v, TokenKind::Session));
+    let existing = if let Some(hash) = carried {
+        auth.shares
+            .session(state, hash)
+            .await?
+            .filter(|s| valid_session(s, &hash))
+    } else {
+        None
+    };
+    let mut c = auth.db(Audience(false))?.pool().acquire().await?;
     let mut tx = c.begin().await?;
-    if let Some(old) = auth::token_hash(headers, &name, TokenKind::Session) {
-        share_links::rotate_session(&mut tx, link.id, &old).await?;
+    if let Some(visitor) = visitor {
+        share_links::record_open(&mut tx, link.id, visitor, None, None).await?;
     }
-    let shares = &auth::required(state)?.shares;
-    let epoch = shares.epoch();
-    let session = share_links::create_session(&mut tx, link, &hash, &ip, auth::ua(headers))
-        .await?
-        .ok_or(HttpError::NotFound)?;
+    let epoch = auth.shares.epoch();
+    let (hash, session, new_token) = if let (Some(existing), Some(hash)) = (existing, carried) {
+        if !share_links::unlock_session_link(&mut tx, existing.id, link).await? {
+            return Err(HttpError::NotFound);
+        }
+        let session = share_links::load_session(&mut tx, &hash)
+            .await?
+            .ok_or(HttpError::NotFound)?;
+        (hash, session, None)
+    } else {
+        let token = Token::generate();
+        let hash = *token.hash(TokenKind::Session).as_bytes();
+        let session = share_links::create_session(&mut tx, link, &hash, &ip, auth::ua(headers))
+            .await?
+            .ok_or(HttpError::NotFound)?;
+        (hash, session, Some(token))
+    };
+    let revision = auth.shares.session_revision(hash);
     tx.commit().await?;
-    shares.remember_session(epoch, hash, session).await;
-    let encoded = Zeroizing::new(token.encode(TokenKind::Session));
-    drop(token);
-    auth::set_cookie(response, Audience(false).cookie(&name, &encoded, false)?);
+    auth.shares
+        .remember_session(epoch, revision, hash, session)
+        .await;
+    let encoded = Zeroizing::new(if let Some(token) = new_token {
+        token.encode(TokenKind::Session)
+    } else {
+        auth::cookie(headers, COOKIE_NAME)
+            .ok_or(HttpError::NotFound)?
+            .to_owned()
+    });
+    auth::set_cookie(
+        response,
+        Audience(false).cookie(COOKIE_NAME, &encoded, false)?,
+    );
+    for name in legacy_names(headers) {
+        auth::set_cookie(response, Audience(false).cookie(name, "", true)?);
+    }
     Ok(())
 }
 // Prehashing permits the scope's "any string" passphrases without weakening or
@@ -421,7 +471,9 @@ async fn unlock(
         .try_acquire_owned()
         .map_err(|_| HttpError::RateLimited)?;
     let s = if let Some(hash) = hash {
-        auth.shares.link(&state, hash).await?
+        auth.shares
+            .page(&state, hash, 1, yhotos_db::photos::PageSort::Taken)
+            .await?
     } else {
         None
     };
@@ -512,6 +564,7 @@ async fn unlock(
         request.headers(),
         auth::ip(&state, &request)?,
         &mut response,
+        None,
     )
     .await?;
     Ok(response)

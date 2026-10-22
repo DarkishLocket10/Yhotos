@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO sessions(id,user_id,share_link_id,token_hash,expires_at,ip_hash,ua_class)\n SELECT $1,NULL,id,$3,least(coalesce(expires_at,clock_timestamp()+interval '90 days'),clock_timestamp()+interval '90 days'),$4,$5\n FROM share_session_link($2,$6) WHERE id=$2 AND revoked_at IS NULL AND allow_view\n AND (expires_at IS NULL OR expires_at>clock_timestamp()) AND passphrase_hash IS NOT DISTINCT FROM $6\n RETURNING id,share_link_id as \"link_id!: _\",$7::bytea as \"link_hash!\",expires_at,created_at,last_seen_at",
+  "query": "INSERT INTO sessions(id,user_id,is_share,token_hash,expires_at,ip_hash,ua_class)\n SELECT $1,NULL,true,$3,clock_timestamp()+interval '90 days',$4,$5 FROM share_session_link($2,$6)\n RETURNING id,token_hash,expires_at,created_at,last_seen_at",
   "describe": {
     "columns": [
       {
@@ -16,23 +16,17 @@
       },
       {
         "ordinal": 1,
-        "name": "link_id!: _",
-        "type_info": "Uuid",
+        "name": "token_hash",
+        "type_info": "Bytea",
         "origin": {
           "Table": {
             "table": "sessions",
-            "name": "share_link_id"
+            "name": "token_hash"
           }
         }
       },
       {
         "ordinal": 2,
-        "name": "link_hash!",
-        "type_info": "Bytea",
-        "origin": "Expression"
-      },
-      {
-        "ordinal": 3,
         "name": "expires_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -43,7 +37,7 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 3,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -54,7 +48,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 4,
         "name": "last_seen_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -72,18 +66,16 @@
         "Bytea",
         "Bytea",
         "Text",
-        "Text",
-        "Bytea"
+        "Text"
       ]
     },
     "nullable": [
       false,
-      true,
-      null,
+      false,
       false,
       false,
       false
     ]
   },
-  "hash": "9a07f65d47bce4bca87d1815e3f69268896872ab0983288cf9476387a99ddef5"
+  "hash": "d927ddb97c9e203bfade1869edadae0fbf8c28e6bad567de08f5356ea97bedcf"
 }

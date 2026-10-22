@@ -7,7 +7,8 @@ use uuid::Uuid;
 use yhotos_core::{AlbumId, PhotoId, ShareLinkId, UserId};
 
 /// Closed values accepted by the database enum.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, sqlx::Type)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, sqlx::Type, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 #[sqlx(type_name = "target_kind", rename_all = "lowercase")]
 pub enum TargetKind {
     /// Album value.
@@ -69,7 +70,7 @@ impl From<ShareLinkRow> for yhotos_core::access::ShareTarget {
     }
 }
 /// Link capabilities, each checked by the caller per action.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, serde::Deserialize)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "four capabilities can be granted independently"
@@ -308,15 +309,45 @@ pub async fn photo_context(
     .await?)
 }
 
-/// The hashed link-session binding and its current share-token digest.
+/// Validated scope metadata, independent of any gallery page or sort order.
+#[derive(Clone, serde::Deserialize)]
+pub struct SessionLink {
+    /// Exact link whose capabilities apply to this scope.
+    pub link_id: ShareLinkId,
+    /// Album or single-photo scope.
+    pub target_kind: TargetKind,
+    /// Target identifier, never an authorization by itself.
+    pub target_id: Uuid,
+    /// UTC Unix expiry seconds, rechecked on cached requests.
+    pub expires_at: Option<i64>,
+    /// Capabilities remain attached to their own link.
+    pub flags: LinkFlags,
+}
+impl From<&ShareLinkRow> for SessionLink {
+    fn from(link: &ShareLinkRow) -> Self {
+        Self {
+            link_id: link.id,
+            target_kind: link.target_kind,
+            target_id: link.target_id,
+            expires_at: link.expires_at.map(OffsetDateTime::unix_timestamp),
+            flags: LinkFlags {
+                view: link.allow_view,
+                download: link.allow_download,
+                like: link.allow_like,
+                flag: link.allow_flag,
+            },
+        }
+    }
+}
+/// A hashed public share session and at most fifty independently unlocked links.
 #[derive(Clone)]
 pub struct LinkSession {
-    /// Session row id for rotation.
+    /// Session row id, never supplied by the cookie.
     pub id: Uuid,
-    /// Exact link binding used to validate the cookie name.
-    pub link_id: ShareLinkId,
-    /// Link digest for cached scope resolution, never a URL token.
-    pub link_hash: Vec<u8>,
+    /// Stored digest, compared in constant time by the caller.
+    pub token_hash: Vec<u8>,
+    /// Scope and capabilities, with no gallery payload.
+    pub links: Vec<SessionLink>,
     /// Hard session expiry, rechecked even on cached loads.
     pub expires_at: OffsetDateTime,
     /// Absolute start, checked even on cached loads.
@@ -325,37 +356,84 @@ pub struct LinkSession {
     pub last_seen_at: OffsetDateTime,
 }
 
-/// Resolves only public link sessions; account and admin bearers never match.
+/// Resolves a public share session and its live scopes in one lightweight statement.
+/// Prunes expired/revoked grants and coalesces activity writes to five minutes.
+/// Account and admin bearers never match; no gallery/photo query is executed.
 ///
 /// # Errors
-/// Returns a database statement or connection failure.
+/// Returns a database statement, connection or malformed stored metadata failure.
 pub async fn load_session(
     c: &mut PgConnection,
     hash: &[u8; 32],
 ) -> Result<Option<LinkSession>, DbError> {
-    Ok(sqlx::query_as!(
-        LinkSession,
-        r#"WITH touched AS (
- UPDATE sessions SET last_seen_at=clock_timestamp() WHERE token_hash=$1 AND user_id IS NULL AND NOT admin
- AND last_seen_at<=clock_timestamp()-interval '5 minutes' AND expires_at>clock_timestamp()
- AND created_at<=last_seen_at AND created_at<=clock_timestamp()
+    let row = sqlx::query!(r#"WITH current_session AS (
+ SELECT * FROM sessions WHERE token_hash=$1 AND is_share AND user_id IS NULL AND NOT admin
+ AND expires_at>clock_timestamp() AND created_at<=last_seen_at AND created_at<=clock_timestamp()
  AND last_seen_at>clock_timestamp()-interval '14 days' AND created_at>clock_timestamp()-interval '90 days'
- RETURNING last_seen_at
+), touched AS (
+ UPDATE sessions SET last_seen_at=clock_timestamp() WHERE id IN (SELECT id FROM current_session)
+ AND last_seen_at<=clock_timestamp()-interval '5 minutes' RETURNING last_seen_at
+), pruned AS (
+ DELETE FROM share_session_links sl USING share_links l,current_session s
+ WHERE sl.session_id=s.id AND sl.share_link_id=l.id
+ AND (l.revoked_at IS NOT NULL OR NOT l.allow_view OR l.expires_at<=clock_timestamp())
 )
- SELECT s.id,s.share_link_id as "link_id!: _",l.token_hash as link_hash,s.expires_at,s.created_at,
- coalesce((SELECT last_seen_at FROM touched),s.last_seen_at) as "last_seen_at!"
- FROM sessions s JOIN share_links l ON l.id=s.share_link_id
- WHERE s.token_hash=$1 AND s.user_id IS NULL AND NOT s.admin AND s.expires_at>clock_timestamp()
- AND s.created_at<=s.last_seen_at AND s.created_at<=clock_timestamp()
- AND s.last_seen_at>clock_timestamp()-interval '14 days'
- AND s.created_at>clock_timestamp()-interval '90 days'"#,
-        &hash[..]
-    )
-    .fetch_optional(c)
-    .await?)
+ SELECT s.id,s.token_hash,s.expires_at,s.created_at,
+ coalesce((SELECT last_seen_at FROM touched),s.last_seen_at) as "last_seen_at!",
+ coalesce((SELECT jsonb_agg(jsonb_build_object(
+ 'link_id',l.id,'target_kind',l.target_kind,'target_id',l.target_id,
+ 'expires_at',floor(extract(epoch FROM l.expires_at))::bigint,
+ 'flags',jsonb_build_object('view',l.allow_view,'download',l.allow_download,'like',l.allow_like,'flag',l.allow_flag)
+ ) ORDER BY sl.unlocked_at DESC,sl.share_link_id DESC)
+ FROM share_session_links sl JOIN share_links l ON l.id=sl.share_link_id
+ WHERE sl.session_id=s.id AND l.revoked_at IS NULL AND l.allow_view
+ AND (l.expires_at IS NULL OR l.expires_at>clock_timestamp())),'[]'::jsonb) as "links!"
+ FROM current_session s"#, &hash[..]).fetch_optional(c).await?;
+    row.map(|row| {
+        let links: Vec<SessionLink> =
+            serde_json::from_value(row.links).map_err(|_| DbError::InvalidInput)?;
+        if links.len() > 50 {
+            return Err(DbError::InvalidInput);
+        }
+        Ok(LinkSession {
+            id: row.id,
+            token_hash: row.token_hash,
+            links,
+            expires_at: row.expires_at,
+            created_at: row.created_at,
+            last_seen_at: row.last_seen_at,
+        })
+    })
+    .transpose()
 }
 
-/// Inserts a link-bound bearer only while the checked passphrase version is current.
+/// Adds or refreshes a grant only while its verified passphrase version is current.
+/// The transaction locks the link against passphrase changes, then serializes LRU
+/// eviction on the session row. The database enforces the fifty-member bound.
+///
+/// # Errors
+/// Returns a database statement or connection failure.
+pub async fn unlock_session_link(
+    c: &mut PgConnection,
+    session: Uuid,
+    link: &ShareLinkRow,
+) -> Result<bool, DbError> {
+    Ok(sqlx::query!(
+        r#"INSERT INTO share_session_links(session_id,share_link_id)
+ SELECT $1,id FROM share_session_link($2,$3)
+ ON CONFLICT (session_id,share_link_id) DO UPDATE SET unlocked_at=EXCLUDED.unlocked_at"#,
+        session,
+        link.id as _,
+        link.passphrase_hash
+    )
+    .execute(c)
+    .await?
+    .rows_affected()
+        == 1)
+}
+
+/// Creates a public share bearer with its first grant at the verified passphrase version.
+/// Session lifetime is independent of each member link's individual expiry.
 ///
 /// # Errors
 /// Returns a database statement or connection failure.
@@ -366,31 +444,31 @@ pub async fn create_session(
     ip_hash: &[u8],
     ua: &str,
 ) -> Result<Option<LinkSession>, DbError> {
-    Ok(sqlx::query_as!(LinkSession,r#"INSERT INTO sessions(id,user_id,share_link_id,token_hash,expires_at,ip_hash,ua_class)
- SELECT $1,NULL,id,$3,least(coalesce(expires_at,clock_timestamp()+interval '90 days'),clock_timestamp()+interval '90 days'),$4,$5
- FROM share_session_link($2,$6) WHERE id=$2 AND revoked_at IS NULL AND allow_view
- AND (expires_at IS NULL OR expires_at>clock_timestamp()) AND passphrase_hash IS NOT DISTINCT FROM $6
- RETURNING id,share_link_id as "link_id!: _",$7::bytea as "link_hash!",expires_at,created_at,last_seen_at"#,
- Uuid::now_v7(),link.id as _,&hash[..],ip_hash,ua,link.passphrase_hash,link.token_hash).fetch_optional(c).await?)
-}
-
-/// Revokes the carried link session during successful unlock, without affecting accounts.
-///
-/// # Errors
-/// Returns a database statement or connection failure.
-pub async fn rotate_session(
-    c: &mut PgConnection,
-    link: ShareLinkId,
-    hash: &[u8],
-) -> Result<(), DbError> {
-    sqlx::query!(
-        "DELETE FROM sessions WHERE share_link_id=$1 AND token_hash=$2",
-        link as _,
-        hash
+    let row = sqlx::query!(
+        r#"INSERT INTO sessions(id,user_id,is_share,token_hash,expires_at,ip_hash,ua_class)
+ SELECT $1,NULL,true,$3,clock_timestamp()+interval '90 days',$4,$5 FROM share_session_link($2,$6)
+ RETURNING id,token_hash,expires_at,created_at,last_seen_at"#,
+        Uuid::now_v7(),
+        link.id as _,
+        &hash[..],
+        ip_hash,
+        ua,
+        link.passphrase_hash
     )
-    .execute(c)
+    .fetch_optional(&mut *c)
     .await?;
-    Ok(())
+    let Some(row) = row else { return Ok(None) };
+    if !unlock_session_link(c, row.id, link).await? {
+        return Ok(None);
+    }
+    Ok(Some(LinkSession {
+        id: row.id,
+        token_hash: row.token_hash,
+        links: vec![SessionLink::from(link)],
+        expires_at: row.expires_at,
+        created_at: row.created_at,
+        last_seen_at: row.last_seen_at,
+    }))
 }
 
 /// Validates that a new target exists and is not in trash.
@@ -419,7 +497,7 @@ pub async fn get_for_update(
     Ok(sqlx::query_as!(ShareLinkRow,r#"SELECT id as "id: _",created_at,updated_at,token_hash,target_kind as "target_kind: _",target_id,passphrase_hash,expires_at,allow_view,allow_download,allow_like,allow_flag,revoked_at,created_by as "created_by: _" FROM share_links WHERE id=$1 FOR UPDATE"#,id as _).fetch_optional(c).await?)
 }
 
-/// Changes the passphrase hash; a trigger revokes all previously unlocked sessions.
+/// Changes the passphrase hash; a trigger removes this link from every unlocked set.
 ///
 /// # Errors
 /// Returns a database statement or connection failure.

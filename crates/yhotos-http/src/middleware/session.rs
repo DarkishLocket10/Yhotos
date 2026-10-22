@@ -66,12 +66,7 @@ async fn run(
     next: Next,
 ) -> Result<Response, HttpError> {
     let name = a.cookie_name(state);
-    let carried = request.headers().get_all(header::COOKIE).iter().any(|h| {
-        h.to_str().is_ok_and(|v| {
-            v.split(';')
-                .any(|p| p.trim().split_once('=').is_some_and(|(k, _)| k == name))
-        })
-    });
+    let carried = cookie_present(request.headers(), name);
     let hash = auth::token_hash(request.headers(), name, TokenKind::Session);
     let loaded = if let (Some(auth), Some(hash)) = (&state.auth, &hash) {
         if a.0 {
@@ -115,14 +110,12 @@ async fn run(
             groups: s.groups.clone(),
             is_admin: a.0 && s.is_admin,
         };
-        if state.auth.is_some() {
-            let ip = auth::ip(state, &request)?;
-            if !bool::from(s.session.ip_hash.as_slice().ct_eq(ip.as_slice()))
-                || s.session.ua_class != auth::ua(request.headers())
-            {
-                // Only coarse fingerprints and an outcome, never raw network data.
-                tracing::info!(user_id=%s.session.user_id,"session fingerprint changed");
-            }
+        let ip = auth::ip(state, &request)?;
+        if !bool::from(s.session.ip_hash.as_slice().ct_eq(ip.as_slice()))
+            || s.session.ua_class != auth::ua(request.headers())
+        {
+            // Only coarse fingerprints and an outcome, never raw network data.
+            tracing::info!(user_id=%s.session.user_id,"session fingerprint changed");
         }
         if s.must_change_password
             && path != a.password()
@@ -143,6 +136,10 @@ async fn run(
     } else if a.0 && !path.starts_with("/admin/login") && !path.starts_with("/static/") {
         gate = Some(auth::redirect(a.login()));
     }
+    let share_carried = !a.0 && cookie_present(request.headers(), crate::share::COOKIE_NAME);
+    // Only the account cookie and the single share cookie are resolved. Unknown
+    // cookie names (including any number of legacy yl_* cookies) cannot reject
+    // an unrelated public request or cause additional database lookups.
     let links = if a.0 {
         crate::share::Links::default()
     } else {
@@ -156,8 +153,13 @@ async fn run(
     } else {
         next.run(request).await
     };
-    if carried && loaded.is_none() && !replaces_cookie(&response, name) {
-        auth::set_cookie(&mut response, a.cookie(name, "", true)?);
+    for (carried, valid, name) in [
+        (carried, loaded.is_some(), name),
+        (share_carried, has_links, crate::share::COOKIE_NAME),
+    ] {
+        if carried && !valid && !replaces_cookie(&response, name) {
+            auth::set_cookie(&mut response, a.cookie(name, "", true)?);
+        }
     }
     if loaded.is_some() || has_links {
         response.headers_mut().insert(
@@ -166,6 +168,14 @@ async fn run(
         );
     }
     Ok(response)
+}
+fn cookie_present(headers: &axum::http::HeaderMap, name: &str) -> bool {
+    headers.get_all(header::COOKIE).iter().any(|h| {
+        h.to_str().is_ok_and(|v| {
+            v.split(';')
+                .any(|p| p.trim().split_once('=').is_some_and(|(k, _)| k == name))
+        })
+    })
 }
 fn replaces_cookie(response: &Response, name: &str) -> bool {
     response

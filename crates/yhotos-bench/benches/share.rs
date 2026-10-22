@@ -104,6 +104,8 @@ fn main() -> BenchResult<()> {
     let auth = runtime.block_on(Auth::new(config, public.clone(), None))?;
     let state = AppState::new(config, public.pool().clone(), store, Some(auth));
     let app = public_router(state.clone());
+    // Scope resolution must be independent of the landing's page-cache key.
+    let path = format!("{path}?sort=name");
     let response = runtime.block_on(request(&app, &path, ""))?;
     let cookie = response
         .headers()
@@ -116,26 +118,40 @@ fn main() -> BenchResult<()> {
     runtime.block_on(first_byte(&app, &image, &cookie))?;
     let mut criterion = Criterion::default().configure_from_args();
     let mut failure = None;
-    for (name, path, cold) in [
-        ("share/landing_warm_including_open_write", &path, false),
+    for (name, path, cold, cold_session) in [
+        (
+            "share/landing_warm_including_open_write",
+            &path,
+            false,
+            false,
+        ),
         (
             "share/landing_cold_with_scope_resolution_and_open_write",
             &path,
             true,
+            true,
         ),
-        ("share/image_warm_first_byte", &image, false),
-        ("share/image_cold_file_lookup_first_byte", &image, true),
+        ("share/image_warm_first_byte", &image, false, false),
+        (
+            "share/image_cold_file_lookup_first_byte",
+            &image,
+            true,
+            false,
+        ),
+        (
+            "share/image_cold_session_and_file_first_byte",
+            &image,
+            true,
+            true,
+        ),
     ] {
         criterion.bench_function(name, |b| {
             b.iter(|| {
-                if cold {
-                    if path.starts_with("/s/") {
-                        if let Some(auth) = &state.auth {
-                            auth.invalidate(Uuid::nil());
-                        }
-                    } else {
-                        state.files.invalidate_all();
-                    }
+                if cold_session && let Some(auth) = &state.auth {
+                    auth.invalidate(Uuid::nil());
+                }
+                if cold && !path.starts_with("/s/") {
+                    state.files.invalidate_all();
                 }
                 if let Err(error) = runtime.block_on(first_byte(&app, path, &cookie)) {
                     failure = Some(error);
