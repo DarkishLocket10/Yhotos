@@ -10,6 +10,7 @@ use crate::{
     AppState,
     error::HttpError,
     middleware::{rate_limit::ClientIp, request_id::REQUEST_ID, session::SessionIdentity},
+    share::Links,
 };
 use axum::{
     Extension,
@@ -147,12 +148,14 @@ pub(crate) async fn derivative(
     State(state): State<AppState>,
     path: Result<Path<(String, String)>, axum::extract::rejection::PathRejection>,
     Extension(identity): Extension<SessionIdentity>,
+    Extension(links): Extension<Links>,
     request: Request,
 ) -> Result<Response, HttpError> {
     let Path((hash, name)) = path.map_err(|_| HttpError::NotFound)?;
     serve(
         &state,
         &identity.principal(),
+        &links,
         Selector::parse(&hash, &name, Area::Derivatives)?,
         request,
     )
@@ -162,12 +165,14 @@ pub(crate) async fn original(
     State(state): State<AppState>,
     path: Result<Path<(String, String)>, axum::extract::rejection::PathRejection>,
     Extension(identity): Extension<SessionIdentity>,
+    Extension(links): Extension<Links>,
     request: Request,
 ) -> Result<Response, HttpError> {
     let Path((hash, name)) = path.map_err(|_| HttpError::NotFound)?;
     serve(
         &state,
         &identity.principal(),
+        &links,
         Selector::parse(&hash, &name, Area::Originals)?,
         request,
     )
@@ -177,12 +182,14 @@ pub(crate) async fn video(
     State(state): State<AppState>,
     path: Result<Path<(String, String)>, axum::extract::rejection::PathRejection>,
     Extension(identity): Extension<SessionIdentity>,
+    Extension(links): Extension<Links>,
     request: Request,
 ) -> Result<Response, HttpError> {
     let Path((hash, name)) = path.map_err(|_| HttpError::NotFound)?;
     serve(
         &state,
         &identity.principal(),
+        &links,
         Selector::parse(&hash, &name, Area::Video)?,
         request,
     )
@@ -224,6 +231,7 @@ fn may_view(principal: &Principal<'_>, owner: &OwnerRow) -> bool {
 async fn serve(
     state: &AppState,
     principal: &Principal<'_>,
+    links: &Links,
     selector: Selector,
     request: Request,
 ) -> Result<Response, HttpError> {
@@ -233,10 +241,28 @@ async fn serve(
     let public_owner = owners
         .iter()
         .find(|row| may_view(&Principal::Anonymous, row));
+    let downloading = selector.area == Area::Originals
+        || request
+            .uri()
+            .query()
+            .is_some_and(|q| q.split('&').any(|p| p == "download=1"));
+    // A link bearer uses only its scopes/capabilities. A separate account
+    // retains its own access; ordinary anonymous requests retain public access.
+    let direct = links.0.is_empty() || matches!(principal, Principal::User { .. });
     let owner = public_owner
-        .or_else(|| owners.iter().find(|row| may_view(principal, row)))
+        .filter(|_| direct)
+        .or_else(|| owners.iter().find(|row| direct && may_view(principal, row)))
+        .or_else(|| {
+            owners.iter().find(|row| {
+                links.0.iter().any(|link| {
+                    link.caps.view
+                        && (!downloading || link.caps.download)
+                        && may_view(&link.principal(), row)
+                })
+            })
+        })
         .ok_or(HttpError::NotFound)?;
-    let public = public_owner.is_some();
+    let public = public_owner.is_some() && links.0.is_empty();
     let key = DerivativeKey {
         hash: &selector.hash,
         variant: &selector.variant,

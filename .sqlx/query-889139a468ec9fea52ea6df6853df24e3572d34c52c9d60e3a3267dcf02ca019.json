@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM share_links WHERE created_by=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "889139a468ec9fea52ea6df6853df24e3572d34c52c9d60e3a3267dcf02ca019"
+}

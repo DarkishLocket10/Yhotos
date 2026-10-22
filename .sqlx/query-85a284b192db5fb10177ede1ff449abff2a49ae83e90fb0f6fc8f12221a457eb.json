@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE photos SET visibility='restricted' WHERE album_id=$1 AND title='Hidden photo'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "85a284b192db5fb10177ede1ff449abff2a49ae83e90fb0f6fc8f12221a457eb"
+}

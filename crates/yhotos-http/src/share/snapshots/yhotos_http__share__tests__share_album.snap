@@ -1,0 +1,71 @@
+---
+source: crates/yhotos-http/src/share/tests.rs
+expression: html
+---
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shared &#60;album&#62; · Yhotos</title>
+<meta name="description" content="">
+<link rel="stylesheet" href="/static/app.fixture.css">
+<style nonce="fixture-nonce">#cell0{flex:1.33333 1 33.33333%;aspect-ratio:640/480;background-color:#777777;}#cell1{flex:1.33333 1 33.33333%;aspect-ratio:640/480;background-color:#777777;}#cell2{flex:1.33333 1 33.33333%;aspect-ratio:640/480;background-color:#777777;}</style>
+<script type="module" nonce="fixture-nonce" src="/static/thumbhash.fixture.js"></script>
+<meta property="og:title" content="Shared &#60;album&#62;">
+<meta property="og:description" content="">
+<meta name="twitter:card" content="summary_large_image">
+<meta property="og:image" content="https://example.test/i/0000000000000000000000000000000000000000000000000000000000000001/small.jpeg">
+<meta property="og:image:width" content="640">
+<meta property="og:image:height" content="480">
+<meta property="og:type" content="website">
+</head>
+<body><header class="site-header"><a href="/">Yhotos</a><span>Photo gallery</span></header><main><nav aria-label="Breadcrumb"><ol class="breadcrumbs"><li><a href="/">Home</a></li><li><a href="/a/shared">Shared &#60;album&#62;</a></li></ol></nav><h1>Shared &#60;album&#62;</h1><p></p>
+
+<form method="get" class="sort-form"><label for="sort">Sort photos</label><select name="sort" id="sort">
+<option value="taken">Date taken</option><option value="posted">Date posted</option><option value="name">Name</option><option value="manual" selected>Manual order</option></select><button type="submit">Apply sorting</button></form>
+<p>3 photos</p><section aria-label="Photos" class="photo-grid"><div class="grid-row"><a class="cell" id="cell0" href="/p/photo-1?sort=manual"><picture>
+
+
+
+<source media="(max-width: 600px)" type="image/jxl" srcset="/i/0000000000000000000000000000000000000000000000000000000000000001/small.jxl 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
+<source media="(max-width: 600px)" type="image/avif" srcset="/i/0000000000000000000000000000000000000000000000000000000000000001/small.avif 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
+<source media="(max-width: 600px)" type="image/jpeg" srcset="/i/0000000000000000000000000000000000000000000000000000000000000001/small.jpeg 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
+
+
+
+<source type="image/jxl" srcset="/i/0000000000000000000000000000000000000000000000000000000000000001/small.jxl 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
+<source type="image/avif" srcset="/i/0000000000000000000000000000000000000000000000000000000000000001/small.avif 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
+<img src="/i/0000000000000000000000000000000000000000000000000000000000000001/small.jpeg" srcset="/i/0000000000000000000000000000000000000000000000000000000000000001/small.jpeg 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px" width="640" height="480" loading="eager" decoding="async" alt="Shared photo" data-thumbhash="">
+</picture></a><a class="cell" id="cell1" href="/p/photo-2?sort=manual"><picture>
+
+
+
+<source media="(max-width: 600px)" type="image/jxl" srcset="/i/0000000000000000000000000000000000000000000000000000000000000002/small.jxl 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
+<source media="(max-width: 600px)" type="image/avif" srcset="/i/0000000000000000000000000000000000000000000000000000000000000002/small.avif 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
+<source media="(max-width: 600px)" type="image/jpeg" srcset="/i/0000000000000000000000000000000000000000000000000000000000000002/small.jpeg 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
+
+
+
+<source type="image/jxl" srcset="/i/0000000000000000000000000000000000000000000000000000000000000002/small.jxl 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
+<source type="image/avif" srcset="/i/0000000000000000000000000000000000000000000000000000000000000002/small.avif 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
+<img src="/i/0000000000000000000000000000000000000000000000000000000000000002/small.jpeg" srcset="/i/0000000000000000000000000000000000000000000000000000000000000002/small.jpeg 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px" width="640" height="480" loading="eager" decoding="async" alt="Second photo" data-thumbhash="">
+</picture></a><a class="cell" id="cell2" href="/p/photo-3?sort=manual"><picture>
+
+
+
+<source media="(max-width: 600px)" type="image/jxl" srcset="/i/0000000000000000000000000000000000000000000000000000000000000003/small.jxl 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
+<source media="(max-width: 600px)" type="image/avif" srcset="/i/0000000000000000000000000000000000000000000000000000000000000003/small.avif 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
+<source media="(max-width: 600px)" type="image/jpeg" srcset="/i/0000000000000000000000000000000000000000000000000000000000000003/small.jpeg 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
+
+
+
+<source type="image/jxl" srcset="/i/0000000000000000000000000000000000000000000000000000000000000003/small.jxl 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
+<source type="image/avif" srcset="/i/0000000000000000000000000000000000000000000000000000000000000003/small.avif 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
+<img src="/i/0000000000000000000000000000000000000000000000000000000000000003/small.jpeg" srcset="/i/0000000000000000000000000000000000000000000000000000000000000003/small.jpeg 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px" width="640" height="480" loading="eager" decoding="async" alt="Third photo" data-thumbhash="">
+</picture></a></div></section>
+
+<nav aria-label="Pagination" class="pagination"><span>Page 1</span></nav>
+<script type="application/json" nonce="fixture-nonce" id="gallery-data">{"photos":[{"id":"photo-1","title":"Shared photo"},{"id":"photo-2","title":"Second photo"},{"id":"photo-3","title":"Third photo"}]}</script>
+</main><footer>Yhotos photo gallery</footer></body>
+</html>

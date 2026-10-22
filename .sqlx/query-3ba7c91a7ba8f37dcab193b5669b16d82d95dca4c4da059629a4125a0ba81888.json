@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT share_target_photos('photo',$1) as \"photos!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "photos!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "3ba7c91a7ba8f37dcab193b5669b16d82d95dca4c4da059629a4125a0ba81888"
+}

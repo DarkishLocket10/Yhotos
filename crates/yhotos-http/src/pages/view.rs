@@ -21,6 +21,19 @@ pub struct PageContext<'a> {
     /// Validated deployment URL for absolute Open Graph images.
     pub public_base_url: &'a str,
 }
+/// Capabilities of the independently verified scope used to view this photo.
+pub(crate) struct PhotoControls<'a> {
+    pub csrf: &'a str,
+    pub download: bool,
+    pub like: bool,
+    pub flag: bool,
+}
+struct Actions<'a> {
+    photo: yhotos_core::PhotoId,
+    csrf: &'a str,
+    like: bool,
+    flag: bool,
+}
 struct OpenGraph {
     image: String,
     width: u32,
@@ -445,6 +458,7 @@ struct PhotoTemplate<'a> {
     previous: Option<String>,
     next: Option<String>,
     downloads: Vec<Download>,
+    actions: Option<Actions<'a>>,
     exif: Vec<(&'static str, String)>,
     map: Option<String>,
     badge: &'static str,
@@ -476,24 +490,7 @@ fn filename(value: &str) -> String {
         encoded
     }
 }
-/// Renders a viewport-sized photo with metadata, downloads and visible neighbours.
-///
-/// # Errors
-/// Rejects malformed stored paths, content digests or template rendering failure.
-pub fn render_photo(
-    page: &PhotoPage,
-    sort: PageSort,
-    context: &PageContext<'_>,
-) -> Result<String, HttpError> {
-    let p = &page.photo;
-    if p.original_hash.len() != 64
-        || !p
-            .original_hash
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    {
-        return Err(invalid());
-    }
+fn downloads(p: &PagePhoto) -> Vec<Download> {
     let mut downloads = vec![Download {
         href: format!("/o/{}/{}", p.original_hash, filename(&p.original_name)),
         label: "Download original".into(),
@@ -527,6 +524,46 @@ pub fn render_photo(
             label: format!("Download {} ({} × {})", d.variant, d.w, d.h),
         })
     }));
+    downloads
+}
+/// Renders a viewport-sized photo with metadata, downloads and visible neighbours.
+///
+/// # Errors
+/// Rejects malformed stored paths, content digests or template rendering failure.
+pub fn render_photo(
+    page: &PhotoPage,
+    sort: PageSort,
+    context: &PageContext<'_>,
+) -> Result<String, HttpError> {
+    render_photo_with_controls(page, sort, context, None)
+}
+pub(crate) fn render_scoped_photo(
+    page: &PhotoPage,
+    sort: PageSort,
+    context: &PageContext<'_>,
+    controls: PhotoControls<'_>,
+) -> Result<String, HttpError> {
+    render_photo_with_controls(page, sort, context, Some(controls))
+}
+fn render_photo_with_controls(
+    page: &PhotoPage,
+    sort: PageSort,
+    context: &PageContext<'_>,
+    controls: Option<PhotoControls<'_>>,
+) -> Result<String, HttpError> {
+    let p = &page.photo;
+    if p.original_hash.len() != 64
+        || !p
+            .original_hash
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(invalid());
+    }
+    let mut downloads = downloads(p);
+    if controls.as_ref().is_some_and(|c| !c.download) {
+        downloads.clear();
+    }
     let mut exif = Vec::new();
     for (label, value) in [
         ("Date taken", &p.taken_at),
@@ -577,6 +614,12 @@ pub fn render_photo(
             .next
             .map(|id| format!("/p/{id}?sort={}", sort.as_str())),
         downloads,
+        actions: controls.map(|c| Actions {
+            photo: p.id,
+            csrf: c.csrf,
+            like: c.like,
+            flag: c.flag,
+        }),
         exif,
         map,
         badge: match p.kind.as_str() {

@@ -7,6 +7,7 @@ pub mod error;
 pub mod files;
 pub mod middleware;
 pub mod pages;
+mod share;
 mod state;
 pub use state::{AppResources, AppState};
 mod static_assets;
@@ -48,6 +49,7 @@ pub fn public_router(state: AppState) -> Router {
         .route("/picture.php", get(pages::legacy))
         .route_layer(from_fn(pages::privacy))
         .merge(auth::routes(auth::Audience(false)))
+        .merge(share::routes())
         .route("/healthz", get(health).with_state(()))
         .route("/static/{*path}", get(static_assets::serve))
         .merge(files);
@@ -88,6 +90,7 @@ pub fn admin_router(state: AppState) -> Router {
     stack(
         Router::new()
             .merge(auth::routes(auth::Audience(true)))
+            .merge(share::admin_routes())
             .route("/admin/healthz", get(health))
             .route("/admin/", get(health))
             .route("/admin/setup-mfa", get(auth::security::setup))

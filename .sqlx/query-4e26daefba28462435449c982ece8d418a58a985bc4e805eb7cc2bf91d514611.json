@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT visitor_hash,country,city FROM share_link_opens WHERE share_link_id=$1 ORDER BY opened_at,id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "visitor_hash",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "share_link_opens",
+            "name": "visitor_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "country",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "share_link_opens",
+            "name": "country"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "city",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "share_link_opens",
+            "name": "city"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "4e26daefba28462435449c982ece8d418a58a985bc4e805eb7cc2bf91d514611"
+}

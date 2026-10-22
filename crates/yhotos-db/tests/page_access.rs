@@ -75,6 +75,12 @@ async fn sql_visibility_matches_core_for_500_random_trees(pool: PgPool) {
                 let principal=match kind {0=>Principal::Anonymous,1=>Principal::User{id:user,groups:&[],is_admin:false},2=>Principal::User{id:user,groups:&groups,is_admin:false},3=>Principal::User{id:user,groups:&[],is_admin:true},4=>Principal::ShareLink{target:ShareTarget::Album(ids[at])},5=>Principal::ShareLink{target:ShareTarget::Photo(pids[at])},6=>Principal::ShareLink{target:ShareTarget::Album(AlbumId::new())},_=>Principal::ShareLink{target:ShareTarget::Photo(PhotoId::new())}};
                 let bindings=access_sql::visible_photos(&principal);
                 let row=yhotos_db::visible_page_query!(r#"SELECT ARRAY(SELECT id FROM visible_albums) AS "albums!", ARRAY(SELECT id FROM visible_photos) AS "photos!""#,bindings).fetch_one(&mut **conn).await.unwrap();
+                let union_principal=Principal::User{id:user,groups:&groups,is_admin:false};
+                let shared_album=Principal::ShareLink{target:ShareTarget::Album(ids[at])};
+                let shared_photo=Principal::ShareLink{target:ShareTarget::Photo(pids[(at+1)%pids.len()])};
+                let union=access_sql::visible_photos(&union_principal).with_links([
+                    ShareTarget::Album(ids[at]), ShareTarget::Photo(pids[(at+1)%pids.len()])]);
+                let union_row=yhotos_db::visible_page_query!(r#"SELECT ARRAY(SELECT id FROM visible_albums) AS "albums!", ARRAY(SELECT id FROM visible_photos) AS "photos!""#,union).fetch_one(&mut **conn).await.unwrap();
                 for (index,node) in nodes.iter().enumerate() {
                     let mut chain=Vec::new();let mut current=index;
                     while current!=0&&nodes[current].0%3!=0 {
@@ -85,6 +91,10 @@ async fn sql_visibility_matches_core_for_500_random_trees(pool: PgPool) {
                     let photo=PhotoAccess{id:pids[index],album:&album,visibility:visibility(node.3),grants:&photo_grants[index]};
                     prop_assert_eq!(row.albums.contains(&ids[index].0),access::can_view_album(&principal,&album));
                     prop_assert_eq!(row.photos.contains(&pids[index].0),access::can_view_photo(&principal,&photo));
+                    prop_assert_eq!(union_row.albums.contains(&ids[index].0),
+                        [&union_principal,&shared_album,&shared_photo].iter().any(|p| access::can_view_album(p,&album)));
+                    prop_assert_eq!(union_row.photos.contains(&pids[index].0),
+                        [&union_principal,&shared_album,&shared_photo].iter().any(|p| access::can_view_photo(p,&photo)));
                 }
                 Ok(())
             })
