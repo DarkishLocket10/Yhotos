@@ -20,6 +20,8 @@ The example binds only `127.0.0.1:18011`, permits plaintext database connections
 only on loopback, uses a temporary content store, and seeds the dedicated
 `gallery-fixture` album. Re-running refreshes its photo and derivative rows and
 reconstructs its files, including fixtures seeded before task 011's review.
+It also seeds `/a/mobile-fixture` with an eager child-album cover and
+`/a/single-fixture` with a single-photo grid, both using the same derivative sizes.
 The generator draws sixty visibly distinct compositions, each at 320, 640, 1280 and
 2048 pixels plus a separate 320-pixel square crop. The server rejects repeated
 content hashes across the 300 files, so different photos require independent
@@ -33,6 +35,7 @@ With the fixture server running (reports stay local and are ignored by Git):
 
 ```sh
 mkdir -p deploy/dev/reports
+node deploy/dev/fixtures/check-mobile.mjs
 npx lighthouse http://127.0.0.1:18011/a/gallery-fixture \
   --chrome-flags='--headless --no-sandbox' --only-categories=performance \
   --output=html --output=json --output-path=deploy/dev/reports/011-album-mobile
@@ -61,3 +64,16 @@ runs do not measure INP; use a separate interaction trace or report it as unavai
 Check the network audit for distinct image URLs rather than a shared image fetch.
 Reports and screenshots must remain local under the ignored `reports/` directory.
 These are local lab measurements, not measurements on the production tower.
+
+The mobile network regression check opens all three fixture albums in headless
+Chromium at 390×844 with DPR 2 and JavaScript disabled. It records actual image
+responses and rejects requests for any candidate above 640w, including child
+covers and single-photo grids whose slots exceed 320 CSS pixels. The report is
+`deploy/dev/reports/011-mobile-network.json`. Narrow-screen source sets are
+capped across JPEG, AVIF, JXL and HDR; desktop retains all available widths and
+`sizes` continues to describe the actual slot. Format coverage is also checked
+by the Rust page tests. Set `PLAYWRIGHT_MODULE` and `CHROME_PATH` as above.
+
+On hosts with many CPU cores, simultaneous SQLx test migrations can exhaust the
+development PostgreSQL lock table. Use `RUST_TEST_THREADS=4 scripts/check.sh` to
+bound test concurrency without changing database settings.

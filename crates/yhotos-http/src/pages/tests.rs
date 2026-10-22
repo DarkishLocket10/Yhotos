@@ -740,3 +740,210 @@ fn grid_is_linear_contiguous_and_fills_each_row() {
     assert_eq!(end, 60);
     assert!(grid::justified_rows(&[]).is_empty());
 }
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn rotated_photos_keep_normalized_sources_and_layout(pool: PgPool) {
+    let f = Fixture::new(pool, 1).await;
+    photos::update_metadata(
+        &mut f.state.pool.acquire().await.unwrap(),
+        PhotoId(Uuid::from_u128(1)),
+        &photos::PhotoMetadata {
+            title: "Rotated photo".into(),
+            width: Some(6000),
+            height: Some(4000),
+            orientation: Some(6),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let mut row = f.album_row(&SessionIdentity::Anonymous).await;
+    assert_eq!(row.photos[0].orientation, Some(6));
+    assert_eq!(row.album.cover.as_ref().unwrap().orientation, Some(6));
+    let detail = photos::page(
+        &mut f.state.pool.acquire().await.unwrap(),
+        &yhotos_core::access::Principal::Anonymous,
+        &f.photos[0],
+        PageSort::Taken,
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert_eq!(detail.photo.orientation, Some(6));
+    // A landscape original rotated at decode produces portrait derivatives.
+    let photo = &mut row.photos[0];
+    photo.width = Some(6000);
+    photo.height = Some(4000);
+    for derivative in &mut photo.derivatives {
+        derivative.h = derivative.w * 3 / 2;
+    }
+    photo.derivatives.push(photos::PageDerivative {
+        variant: "thumbsquare".into(),
+        format: "jpeg".into(),
+        hdr: false,
+        hash: "0".repeat(64),
+        w: 320,
+        h: 320,
+    });
+    let photo = photo.clone();
+    for orientation in 1..=8 {
+        let mut photo = photo.clone();
+        photo.orientation = Some(orientation);
+        if orientation < 5 {
+            std::mem::swap(&mut photo.width, &mut photo.height);
+        }
+        let mut album = row.clone();
+        album.photos = vec![photo.clone()];
+        album.album.cover = Some(photo.clone());
+        let page = photos::PhotoPage {
+            photo,
+            chain: vec![],
+            previous: None,
+            next: None,
+        };
+        for html in [
+            render_photo(&page, PageSort::Taken, &context()).unwrap(),
+            render_album(&album, 1, PageSort::Taken, &context()).unwrap(),
+            render_home(&[album.album.clone()], &context()).unwrap(),
+        ] {
+            let picture = html
+                .split("<picture>")
+                .nth(1)
+                .unwrap()
+                .split("</picture>")
+                .next()
+                .unwrap();
+            assert!(picture.contains("width=\"4000\" height=\"6000\""));
+            assert!(picture.contains("small.jpeg"));
+            assert!(picture.contains("640w"));
+            assert!(picture.contains("1280w"));
+            assert!(picture.contains("2048w"));
+            assert!(!picture.contains("thumbsquare"));
+            assert!(!picture.contains("data:image/svg"));
+        }
+        let html = render_album(&album, 1, PageSort::Taken, &context()).unwrap();
+        assert!(html.contains("aspect-ratio:4000/6000"));
+        // Missing source dimensions use already-normalized derivative dimensions
+        // directly, without applying the source orientation a second time.
+        let mut page = page;
+        page.photo.width = None;
+        page.photo.height = None;
+        let html = render_photo(&page, PageSort::Taken, &context()).unwrap();
+        assert!(html.contains("width=\"2048\" height=\"3072\""));
+        assert!(html.contains("640w"));
+    }
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn open_graph_prefers_large_jpeg_and_falls_back_to_largest_sdr(pool: PgPool) {
+    let f = Fixture::new(pool, 1).await;
+    let mut album = f.album_row(&SessionIdentity::Anonymous).await;
+    let mut photo = album.photos[0].clone();
+    let mut extra = photo
+        .derivatives
+        .iter()
+        .find(|d| d.variant == "large" && d.format == "jpeg")
+        .unwrap()
+        .clone();
+    extra.variant = "xlarge".into();
+    extra.w = 3200;
+    extra.h = 2133;
+    photo.derivatives.push(extra);
+    for expected in ["large", "xlarge", "medium"] {
+        let selected = photo
+            .derivatives
+            .iter()
+            .find(|d| d.variant == expected && d.format == "jpeg")
+            .unwrap()
+            .clone();
+        album.album.cover = Some(photo.clone());
+        let page = photos::PhotoPage {
+            photo: photo.clone(),
+            chain: vec![],
+            previous: None,
+            next: None,
+        };
+        for html in [
+            render_album(&album, 1, PageSort::Taken, &context()).unwrap(),
+            render_photo(&page, PageSort::Taken, &context()).unwrap(),
+        ] {
+            assert!(html.contains(&format!(
+                "property=\"og:image\" content=\"https://gallery.example/i/{}/{}.jpeg\"",
+                selected.hash, selected.variant
+            )));
+            assert!(html.contains(&format!(
+                "property=\"og:image:width\" content=\"{}\"",
+                selected.w
+            )));
+            assert!(html.contains(&format!(
+                "property=\"og:image:height\" content=\"{}\"",
+                selected.h
+            )));
+        }
+        // Retain modern large representations, matching the earlier default plan.
+        photo
+            .derivatives
+            .retain(|d| d.variant != expected || d.format != "jpeg");
+    }
+    let mut hdr = photo.derivatives[0].clone();
+    hdr.variant = "large".into();
+    hdr.format = "jpeg".into();
+    hdr.hdr = true;
+    photo.derivatives.push(hdr);
+    let mut invalid = photo
+        .derivatives
+        .iter()
+        .find(|d| d.format == "jpeg" && !d.hdr)
+        .unwrap()
+        .clone();
+    invalid.variant = "large".into();
+    invalid.hash = "invalid".into();
+    photo.derivatives.push(invalid);
+    album.album.cover = Some(photo);
+    let html = render_album(&album, 1, PageSort::Taken, &context()).unwrap();
+    assert!(html.contains("/small.jpeg\""));
+    assert!(!html.contains("property=\"og:image\" content=\"https://gallery.example/i/invalid"));
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn mobile_grid_and_cover_sources_are_capped_across_formats(pool: PgPool) {
+    let f = Fixture::new(pool, 1).await;
+    let mut album = f.album_row(&SessionIdentity::Anonymous).await;
+    let photo = &mut album.photos[0];
+    for mut derivative in photo.derivatives.clone() {
+        if derivative.format != "jpeg" {
+            derivative.hdr = true;
+            photo.derivatives.push(derivative);
+        }
+    }
+    album.album.cover = Some(photo.clone());
+    album.children = vec![album.album.clone()];
+    for html in [
+        render_album(&album, 1, PageSort::Taken, &context()).unwrap(),
+        render_home(&album.children, &context()).unwrap(),
+    ] {
+        for picture in html
+            .split("<picture>")
+            .skip(1)
+            .map(|s| s.split("</picture>").next().unwrap())
+        {
+            let mut mobile_count = 0;
+            for source in picture
+                .split("<source ")
+                .skip(1)
+                .map(|s| s.split('>').next().unwrap())
+            {
+                if source.contains("media=\"(max-width: 600px)") {
+                    mobile_count += 1;
+                    assert!(source.contains("640w"));
+                    assert!(!source.contains("1280w"));
+                    assert!(!source.contains("2048w"));
+                    assert!(source.contains("sizes=\""));
+                }
+            }
+            assert_eq!(mobile_count, 5);
+            assert!(picture.contains("1280w"));
+            assert!(picture.contains("2048w"));
+        }
+    }
+}

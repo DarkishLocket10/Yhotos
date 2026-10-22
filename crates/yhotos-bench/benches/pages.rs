@@ -26,6 +26,38 @@ fn fixture() -> Result<AlbumPage, Box<dyn Error>> {
         json!({"album":{"id":album,"title":"Fixture gallery","description":"Sixty photos","path":"gallery-fixture","count":60,"cover":photos.first()},"chain":[{"id":album,"title":"Fixture gallery","path":"gallery-fixture"}],"children":[],"photos":photos,"total":60}),
     )?)
 }
+fn reviewed_layouts(criterion: &mut Criterion, page: &AlbumPage, context: &PageContext<'_>) {
+    let mut single = page.clone();
+    single.photos.truncate(1);
+    single.total = 1;
+    single.children = vec![single.album.clone()];
+    criterion.bench_function("pages/render_album/single_with_child_cover", |b| {
+        b.iter(|| {
+            black_box(render_album(
+                black_box(&single),
+                1,
+                PageSort::Taken,
+                context,
+            ))
+        });
+    });
+    let mut rotated = page.clone();
+    for photo in &mut rotated.photos {
+        std::mem::swap(&mut photo.width, &mut photo.height);
+        photo.orientation = Some(6);
+    }
+    criterion.bench_function("pages/render_album/60_rotated", |b| {
+        b.iter(|| {
+            black_box(render_album(
+                black_box(&rotated),
+                1,
+                PageSort::Taken,
+                context,
+            ))
+        });
+    });
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let mut criterion = Criterion::default().configure_from_args();
     let context = PageContext {
@@ -58,6 +90,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             ))
         });
     });
+    reviewed_layouts(&mut criterion, &page, &context);
     if let Ok(url) = std::env::var("DATABASE_URL") {
         let runtime = tokio::runtime::Runtime::new()?;
         let _runtime_context = runtime.enter();

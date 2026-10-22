@@ -29,17 +29,21 @@ struct OpenGraph {
 }
 struct Image {
     src: String,
-    jpeg: String,
-    avif: String,
-    jxl: String,
-    hdr_avif: String,
-    hdr_jxl: String,
+    jpeg: Sources,
+    avif: Sources,
+    jxl: Sources,
+    hdr_avif: Sources,
+    hdr_jxl: Sources,
     sizes: String,
     width: u32,
     height: u32,
     alt: String,
     thumbhash: String,
     loading: &'static str,
+}
+struct Sources {
+    all: String,
+    mobile: String,
 }
 struct Cell {
     index: usize,
@@ -108,6 +112,13 @@ fn dimensions(photo: &PagePhoto) -> (u32, u32) {
         .width
         .zip(photo.height)
         .filter(|&(w, h)| w > 0 && h > 0 && w <= 100_000 && h <= 100_000)
+        .map(|(w, h)| {
+            if matches!(photo.orientation, Some(5..=8)) {
+                (h, w)
+            } else {
+                (w, h)
+            }
+        })
         .or_else(|| {
             photo
                 .derivatives
@@ -125,29 +136,46 @@ fn full_frame((w, h): (u32, u32), d: &PageDerivative) -> bool {
     // must never share a source set or fallback with the full-frame image.
     (u64::from(d.w) * u64::from(h)).abs_diff(u64::from(d.h) * u64::from(w)) <= u64::from(w.max(h))
 }
-fn source(photo: &PagePhoto, format: &str, hdr: bool, dimensions: (u32, u32)) -> String {
+fn source(
+    photo: &PagePhoto,
+    format: &str,
+    hdr: bool,
+    dimensions: (u32, u32),
+    cap_mobile: bool,
+) -> Sources {
     let mut derivatives: Vec<_> = photo
         .derivatives
         .iter()
-        .filter(|d| {
-            d.format == format
-                && d.hdr == hdr
-                && full_frame(dimensions, d)
-                && derivative_url(d).is_some()
-        })
+        .filter(|d| d.format == format && d.hdr == hdr && full_frame(dimensions, d))
+        .filter_map(|d| derivative_url(d).map(|url| (d, url)))
         .collect();
+    // Validate and construct each URL once, sharing it across mobile and desktop.
     // Variant and digest break width ties independently of database row order.
-    derivatives.sort_unstable_by_key(|d| (d.w, &d.variant, d.h, &d.hash));
-    derivatives.dedup_by_key(|d| d.w);
-    derivatives
-        .into_iter()
-        .filter_map(|d| derivative_url(d).map(|url| format!("{url} {}w", d.w)))
-        .collect::<Vec<_>>()
-        .join(", ")
+    derivatives.sort_unstable_by_key(|(d, _)| (d.w, &d.variant, d.h, &d.hash));
+    derivatives.dedup_by_key(|(d, _)| d.w);
+    let mut sources = Sources {
+        all: String::new(),
+        mobile: String::new(),
+    };
+    for (d, url) in derivatives {
+        if !sources.all.is_empty() {
+            sources.all.push_str(", ");
+        }
+        let _ = write!(sources.all, "{url} {}w", d.w);
+        // Keep accurate slot sizes at high DPR without allowing album images
+        // on narrow screens to exceed the 640-pixel image transfer budget.
+        if cap_mobile && d.w <= 640 {
+            if !sources.mobile.is_empty() {
+                sources.mobile.push_str(", ");
+            }
+            let _ = write!(sources.mobile, "{url} {}w", d.w);
+        }
+    }
+    sources
 }
-fn image(photo: &PagePhoto, sizes: String, eager: bool) -> Image {
+fn image(photo: &PagePhoto, sizes: String, eager: bool, cap_mobile: bool) -> Image {
     let (width, height) = dimensions(photo);
-    let jpeg = source(photo, "jpeg", false, (width, height));
+    let jpeg = source(photo, "jpeg", false, (width, height), cap_mobile);
     let src = photo.derivatives.iter().filter(|d| d.format == "jpeg" && !d.hdr && full_frame((width, height), d) && derivative_url(d).is_some())
         .min_by_key(|d| (d.w.abs_diff(1280), d.w, &d.variant, d.h, &d.hash)).and_then(derivative_url).unwrap_or_else(|| "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='4'%20height='3'%3E%3Cpath%20fill='%23777'%20d='M0%200h4v3H0z'/%3E%3C/svg%3E".into());
     let thumbhash = photo
@@ -160,10 +188,10 @@ fn image(photo: &PagePhoto, sizes: String, eager: bool) -> Image {
     Image {
         src,
         jpeg,
-        avif: source(photo, "avif", false, (width, height)),
-        jxl: source(photo, "jxl", false, (width, height)),
-        hdr_avif: source(photo, "avif", true, (width, height)),
-        hdr_jxl: source(photo, "jxl", true, (width, height)),
+        avif: source(photo, "avif", false, (width, height), cap_mobile),
+        jxl: source(photo, "jxl", false, (width, height), cap_mobile),
+        hdr_avif: source(photo, "avif", true, (width, height), cap_mobile),
+        hdr_jxl: source(photo, "jxl", true, (width, height), cap_mobile),
         sizes,
         width,
         height,
@@ -177,9 +205,22 @@ fn og(
     context: &PageContext<'_>,
     kind: &'static str,
 ) -> Option<OpenGraph> {
-    let d = photo?.derivatives.iter().find(|d| {
-        d.variant == "large" && d.format == "jpeg" && !d.hdr && derivative_url(d).is_some()
-    })?;
+    let d = photo?
+        .derivatives
+        .iter()
+        .filter(|d| d.format == "jpeg" && !d.hdr && derivative_url(d).is_some())
+        // Prefer the sharing variant even when a larger JPEG exists. Older or
+        // incomplete derivative plans can still supply their largest SDR JPEG.
+        .max_by_key(|d| {
+            (
+                d.variant == "large",
+                d.w.max(d.h),
+                d.w,
+                d.h,
+                &d.variant,
+                &d.hash,
+            )
+        })?;
     Some(OpenGraph {
         image: format!(
             "{}{}",
@@ -207,6 +248,7 @@ fn cards(albums: &[AlbumCard]) -> Result<Vec<Card>, HttpError> {
                         "(max-width: 600px) calc(100vw - 32px), (max-width: 1232px) 50vw, 600px"
                             .into(),
                         index < 2,
+                        true,
                     )
                 }),
             })
@@ -358,6 +400,7 @@ pub fn render_album(
                                 1200.0 * percent / 100.0
                             ),
                             row_index == 0,
+                            true,
                         ),
                         badge: match p.kind.as_str() {
                             "raw" => "RAW",
@@ -530,7 +573,7 @@ pub fn render_photo(
         og: og(Some(p), context, "article"),
         styles: format!(".photo-image{{{}}}", background(p, true)),
         chain: crumbs(&page.chain)?,
-        image: image(p, "100vw".into(), true),
+        image: image(p, "100vw".into(), true, false),
         previous: page
             .previous
             .map(|id| format!("/p/{id}?sort={}", sort.as_str())),

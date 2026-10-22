@@ -16,6 +16,27 @@ struct FixtureImage {
     base64: String,
 }
 
+async fn fixture_album(
+    conn: &mut sqlx::PgConnection,
+    parent: Option<yhotos_core::AlbumId>,
+    path: &[&str],
+    title: &str,
+) -> Result<yhotos_core::AlbumId> {
+    let slugs = path
+        .iter()
+        .map(|value| Slug::new(value))
+        .collect::<Result<Vec<_>, _>>()?;
+    if let Some(album) = albums::get_by_path(conn, &slugs).await? {
+        return Ok(album.id);
+    }
+    let slug = slugs.last().context("fixture path is empty")?;
+    Ok(
+        albums::create(conn, parent, slug, title, Visibility::Public)
+            .await?
+            .id,
+    )
+}
+
 #[allow(clippy::too_many_lines)]
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -38,6 +59,17 @@ async fn main() -> Result<()> {
             .await?
         }
     };
+    let mobile_parent =
+        fixture_album(&mut conn, None, &["mobile-fixture"], "Album cover fixture").await?;
+    let mobile_child = fixture_album(
+        &mut conn,
+        Some(mobile_parent),
+        &["mobile-fixture", "child"],
+        "Child album fixture",
+    )
+    .await?;
+    let single =
+        fixture_album(&mut conn, None, &["single-fixture"], "Single photo fixture").await?;
     let images: Vec<FixtureImage> = serde_json::from_slice(
         &std::fs::read("deploy/dev/fixtures/generated.json")
             .context("Generate fixtures first; see deploy/dev/PAGES.md")?,
@@ -106,41 +138,48 @@ async fn main() -> Result<()> {
             ));
         }
         let original = original.context("missing fixture original")?;
-        let title = format!("Garden view {index:02}");
-        let existing = sqlx::query!(
-            "SELECT id FROM photos WHERE album_id=$1 AND title=$2 AND deleted_at IS NULL",
-            album.id.0,
-            title
-        )
-        .fetch_optional(&mut *conn)
-        .await?;
-        let photo_id = if let Some(row) = existing {
-            yhotos_core::PhotoId(row.id)
+        let targets = if index == 0 {
+            vec![album.id, mobile_child, single]
         } else {
-            photos::create(
-                &mut conn,
-                &photos::NewPhoto {
-                    album_id: album.id,
-                    title,
-                    original_hash: original.hash.to_string(),
-                    original_name: "garden.jpeg".into(),
-                    original_bytes: i64::try_from(original.bytes)?,
-                    mime: "image/jpeg".into(),
-                    kind: photos::MediaKind::Image,
-                },
-            )
-            .await?
-            .id
+            vec![album.id]
         };
-        let placeholder = vec![
-            226_u8, 39, 142, 19, 150, 43, 144, 135, 129, 136, 120, 110, 144, 24, 249, 118, 128,
-            135, 136, 136, 120, 136, 119,
-        ];
-        let hash = original.hash.to_string();
-        let len = i64::try_from(original.bytes)?;
-        sqlx::query!("UPDATE photos SET original_hash=$4,original_bytes=$5,width=2048,height=1365,dominant_colors=ARRAY[6191729],placeholder=$2,sort_order=$3 WHERE id=$1",photo_id.0,placeholder,index,hash,len).execute(&mut *conn).await?;
-        for (variant, width, height, hash, len) in &representations {
-            sqlx::query!("INSERT INTO derivatives(id,photo_id,variant,format,hash,width,height,bytes) VALUES($1,$2,$3,'jpeg',$4,$5,$6,$7) ON CONFLICT (photo_id,variant,format,hdr) DO UPDATE SET hash=excluded.hash,width=excluded.width,height=excluded.height,bytes=excluded.bytes",uuid::Uuid::now_v7(),photo_id.0,*variant,hash,*width,*height,*len).execute(&mut *conn).await?;
+        for target in targets {
+            let title = format!("Garden view {index:02}");
+            let existing = sqlx::query!(
+                "SELECT id FROM photos WHERE album_id=$1 AND title=$2 AND deleted_at IS NULL",
+                target.0,
+                title
+            )
+            .fetch_optional(&mut *conn)
+            .await?;
+            let photo_id = if let Some(row) = existing {
+                yhotos_core::PhotoId(row.id)
+            } else {
+                photos::create(
+                    &mut conn,
+                    &photos::NewPhoto {
+                        album_id: target,
+                        title,
+                        original_hash: original.hash.to_string(),
+                        original_name: "garden.jpeg".into(),
+                        original_bytes: i64::try_from(original.bytes)?,
+                        mime: "image/jpeg".into(),
+                        kind: photos::MediaKind::Image,
+                    },
+                )
+                .await?
+                .id
+            };
+            let placeholder = vec![
+                226_u8, 39, 142, 19, 150, 43, 144, 135, 129, 136, 120, 110, 144, 24, 249, 118, 128,
+                135, 136, 136, 120, 136, 119,
+            ];
+            let hash = original.hash.to_string();
+            let len = i64::try_from(original.bytes)?;
+            sqlx::query!("UPDATE photos SET original_hash=$4,original_bytes=$5,width=2048,height=1365,dominant_colors=ARRAY[6191729],placeholder=$2,sort_order=$3 WHERE id=$1",photo_id.0,placeholder,index,hash,len).execute(&mut *conn).await?;
+            for (variant, width, height, hash, len) in &representations {
+                sqlx::query!("INSERT INTO derivatives(id,photo_id,variant,format,hash,width,height,bytes) VALUES($1,$2,$3,'jpeg',$4,$5,$6,$7) ON CONFLICT (photo_id,variant,format,hdr) DO UPDATE SET hash=excluded.hash,width=excluded.width,height=excluded.height,bytes=excluded.bytes",uuid::Uuid::now_v7(),photo_id.0,*variant,hash,*width,*height,*len).execute(&mut *conn).await?;
+            }
         }
     }
     drop(conn);

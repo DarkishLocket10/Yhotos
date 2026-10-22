@@ -654,6 +654,8 @@ pub struct PagePhoto {
     pub width: Option<u32>,
     /// Optional source height.
     pub height: Option<u32>,
+    /// Source EXIF orientation; derivatives already have orientation applied.
+    pub orientation: Option<u8>,
     /// RGB integers from extraction; out-of-range values are ignored.
     pub dominant_colors: Vec<i32>,
     /// Base64-encoded thumbhash from PostgreSQL, bounded at rendering.
