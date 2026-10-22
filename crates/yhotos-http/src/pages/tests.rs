@@ -1162,3 +1162,179 @@ async fn mobile_grid_and_cover_sources_are_capped_across_formats(pool: PgPool) {
         }
     }
 }
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn calendar_snapshots_dates_and_one_query_per_level(pool: PgPool) {
+    use yhotos_db::calendar::{self, Selection};
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            pool.connect_options()
+                .as_ref()
+                .clone()
+                .log_statements(log::LevelFilter::Debug),
+        )
+        .await
+        .unwrap();
+    let f = Fixture::new(pool, 3).await;
+    let mut conn = f.state.pool.acquire().await.unwrap();
+    sqlx::query!(
+        "UPDATE photos SET visibility='restricted' WHERE id=$1",
+        Uuid::from_u128(3)
+    )
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    sqlx::query!(
+        "UPDATE photos SET taken_at=NULL WHERE id=$1",
+        Uuid::from_u128(2)
+    )
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    drop(conn);
+    for (path, name) in [
+        ("/calendar", "calendar_years"),
+        ("/calendar/2026", "calendar_months"),
+        ("/calendar/2026/1", "calendar_days"),
+        ("/calendar/2026/5", "calendar_posted"),
+        ("/calendar/2026/1/1", "calendar_day"),
+    ] {
+        let (response, queries) = crate::files::tests::count_queries(f.get(path)).await;
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        assert_eq!(queries, 1, "{path}");
+        let selection = super::calendar::selection(path).unwrap();
+        let page = calendar::page(
+            &mut f.state.pool.acquire().await.unwrap(),
+            &yhotos_core::access::Principal::Anonymous,
+            selection,
+            1,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let html = super::render_calendar(&page, selection, 1, &context()).unwrap();
+        assert!(!html.contains("Photo 01"));
+        insta::assert_snapshot!(name, html);
+    }
+    for path in [
+        "/calendar/0",
+        "/calendar/10000",
+        "/calendar/2026/13",
+        "/calendar/2026/2/29",
+        "/calendar/2026/1/32",
+        "/calendar/x",
+        "/calendar/2026/1?page=2",
+        "/calendar?page=2",
+    ] {
+        assert_eq!(f.get(path).await.status(), StatusCode::NOT_FOUND, "{path}");
+    }
+    assert_eq!(
+        f.get("/calendar/2024/2/29").await.status(),
+        StatusCode::NOT_FOUND
+    );
+    assert!(Selection::new(Some(2024), Some(2), Some(29)).is_some());
+}
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn map_fallback_csp_json_and_private_cache(pool: PgPool) {
+    let f = Fixture::new(pool, 3).await;
+    let mut conn = f.state.pool.acquire().await.unwrap();
+    let place = Uuid::from_u128(300);
+    sqlx::query!("INSERT INTO places(id,name,admin1,country,lat,lon) VALUES($1,'Toronto','Ontario','CA',43.65,-79.38)",place).execute(&mut *conn).await.unwrap();
+    sqlx::query!("UPDATE photos SET place_id=$1", place)
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    photos::set_visibility(
+        &mut conn,
+        &[PhotoId(Uuid::from_u128(3))],
+        Visibility::Restricted,
+    )
+    .await
+    .unwrap();
+    grants::grant_photo(&mut conn, PhotoId(Uuid::from_u128(3)), Grant::User(f.user))
+        .await
+        .unwrap();
+    drop(conn);
+    let response = f.get("/map").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let csp = response.headers()[header::CONTENT_SECURITY_POLICY]
+        .to_str()
+        .unwrap();
+    assert!(csp.contains("connect-src 'self' https://tiles.openfreemap.org"));
+    assert!(csp.contains("worker-src 'self'"));
+    assert!(!csp.contains("blob:"));
+    assert!(!csp.contains("unsafe-eval"));
+    let html = body(response).await;
+    assert!(html.contains("/search?place=Toronto"));
+    assert!(html.contains("2 photos"));
+    assert!(!html.contains("3 photos"));
+    assert!(html.contains("data-tiles="));
+    let path = "/map/tiles.json?bbox=-80,43,-79,44&zoom=1";
+    let response = f.get(path).await;
+    assert_eq!(
+        response.headers()[header::CACHE_CONTROL],
+        "public, max-age=300"
+    );
+    let json: serde_json::Value = serde_json::from_str(&body(response).await).unwrap();
+    assert_eq!(json["features"][0]["properties"]["count"], 2);
+    let response = f.get_as_user(path).await;
+    assert_eq!(
+        response.headers()[header::CACHE_CONTROL],
+        "private, no-store"
+    );
+    let json: serde_json::Value = serde_json::from_str(&body(response).await).unwrap();
+    assert_eq!(json["features"][0]["properties"]["count"], 3);
+    let response = f.get("/map/tiles.json?bbox=-80,43,-79,44&zoom=15").await;
+    let json: serde_json::Value = serde_json::from_str(&body(response).await).unwrap();
+    assert_eq!(json["features"].as_array().unwrap().len(), 2);
+    assert_eq!(json["features"][0]["properties"]["count"], 1);
+    assert!(!body(f.get("/").await).await.contains("/static/map."));
+    assert!(
+        !f.get("/").await.headers()[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap()
+            .contains("openfreemap")
+    );
+    for path in [
+        "/map/tiles.json?bbox=NaN,0,1,1&zoom=1",
+        "/map/tiles.json?bbox=0,0,1,1&zoom=21",
+        "/map/tiles.json?bbox=-181,-90,181,90&zoom=0",
+    ] {
+        assert_eq!(f.get(path).await.status(), StatusCode::BAD_REQUEST);
+    }
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn calendar_month_grid_paginates_after_visibility_and_stays_under_budget(pool: PgPool) {
+    let f = Fixture::new(pool, 62).await;
+    let mut conn = f.state.pool.acquire().await.unwrap();
+    sqlx::query!("UPDATE photos SET taken_at='2026-01-01 00:00:00+00'")
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    photos::set_visibility(
+        &mut conn,
+        &[PhotoId(Uuid::from_u128(62))],
+        Visibility::Restricted,
+    )
+    .await
+    .unwrap();
+    drop(conn);
+    let first = body(f.get("/calendar/2026/1").await).await;
+    // One day cover plus sixty grid photos, with complete visible counts.
+    assert_eq!(first.matches("<img ").count(), 61);
+    assert!(first.contains("61 photos"));
+    assert!(first.contains("Next page"));
+    let mut compressed = GzEncoder::new(Vec::new(), Compression::default());
+    compressed.write_all(first.as_bytes()).unwrap();
+    assert!(compressed.finish().unwrap().len() < 30 * 1024);
+    let second = body(f.get("/calendar/2026/1?page=2").await).await;
+    assert_eq!(second.matches("<img ").count(), 2);
+    assert!(second.contains("Previous page"));
+    assert!(!second.contains("Next page"));
+    assert_eq!(
+        f.get("/calendar/2026/1?page=3").await.status(),
+        StatusCode::NOT_FOUND
+    );
+}

@@ -4,9 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node esbuild.config.mjs"
+    "build": "node esbuild.config.mjs",
+    "test": "node --test tests/*.mjs"
   },
   "dependencies": {
-    "esbuild": "0.28.2"
+    "esbuild": "0.28.2",
+    "maplibre-gl": "6.15.0"
   }
 }

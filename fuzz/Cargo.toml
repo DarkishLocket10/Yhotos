@@ -47,3 +47,10 @@ path = "fuzz_targets/identify.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "map_bbox"
+path = "fuzz_targets/map_bbox.rs"
+test = false
+doc = false
+bench = false

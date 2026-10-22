@@ -588,3 +588,89 @@ pub fn render_photo(
     .render()
     .map_err(|e| HttpError::Internal(e.into()))
 }
+
+struct CalendarCard {
+    href: String,
+    label: String,
+    count: u64,
+    posted_count: u64,
+    image: Image,
+}
+struct CalendarCell {
+    href: String,
+    posted: bool,
+    image: Image,
+}
+#[derive(Template)]
+#[template(path = "default/calendar.html")]
+struct CalendarTemplate<'a> {
+    context: &'a PageContext<'a>,
+    title: String,
+    description: &'static str,
+    styles: &'static str,
+    buckets: Vec<CalendarCard>,
+    photos: Vec<CalendarCell>,
+    total: u64,
+    number: u32,
+    previous: Option<String>,
+    next: Option<String>,
+}
+/// Renders UTC calendar summaries and a bounded responsive photo grid.
+///
+/// # Errors
+/// Returns template failures; dates originate only from validated selections.
+pub fn render_calendar(
+    page: &yhotos_db::calendar::CalendarPage,
+    selection: yhotos_db::calendar::Selection,
+    number: u32,
+    context: &PageContext<'_>,
+) -> Result<String, HttpError> {
+    let path = selection.path();
+    let buckets = page
+        .buckets
+        .iter()
+        .filter(|_| !selection.is_day())
+        .map(|b| CalendarCard {
+            href: format!("{path}/{}", b.number),
+            label: b.number.to_string(),
+            count: b.count,
+            posted_count: b.posted_count,
+            image: image(
+                &b.cover,
+                "(max-width: 600px) calc(100vw - 32px), 360px".into(),
+                false,
+                true,
+            ),
+        })
+        .collect();
+    let photos = page
+        .photos
+        .iter()
+        .enumerate()
+        .map(|(index, p)| CalendarCell {
+            href: format!("/p/{}", p.photo.short_id),
+            posted: p.posted,
+            image: image(
+                &p.photo,
+                "(max-width: 600px) calc(100vw - 32px), 360px".into(),
+                index == 0,
+                true,
+            ),
+        })
+        .collect();
+    CalendarTemplate {
+        context,
+        title: selection.title(),
+        description: "Browse photos by year, month and day",
+        styles: "",
+        buckets,
+        photos,
+        total: page.total,
+        number,
+        previous: (number > 1).then(|| format!("{path}?page={}", number - 1)),
+        next: (!page.photos.is_empty() && u64::from(number) * 60 < page.total)
+            .then(|| format!("{path}?page={}", number + 1)),
+    }
+    .render()
+    .map_err(|e| HttpError::Internal(e.into()))
+}

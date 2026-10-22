@@ -6,14 +6,17 @@
 pub mod access_sql;
 pub mod albums;
 pub mod audit;
+pub mod calendar;
 pub mod derivatives;
 pub mod flags;
 pub mod grants;
 pub mod groups;
 pub mod jobs;
 pub mod likes;
+pub mod map;
 pub mod mfa;
 pub mod photos;
+pub mod places;
 pub mod redirects;
 pub mod sessions;
 pub mod settings;

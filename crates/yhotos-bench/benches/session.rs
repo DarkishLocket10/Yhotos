@@ -194,6 +194,7 @@ fn config(
     let master = encode_standard(key.as_bytes());
     Ok(Box::leak(Box::new(Config {
         worker: yhotos_config::Worker::default(),
+        map_tiles: yhotos_config::MapTiles::default(),
         public_listen: peer,
         admin_listen: Some(peer),
         database_url_public: url,

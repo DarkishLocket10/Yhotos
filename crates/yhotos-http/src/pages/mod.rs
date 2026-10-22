@@ -1,7 +1,9 @@
 //! Server-rendered public gallery, with authorization performed inside page SQL.
+pub mod calendar;
 pub mod grid;
+pub mod map;
 mod view;
-pub use view::{PageContext, render_album, render_home, render_photo};
+pub use view::{PageContext, render_album, render_calendar, render_home, render_photo};
 
 use crate::{
     AppState,

@@ -1,0 +1,27 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH RECURSIVE identity AS (\n              SELECT $1::uuid AS user_id, $2::uuid[] AS groups, $3::bool AS admin,\n                     $4::uuid AS shared_album, $5::uuid AS shared_photo\n            ), album_levels AS (\n              SELECT a.*, ARRAY[a.id] AS ids, a.slug::text AS path,\n                jsonb_build_array(jsonb_build_object('id',a.id,'title',a.title,'path',a.slug::text)) AS chain,\n                (a.visibility <> 'restricted' OR a.id=i.shared_album OR EXISTS (\n                  SELECT 1 FROM album_grants g WHERE g.album_id=a.id AND\n                   ((g.principal_kind='user' AND g.principal_id=i.user_id) OR\n                    (g.principal_kind='group' AND g.principal_id=ANY(i.groups))))) IS TRUE AS levels_pass\n              FROM albums a CROSS JOIN identity i WHERE a.parent_id IS NULL AND a.deleted_at IS NULL\n              UNION ALL\n              SELECT a.*, parent.ids || a.id, parent.path || '/' || a.slug::text,\n                parent.chain || jsonb_build_array(jsonb_build_object('id',a.id,'title',a.title,'path',parent.path || '/' || a.slug::text)),\n                parent.levels_pass AND (a.visibility <> 'restricted' OR a.id=i.shared_album OR EXISTS (\n                  SELECT 1 FROM album_grants g WHERE g.album_id=a.id AND\n                   ((g.principal_kind='user' AND g.principal_id=i.user_id) OR\n                    (g.principal_kind='group' AND g.principal_id=ANY(i.groups))))) IS TRUE\n              FROM albums a JOIN album_levels parent ON parent.id=a.parent_id CROSS JOIN identity i\n              WHERE a.deleted_at IS NULL AND NOT a.id=ANY(parent.ids)\n            ), visible_albums AS (\n              SELECT a.* FROM album_levels a CROSS JOIN identity i\n              WHERE i.admin OR (a.levels_pass AND i.shared_photo IS NULL AND\n                (i.shared_album IS NULL OR i.shared_album=ANY(a.ids)))\n            ), visible_photos AS NOT MATERIALIZED (\n              SELECT p.* FROM photos p JOIN album_levels a ON a.id=p.album_id CROSS JOIN identity i\n              WHERE p.deleted_at IS NULL AND (i.admin OR (a.levels_pass AND (\n                (i.shared_photo IS NOT NULL AND p.id=i.shared_photo) OR\n                (i.shared_photo IS NULL AND (i.shared_album IS NULL OR i.shared_album=ANY(a.ids)) AND\n                  (p.visibility <> 'restricted' OR EXISTS (\n                    SELECT 1 FROM photo_grants g WHERE g.photo_id=p.id AND\n                     ((g.principal_kind='user' AND g.principal_id=i.user_id) OR\n                      (g.principal_kind='group' AND g.principal_id=ANY(i.groups)))))))))\n            ) SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY name,country,id),'[]'::jsonb) AS \"payload!\"\n      FROM (SELECT l.id,l.name,l.admin1,l.country,count(*) AS count FROM places l\n        JOIN visible_photos p ON p.place_id=l.id GROUP BY l.id) t",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "payload!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray",
+        "Bool",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "cf056f7052eb6f3c12250a020e5ca76fd846ea1f07bfe1e34d4178fe2a76d375"
+}

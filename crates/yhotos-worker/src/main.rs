@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 //! CPU job consumer with SIGTERM/SIGINT cancellation and fenced claim release.
+mod geo;
 use anyhow::{Context, Result};
 use std::time::Duration;
 use yhotos_jobs::{JobKind, Queue, QueueConfig};
@@ -100,7 +101,10 @@ async fn run(process_deadline: &mut Option<std::time::Instant>) -> Result<()> {
             JobKind::GeoReverse,
             JobKind::VideoTranscode,
         ],
-        ingest,
+        geo::Handler {
+            ingest,
+            pool: db.pool().clone(),
+        },
         async {
             shutdown
                 .await

@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO photos(id,short_id,album_id,title,original_hash,original_name,original_bytes,mime,kind,gps_lat,gps_lon)\n          SELECT id,short,$3,'Map benchmark',$4,'photo.jpeg',1,'image/jpeg','image',-80+mod(n,160),-170+mod(n,340)\n          FROM unnest($1::uuid[],$2::text[]) WITH ORDINALITY AS t(id,short,n)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "TextArray",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "537e3bff160674679bc494678e60e0eb394b008e489036d2a2688fedb238af8b"
+}

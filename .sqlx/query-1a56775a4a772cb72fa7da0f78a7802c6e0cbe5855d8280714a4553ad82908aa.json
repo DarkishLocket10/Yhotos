@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "CREATE TEMP TABLE photos (LIKE public.photos INCLUDING ALL)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "1a56775a4a772cb72fa7da0f78a7802c6e0cbe5855d8280714a4553ad82908aa"
+}

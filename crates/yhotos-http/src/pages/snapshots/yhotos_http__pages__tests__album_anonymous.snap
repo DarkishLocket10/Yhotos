@@ -20,7 +20,7 @@ expression: "render_album(&anonymous, 1, PageSort::Taken, &context()).unwrap()"
 <meta property="og:image:height" content="1365">
 <meta property="og:type" content="website">
 </head>
-<body><header class="site-header"><a href="/">Yhotos</a><span>Photo gallery</span></header><main><nav aria-label="Breadcrumb"><ol class="breadcrumbs"><li><a href="/">Home</a></li><li><a href="/a/gallery">Fixture gallery</a></li></ol></nav><h1>Fixture gallery</h1><p>Photos from the garden</p>
+<body><header class="site-header"><a href="/">Yhotos</a><span>Photo gallery</span><nav aria-label="Gallery"><a href="/map">Map</a> <a href="/calendar">Calendar</a></nav></header><main><nav aria-label="Breadcrumb"><ol class="breadcrumbs"><li><a href="/">Home</a></li><li><a href="/a/gallery">Fixture gallery</a></li></ol></nav><h1>Fixture gallery</h1><p>Photos from the garden</p>
 
 <form method="get" class="sort-form"><label for="sort">Sort photos</label><select name="sort" id="sort">
 <option value="taken" selected>Date taken</option><option value="posted">Date posted</option><option value="name">Name</option><option value="manual">Manual order</option></select><button type="submit">Apply sorting</button></form>
@@ -54,5 +54,5 @@ expression: "render_album(&anonymous, 1, PageSort::Taken, &context()).unwrap()"
 
 <nav aria-label="Pagination" class="pagination"><span>Page 1</span></nav>
 <script type="application/json" nonce="fixture-nonce" id="gallery-data">{"photos":[{"id":"aaaaaaaaaaac","title":"Photo 02"},{"id":"aaaaaaaaaaab","title":"Photo 03"}]}</script>
-</main><footer>Yhotos photo gallery</footer></body>
+</main><footer>Yhotos photo gallery · Place data: <a href="https://www.geonames.org/">GeoNames</a> (<a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>)</footer></body>
 </html>

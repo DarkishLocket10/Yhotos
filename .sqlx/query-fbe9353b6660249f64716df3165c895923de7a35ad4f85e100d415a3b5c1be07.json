@@ -1,0 +1,34 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO places(id,geonameid,name,admin1,country,lat,lon)\n              VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(geonameid) DO UPDATE SET\n              name=excluded.name,admin1=excluded.admin1,country=excluded.country,lat=excluded.lat,lon=excluded.lon\n              RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "places",
+            "name": "id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int8",
+        "Text",
+        "Text",
+        "Text",
+        "Float8",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "fbe9353b6660249f64716df3165c895923de7a35ad4f85e100d415a3b5c1be07"
+}

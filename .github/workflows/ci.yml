@@ -41,6 +41,10 @@ jobs:
         run: |
           npm ci
           npm run build
+      - name: Test offline gazetteer importer
+        run: python3 -m unittest discover -s deploy/geo -p 'test_*.py'
+      - name: Test map interactions
+        run: npm --prefix web test
       - name: Test bundled passkey redirects
         run: node --test crates/yhotos-http/tests/passkey_redirect.mjs
 
