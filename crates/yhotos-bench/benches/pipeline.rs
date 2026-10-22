@@ -19,7 +19,7 @@ fn fixture(dir: &Path) -> Option<PathBuf> {
                 return Some(found);
             }
         } else if let Ok(id) = yhotos_codec::identify(&path, &yhotos_codec::Limits::default())
-            && u64::from(id.width) * u64::from(id.height) >= 24_000_000
+            && u64::from(id.width.unwrap_or(0)) * u64::from(id.height.unwrap_or(0)) >= 24_000_000
         {
             return Some(path);
         }
@@ -47,7 +47,8 @@ fn selected_fixture() -> Result<(PathBuf, &'static str), Box<dyn Error>> {
     let identity = yhotos_codec::identify(&input, &yhotos_codec::Limits::default())?;
     eprintln!(
         "Pipeline fixture: {}x{}; eight-photo batch time / 8 is per-photo throughput",
-        identity.width, identity.height
+        identity.width.unwrap_or(0),
+        identity.height.unwrap_or(0)
     );
     Ok((input, prefix))
 }

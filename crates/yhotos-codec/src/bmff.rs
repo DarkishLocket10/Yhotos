@@ -437,6 +437,27 @@ impl Walker {
             header,
         })
     }
+    /// Top-level header for video containers. `QuickTime` and ISO BMFF allow the last
+    /// top-level box to declare size 0, meaning it extends to the end of the file;
+    /// nested boxes never may, so this is only called for top-level walks.
+    fn top_level_header(&mut self, offset: u64, file_len: u64) -> Result<BoxHeader, CodecError> {
+        let head = self.read::<8>(offset, file_len)?;
+        if u32::from_be_bytes(head[..4].try_into().map_err(|_| CodecError::Decode)?) != 0 {
+            return self.header(offset, file_len);
+        }
+        self.remaining = self.remaining.checked_sub(1).ok_or(CodecError::Limits)?;
+        let kind: [u8; 4] = head[4..8].try_into().map_err(|_| CodecError::Decode)?;
+        if &kind == b"uuid" || file_len.checked_sub(offset).is_none_or(|n| n < 8) {
+            return Err(CodecError::Decode);
+        }
+        Ok(BoxHeader {
+            kind,
+            payload: offset + 8,
+            end: file_len,
+            #[cfg(feature = "raw")]
+            header: 8,
+        })
+    }
     fn read<const N: usize>(&mut self, offset: u64, end: u64) -> Result<[u8; N], CodecError> {
         if offset.checked_add(N as u64).is_none_or(|n| n > end) {
             return Err(CodecError::Decode);
@@ -663,4 +684,151 @@ pub(crate) fn preview(
         return Err(CodecError::Decode);
     }
     Ok(walker.preview)
+}
+
+/// Recognizes only brands inside the bounded ftyp box, never later payload bytes.
+pub(crate) fn brand_kind(mut file: File) -> Result<crate::Kind, CodecError> {
+    use crate::{Kind, VideoContainer};
+    let len = file.metadata().map_err(|_| CodecError::Io)?.len();
+    let mut head = [0; 8];
+    file.read_exact(&mut head).map_err(|_| CodecError::Decode)?;
+    let size = u64::from(u32::from_be_bytes(
+        head[..4].try_into().map_err(|_| CodecError::Decode)?,
+    ));
+    if &head[4..] != b"ftyp"
+        || !(16..=4096).contains(&size)
+        || size > len
+        || !size.is_multiple_of(4)
+    {
+        return Err(CodecError::Decode);
+    }
+    let mut brands = vec![0; usize::try_from(size - 8).map_err(|_| CodecError::Limits)?];
+    file.read_exact(&mut brands)
+        .map_err(|_| CodecError::Decode)?;
+    let brands: Vec<_> = brands
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .enumerate()
+        .filter_map(|(i, b)| (i != 1).then_some(b))
+        .collect();
+    if brands.contains(&b"crx ") {
+        return Ok(Kind::Raw(crate::RawMake("Canon".into())));
+    }
+    if brands.iter().any(|b| matches!(*b, b"avif" | b"avis")) {
+        return Ok(Kind::Avif);
+    }
+    if brands.iter().any(|b| {
+        matches!(
+            *b,
+            b"heic" | b"heix" | b"hevc" | b"hevx" | b"mif1" | b"msf1"
+        )
+    }) {
+        return Ok(Kind::Heif);
+    }
+    if brands.contains(&b"qt  ") {
+        return Ok(Kind::Video {
+            container: VideoContainer::Mov,
+        });
+    }
+    if brands.iter().any(|b| {
+        matches!(
+            *b,
+            b"isom"
+                | b"iso2"
+                | b"iso3"
+                | b"iso4"
+                | b"iso5"
+                | b"iso6"
+                | b"mp41"
+                | b"mp42"
+                | b"avc1"
+                | b"M4V "
+        )
+    }) {
+        return Ok(Kind::Video {
+            container: VideoContainer::Mp4,
+        });
+    }
+    Err(CodecError::BadMagic)
+}
+
+pub(crate) fn video_dimensions(
+    file: File,
+    limits: &crate::Limits,
+) -> Result<Option<(u32, u32)>, CodecError> {
+    let len = file.metadata().map_err(|_| CodecError::Io)?.len();
+    let mut walker = Walker {
+        file,
+        remaining: MAX_BOXES,
+        metadata_remaining: MAX_METADATA,
+        metadata: None,
+        #[cfg(feature = "raw")]
+        seen: [false; 3],
+        #[cfg(feature = "raw")]
+        limits: limits.clone(),
+        #[cfg(feature = "raw")]
+        preview: None,
+        #[cfg(feature = "raw")]
+        jpeg_budget: MAX_METADATA,
+        #[cfg(feature = "raw")]
+        preview_count: 0,
+    };
+    let mut at = 0;
+    let mut first = None;
+    while at < len {
+        let movie = walker.top_level_header(at, len)?;
+        if movie.kind == *b"moov" {
+            let mut track_offset = movie.payload;
+            while track_offset < movie.end {
+                let track = walker.header(track_offset, movie.end)?;
+                if track.kind == *b"trak" {
+                    let mut field_offset = track.payload;
+                    let mut dims = None;
+                    let mut video = false;
+                    while field_offset < track.end {
+                        let field = walker.header(field_offset, track.end)?;
+                        if field.kind == *b"tkhd" {
+                            let version = walker.read::<1>(field.payload, field.end)?[0];
+                            let offset = match version {
+                                0 => 76,
+                                1 => 88,
+                                _ => return Err(CodecError::Decode),
+                            };
+                            if field.end - field.payload != offset + 8 {
+                                return Err(CodecError::Decode);
+                            }
+                            let width =
+                                u32::from_be_bytes(walker.read(field.payload + offset, field.end)?)
+                                    >> 16;
+                            let height = u32::from_be_bytes(
+                                walker.read(field.payload + offset + 4, field.end)?,
+                            ) >> 16;
+                            dims = Some((width, height));
+                        } else if field.kind == *b"mdia" {
+                            let mut child_offset = field.payload;
+                            while child_offset < field.end {
+                                let child = walker.header(child_offset, field.end)?;
+                                if child.kind == *b"hdlr" {
+                                    video =
+                                        walker.read::<4>(child.payload + 8, child.end)? == *b"vide";
+                                }
+                                child_offset = child.end;
+                            }
+                        }
+                        field_offset = field.end;
+                    }
+                    if video && first.is_none() {
+                        if let Some((width, height)) = dims {
+                            limits.check(width, height, 1)?;
+                        }
+                        first = Some(dims);
+                    }
+                }
+                track_offset = track.end;
+            }
+        }
+        at = movie.end;
+    }
+    Ok(first.flatten())
 }

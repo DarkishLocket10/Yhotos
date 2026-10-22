@@ -23,7 +23,7 @@ serde_json.workspace = true
 time.workspace = true
 yhotos-core = { path = "../yhotos-core" }
 yhotos-config = { path = "../yhotos-config" }
-yhotos-http = { path = "../yhotos-http" }
+yhotos-http = { path = "../yhotos-http", features = ["admin"] }
 yhotos-storage = { path = "../yhotos-storage" }
 yhotos-codec = { path = "../yhotos-codec" }
 axum.workspace = true
@@ -77,4 +77,8 @@ path = "../yhotos-pipeline"
 
 [[bench]]
 name = "pipeline"
+harness = false
+
+[[bench]]
+name = "upload"
 harness = false

@@ -54,7 +54,7 @@ async fn production_plan_meets_photograph_and_p3_fidelity_gates(pool: PgPool) {
             let output_id = identify(&output, &Limits::default()).unwrap();
             if name != "chart-p3.png" {
                 assert_eq!(
-                    output_id.width.max(output_id.height),
+                    output_id.width.unwrap().max(output_id.height.unwrap()),
                     edge,
                     "{name} {} {} was not measured at its true size",
                     row.variant,
@@ -62,7 +62,7 @@ async fn production_plan_meets_photograph_and_p3_fidelity_gates(pool: PgPool) {
                 );
             }
             assert_eq!(
-                (output_id.width, output_id.height),
+                (output_id.width.unwrap(), output_id.height.unwrap()),
                 (
                     u32::try_from(row.width).unwrap(),
                     u32::try_from(row.height).unwrap()
@@ -208,13 +208,13 @@ impl Oracle {
         let cropped = dir.path().join("crop.v");
         let id = identify(source, &Limits::default()).unwrap();
         let source = if square {
-            let side = id.width.min(id.height);
+            let side = id.width.unwrap().min(id.height.unwrap());
             vips(&[
                 "extract_area".as_ref(),
                 source.as_os_str(),
                 cropped.as_os_str(),
-                ((id.width - side) / 2).to_string().as_ref(),
-                ((id.height - side) / 2).to_string().as_ref(),
+                ((id.width.unwrap() - side) / 2).to_string().as_ref(),
+                ((id.height.unwrap() - side) / 2).to_string().as_ref(),
                 side.to_string().as_ref(),
                 side.to_string().as_ref(),
             ]);
@@ -238,8 +238,8 @@ impl Oracle {
         let id = identify(&reference, &Limits::default()).unwrap();
         let mut oracle = Self {
             dir,
-            width: id.width as usize,
-            height: id.height as usize,
+            width: id.width.unwrap() as usize,
+            height: id.height.unwrap() as usize,
             rgb: Vec::new(),
             square,
         };

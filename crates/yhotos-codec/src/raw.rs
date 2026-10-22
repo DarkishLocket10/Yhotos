@@ -385,8 +385,8 @@ pub(crate) fn identify(path: &Path, limits: &Limits) -> Result<Identity, CodecEr
     };
     Ok(Identity {
         kind: Kind::Raw(RawMake(probe.make)),
-        width: probe.width,
-        height: probe.height,
+        width: Some(probe.width),
+        height: Some(probe.height),
         orientation: probe.orientation,
         has_icc: profile.is_some(),
         icc_desc: profile.as_deref().and_then(native::profile_description),
