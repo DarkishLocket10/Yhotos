@@ -1349,6 +1349,24 @@ async fn map_fallback_csp_json_and_private_cache(pool: PgPool) {
     assert!(!csp.contains("blob:"));
     assert!(!csp.contains("unsafe-eval"));
     let html = body(response).await;
+    // The worker URL is keyed on the tile origin and still receives the map CSP.
+    let worker = html
+        .split("data-worker=\"")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap()
+        .replace("&#38;", "&");
+    assert!(worker.contains("?tiles="), "{worker}");
+    let response = f.get(&worker).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        response.headers()[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap()
+            .contains("connect-src 'self' https://tiles.openfreemap.org")
+    );
     let href = html
         .split("<li><a href=\"/places/")
         .nth(1)

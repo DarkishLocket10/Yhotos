@@ -27,7 +27,7 @@ struct MapTemplate<'a> {
     tiles: &'a str,
     map_script: &'static str,
     map_css: &'static str,
-    worker: &'static str,
+    worker: String,
 }
 pub(crate) async fn page(
     State(state): State<AppState>,
@@ -55,7 +55,10 @@ pub(crate) async fn page(
         tiles: &state.config.map_tiles.template,
         map_script: static_assets::map_script_url()?,
         map_css: static_assets::map_css_url()?,
-        worker: static_assets::map_worker_url()?,
+        worker: worker_href(
+            static_assets::map_worker_url()?,
+            state.config.map_tiles.origin.as_deref(),
+        ),
     }
     .render()
     .map_err(|e| HttpError::Internal(e.into()))?;
@@ -158,4 +161,39 @@ pub(crate) async fn place(
         &identity,
         &format!("places,place:{place},visibility"),
     )
+}
+
+/// The worker's CSP names the tile origin, but its asset URL hashes only the JS and is
+/// cached as immutable. Keying the URL on the origin makes a provider change fetch a
+/// fresh worker (and CSP); the static handler ignores the query.
+pub(crate) fn worker_href(base: &str, origin: Option<&str>) -> String {
+    let digest = blake3::hash(origin.unwrap_or("self").as_bytes()).to_hex();
+    format!("{base}?tiles={}", &digest[..16])
+}
+
+#[cfg(test)]
+mod worker_tests {
+    use super::worker_href;
+    #[test]
+    fn worker_url_changes_with_the_tile_origin() {
+        let a = worker_href(
+            "/static/map-worker.abc.js",
+            Some("https://tiles.openfreemap.org"),
+        );
+        let b = worker_href(
+            "/static/map-worker.abc.js",
+            Some("https://tiles.example.org"),
+        );
+        let same = worker_href("/static/map-worker.abc.js", None);
+        assert_ne!(a, b);
+        assert_ne!(a, same);
+        assert_eq!(
+            a,
+            worker_href(
+                "/static/map-worker.abc.js",
+                Some("https://tiles.openfreemap.org")
+            )
+        );
+        assert!(a.starts_with("/static/map-worker.abc.js?tiles="));
+    }
 }
