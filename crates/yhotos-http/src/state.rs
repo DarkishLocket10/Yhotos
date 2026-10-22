@@ -18,7 +18,7 @@ pub struct AppResources {
     pub pool: PgPool,
     /// Canonical content-addressed storage root.
     pub store: Store,
-    /// Bounded metadata cache and original-stream accounting shared across clones.
+    /// Bounded metadata cache and original/video stream accounting across clones.
     pub files: FileCache,
 }
 impl Deref for AppState {
@@ -28,20 +28,20 @@ impl Deref for AppState {
     }
 }
 impl AppState {
-    /// Shares one 60-second, 50,000-entry cache and a four-stream per-IP cap.
+    /// Shares metadata and stream caps: four per IP and the configured global cap.
     #[must_use]
     pub fn new(config: &'static Config, pool: PgPool, store: Store) -> Self {
         Self::from(AppResources {
             config,
             pool,
             store,
-            files: FileCache::default(),
+            files: FileCache::new(4, config.global_stream_cap),
         })
     }
 }
 
 impl From<AppResources> for AppState {
-    /// Shares supplied resources, including a configured original-stream cap.
+    /// Shares supplied resources, including original/video stream caps.
     fn from(resources: AppResources) -> Self {
         Self(Arc::new(resources))
     }

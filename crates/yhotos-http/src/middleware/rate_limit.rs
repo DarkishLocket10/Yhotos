@@ -203,8 +203,8 @@ pub(crate) async fn limit(
         }
         return response;
     }
-    // Only original bodies need the validated IP for concurrent-stream accounting.
-    if request.uri().path().starts_with("/o/") {
+    // Both original and video bodies use the validated IP for stream accounting.
+    if request.uri().path().starts_with("/o/") || request.uri().path().starts_with("/v/") {
         request.extensions_mut().insert(ClientIp(ip));
     }
     next.run(request).await

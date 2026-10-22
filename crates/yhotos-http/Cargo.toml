@@ -20,6 +20,7 @@ yhotos-storage = { path = "../yhotos-storage" }
 sqlx.workspace = true
 moka.workspace = true
 tokio-util.workspace = true
+futures-core.workspace = true
 http-body-util.workspace = true
 axum.workspace = true
 tokio = { workspace = true, features = ["time", "net"] }

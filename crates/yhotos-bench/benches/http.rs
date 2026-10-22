@@ -29,6 +29,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .into(),
         trust_proxy: false,
+        global_stream_cap: 64,
         rate_limits: RateLimits {
             cheap_per_min: u32::MAX,
             expensive_per_min: u32::MAX,

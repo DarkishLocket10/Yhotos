@@ -14,6 +14,10 @@ use tower::ServiceExt;
 use yhotos_config::Config;
 
 pub(crate) fn state(trust_proxy: bool, cheap: u32) -> AppState {
+    state_with_global_cap(trust_proxy, cheap, 64)
+}
+
+pub(crate) fn state_with_global_cap(trust_proxy: bool, cheap: u32, global: u16) -> AppState {
     let dir = tempfile::tempdir().unwrap();
     let f = Figment::new()
         .merge((
@@ -28,6 +32,7 @@ pub(crate) fn state(trust_proxy: bool, cheap: u32) -> AppState {
         .merge(("public_base_url", "https://example.test"))
         .merge(("admin_listen", "127.0.0.1:8081"))
         .merge(("trust_proxy", trust_proxy))
+        .merge(("global_stream_cap", global))
         .merge(("rate_limits.cheap_per_min", cheap));
     let config = Box::leak(Box::new(Config::from_figment(f).unwrap()));
     AppState::new(

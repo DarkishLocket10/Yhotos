@@ -31,6 +31,8 @@ pub struct Config {
     pub trust_proxy: bool,
     /// Independent per-IP token-bucket capacities.
     pub rate_limits: RateLimits,
+    /// Positive concurrent-stream cap shared by originals and video (default 64).
+    pub global_stream_cap: u16,
     /// Maximum total upload and chunk lengths.
     pub upload: Upload,
     /// Structured or interactive tracing output.
@@ -70,6 +72,7 @@ struct Defaults {
     admin_listen: Option<SocketAddr>,
     trust_proxy: bool,
     rate_limits: RateLimits,
+    global_stream_cap: u16,
     upload: Upload,
     log_format: LogFormat,
 }
@@ -84,6 +87,7 @@ impl Default for Defaults {
                 expensive_per_min: 30,
                 auth_per_min: 10,
             },
+            global_stream_cap: 64,
             upload: Upload {
                 max_bytes: 2 * 1024 * 1024 * 1024,
                 chunk_bytes: 8 * 1024 * 1024,
@@ -143,6 +147,7 @@ impl Config {
         let cheap = read::<u32>(&f, "rate_limits.cheap_per_min", &mut errors);
         let expensive = read::<u32>(&f, "rate_limits.expensive_per_min", &mut errors);
         let auth = read::<u32>(&f, "rate_limits.auth_per_min", &mut errors);
+        let global_stream_cap = read::<u16>(&f, "global_stream_cap", &mut errors);
         let max_bytes = read::<u64>(&f, "upload.max_bytes", &mut errors);
         let chunk_bytes = read::<u32>(&f, "upload.chunk_bytes", &mut errors);
         let log_format = read::<LogFormat>(&f, "log_format", &mut errors);
@@ -194,6 +199,9 @@ impl Config {
         if max_bytes == Some(0) {
             errors.push("upload.max_bytes: must be positive".into());
         }
+        if global_stream_cap == Some(0) {
+            errors.push("global_stream_cap: must be positive".into());
+        }
         if chunk_bytes == Some(0) {
             errors.push("upload.chunk_bytes: must be positive".into());
         }
@@ -218,6 +226,7 @@ impl Config {
             cheap,
             expensive,
             auth,
+            global_stream_cap,
             max_bytes,
             chunk_bytes,
             log_format,
@@ -233,6 +242,7 @@ impl Config {
                 Some(cheap_per_min),
                 Some(expensive_per_min),
                 Some(auth_per_min),
+                Some(global_stream_cap),
                 Some(max_bytes),
                 Some(chunk_bytes),
                 Some(log_format),
@@ -249,6 +259,7 @@ impl Config {
                     expensive_per_min,
                     auth_per_min,
                 },
+                global_stream_cap,
                 upload: Upload {
                     max_bytes,
                     chunk_bytes,
@@ -287,6 +298,7 @@ mod tests {
         assert!(!config.trust_proxy);
         assert_eq!(config.public_listen.to_string(), "0.0.0.0:8080");
         assert_eq!(config.rate_limits.cheap_per_min, 600);
+        assert_eq!(config.global_stream_cap, 64);
         assert_eq!(config.upload.max_bytes, 2 * 1024 * 1024 * 1024);
         let debug = format!("{config:?}");
         assert!(!debug.contains(config.database_url.expose_secret()));
@@ -332,6 +344,9 @@ mod tests {
             ("rate_limits.cheap_per_min", "0"),
             ("rate_limits.expensive_per_min", "0"),
             ("rate_limits.auth_per_min", "0"),
+            ("global_stream_cap", "0"),
+            ("global_stream_cap", "invalid"),
+            ("global_stream_cap", "65536"),
             ("upload.max_bytes", "0"),
             ("upload.chunk_bytes", "0"),
             ("log_format", "invalid"),

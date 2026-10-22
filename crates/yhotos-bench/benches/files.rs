@@ -71,6 +71,7 @@ fn config(dir: &std::path::Path) -> BenchResult<&'static Config> {
         public_base_url: "https://example.test".parse()?,
         session_key: format!("{}{}", Uuid::now_v7().simple(), Uuid::now_v7().simple()).into(),
         trust_proxy: false,
+        global_stream_cap: 64,
         rate_limits: RateLimits {
             cheap_per_min: u32::MAX,
             expensive_per_min: u32::MAX,
@@ -109,9 +110,10 @@ async fn setup(pool: &PgPool, store: &Store) -> BenchResult<(yhotos_core::AlbumI
     .await?;
     let bytes = i64::try_from(FILE_BYTES)?;
     sqlx::query!("INSERT INTO derivatives(id,photo_id,variant,format,hdr,hash,width,height,bytes) VALUES ($1,$2,'small','jpeg',false,$3,640,480,$4)",Uuid::now_v7(),photo.id.0,hash,bytes).execute(&mut *conn).await?;
+    sqlx::query!("INSERT INTO video_renditions(id,photo_id,codec,hash,width,height,bytes,duration_ms,hls) VALUES ($1,$2,'h264',$3,640,480,$4,1000,false)",Uuid::now_v7(),photo.id.0,hash,bytes).execute(&mut *conn).await?;
     let temp = store.tmp_dir()?;
     let source = temp.path().join("benchmark");
-    tokio::fs::write(&source, data).await?;
+    tokio::fs::write(&source, &data).await?;
     store
         .put_derivative(
             &DerivativeKey {
@@ -123,7 +125,40 @@ async fn setup(pool: &PgPool, store: &Store) -> BenchResult<(yhotos_core::AlbumI
             &source,
         )
         .await?;
-    Ok((album.id, format!("/i/{hash}/small.jpeg")))
+    let video = store.path_video(&put.hash, "h264")?;
+    tokio::fs::create_dir_all(video.parent().ok_or("missing video parent")?).await?;
+    tokio::fs::write(video, data).await?;
+    Ok((album.id, hash))
+}
+
+fn percentiles(
+    runtime: &tokio::runtime::Runtime,
+    app: &Router,
+    state: &AppState,
+    path: &str,
+) -> BenchResult<()> {
+    for cold in [false, true] {
+        let mut samples = Vec::with_capacity(2000);
+        for _ in 0..2000 {
+            if cold {
+                state.files.invalidate_all();
+            }
+            let start = Instant::now();
+            runtime.block_on(first_byte(app, path))?;
+            samples.push(start.elapsed());
+        }
+        samples.sort_unstable();
+        let p50 = samples.get(1000).ok_or("missing p50")?;
+        let p99 = samples.get(1980).ok_or("missing p99")?;
+        eprintln!(
+            "files/{} p50={p50:?} p99={p99:?} (2000 requests, first body chunk)",
+            if cold { "cold_postgres" } else { "warm_moka" }
+        );
+        if *p99 >= Duration::from_millis(5) {
+            return Err("derivative p99 exceeded 5 ms".into());
+        }
+    }
+    Ok(())
 }
 
 fn main() -> BenchResult<()> {
@@ -146,31 +181,14 @@ fn main() -> BenchResult<()> {
         2,
         DatabaseTls::Disable,
     ))?;
-    let (album, path) = runtime.block_on(setup(admin.pool(), &store))?;
+    let (album, hash) = runtime.block_on(setup(admin.pool(), &store))?;
+    let path = format!("/i/{hash}/small.jpeg");
+    let original_path = format!("/o/{hash}/benchmark.jpeg");
+    let video_path = format!("/v/{hash}/h264.mp4");
     let state = AppState::new(config, public.pool().clone(), store);
     let app = public_router(state.clone());
     runtime.block_on(first_byte(&app, &path))?;
-    for cold in [false, true] {
-        let mut samples = Vec::with_capacity(2000);
-        for _ in 0..2000 {
-            if cold {
-                state.files.invalidate_all();
-            }
-            let start = Instant::now();
-            runtime.block_on(first_byte(&app, &path))?;
-            samples.push(start.elapsed());
-        }
-        samples.sort_unstable();
-        let p50 = samples.get(1000).ok_or("missing p50")?;
-        let p99 = samples.get(1980).ok_or("missing p99")?;
-        eprintln!(
-            "files/{} p50={p50:?} p99={p99:?} (2000 requests, first body chunk)",
-            if cold { "cold_postgres" } else { "warm_moka" }
-        );
-        if *p99 >= Duration::from_millis(5) {
-            return Err("derivative p99 exceeded 5 ms".into());
-        }
-    }
+    percentiles(&runtime, &app, &state, &path)?;
     let mut criterion = Criterion::default().configure_from_args();
     let mut failure = None;
     for cold in [false, true] {
@@ -199,15 +217,34 @@ fn main() -> BenchResult<()> {
             },
         );
     }
+    for (name, path) in [
+        ("files/original/first_byte", &original_path),
+        ("files/video/first_byte", &video_path),
+    ] {
+        runtime.block_on(first_byte(&app, path))?;
+        criterion.bench_function(name, |b| {
+            b.iter(|| {
+                if let Err(error) = runtime.block_on(first_byte(&app, path)) {
+                    failure = Some(error);
+                }
+            });
+        });
+    }
     let mut group = criterion.benchmark_group("files/stream");
     group.throughput(Throughput::Bytes(u64::try_from(FILE_BYTES)?));
-    group.bench_function("warm_4mib", |b| {
-        b.iter(|| {
-            if let Err(error) = runtime.block_on(stream(&app, &path)) {
-                failure = Some(error);
-            }
+    for (name, path) in [
+        ("warm_4mib", &path),
+        ("original_4mib", &original_path),
+        ("video_4mib", &video_path),
+    ] {
+        group.bench_function(name, |b| {
+            b.iter(|| {
+                if let Err(error) = runtime.block_on(stream(&app, path)) {
+                    failure = Some(error);
+                }
+            });
         });
-    });
+    }
     group.finish();
     criterion.final_summary();
     // The seeded rows are isolated by a fresh album and removed after timing.

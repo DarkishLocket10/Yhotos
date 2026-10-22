@@ -30,6 +30,9 @@ struct Fixture {
 }
 impl Fixture {
     async fn new(pool: PgPool) -> Self {
+        Self::with_global_cap(pool, 64).await
+    }
+    async fn with_global_cap(pool: PgPool, global_stream_cap: u16) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path()).unwrap();
         let bytes: Vec<_> = (0..=255).cycle().take(1024).collect();
@@ -78,7 +81,7 @@ impl Fixture {
             .await
             .unwrap();
         tokio::fs::write(path, &bytes).await.unwrap();
-        let config = crate::tests::state(false, 100_000).config;
+        let config = crate::tests::state_with_global_cap(false, 100_000, global_stream_cap).config;
         let state = AppState::new(config, pool, store);
         Self {
             _dir: dir,
@@ -116,9 +119,6 @@ fn req(path: &str) -> Request {
     request
         .extensions_mut()
         .insert(ConnectInfo("127.0.0.1:1234".parse::<SocketAddr>().unwrap()));
-    request
-        .extensions_mut()
-        .insert(ClientIp("127.0.0.1".parse().unwrap()));
     request
 }
 async fn bytes(response: Response) -> axum::body::Bytes {
@@ -484,7 +484,7 @@ async fn original_cap_lives_until_stream_drop_and_is_per_ip(pool: PgPool) {
         app.clone().oneshot(other).await.unwrap().status(),
         StatusCode::OK
     );
-    // Derivatives and videos use their own request buckets and no original slots.
+    // Derivatives have no stream slots; video shares the originals' slots.
     assert_eq!(
         app.clone()
             .oneshot(req(&f.derivative()))
@@ -495,7 +495,7 @@ async fn original_cap_lives_until_stream_drop_and_is_per_ip(pool: PgPool) {
     );
     assert_eq!(
         app.clone().oneshot(req(&f.video())).await.unwrap().status(),
-        StatusCode::OK
+        StatusCode::TOO_MANY_REQUESTS
     );
     drop(held.pop());
     assert_eq!(
@@ -512,6 +512,110 @@ async fn original_cap_lives_until_stream_drop_and_is_per_ip(pool: PgPool) {
         app.oneshot(req(&f.original())).await.unwrap().status(),
         StatusCode::OK
     );
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn video_cap_holds_unconsumed_responses_and_shares_slots_with_originals(pool: PgPool) {
+    let f = Fixture::new(pool).await;
+    let app = crate::public_router(f.state.clone());
+    let mut held = Vec::new();
+    for _ in 0..4 {
+        let response = app.clone().oneshot(req(&f.video())).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        held.push(response);
+    }
+    for path in [f.video(), f.original()] {
+        assert_eq!(
+            app.clone().oneshot(req(&path)).await.unwrap().status(),
+            StatusCode::TOO_MANY_REQUESTS
+        );
+    }
+    let mut other = req(&f.video());
+    other
+        .extensions_mut()
+        .insert(ConnectInfo("127.0.0.2:1234".parse::<SocketAddr>().unwrap()));
+    assert_eq!(
+        app.clone().oneshot(other).await.unwrap().status(),
+        StatusCode::OK
+    );
+    drop(held);
+    for path in [f.video(), f.original()] {
+        let response = app.clone().oneshot(req(&path)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(bytes(response).await, f.bytes);
+    }
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn global_cap_holds_video_bodies_and_is_shared_across_ips_and_originals(pool: PgPool) {
+    let f = Fixture::with_global_cap(pool, 2).await;
+    let app = crate::public_router(f.state.clone());
+    // First exhaust the cap with videos, then a mix of originals and videos.
+    for paths in [[f.video(), f.video()], [f.original(), f.video()]] {
+        let mut held = Vec::new();
+        for (index, path) in paths.iter().enumerate() {
+            let mut request = req(path);
+            request.extensions_mut().insert(ConnectInfo(
+                format!("127.0.0.{}:1234", index + 1)
+                    .parse::<SocketAddr>()
+                    .unwrap(),
+            ));
+            let response = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            held.push(response);
+        }
+        for path in [f.video(), f.original()] {
+            let mut request = req(&path);
+            request
+                .extensions_mut()
+                .insert(ConnectInfo("127.0.0.3:1234".parse::<SocketAddr>().unwrap()));
+            assert_eq!(
+                app.clone().oneshot(request).await.unwrap().status(),
+                StatusCode::TOO_MANY_REQUESTS
+            );
+        }
+        // Headers-only responses do not reserve slots even at the global cap.
+        for (method, header, value, status) in [
+            (
+                Method::HEAD,
+                header::RANGE,
+                "bytes=0-9".into(),
+                StatusCode::OK,
+            ),
+            (
+                Method::GET,
+                header::IF_NONE_MATCH,
+                format!("\"{}\"", f.hash),
+                StatusCode::NOT_MODIFIED,
+            ),
+            (
+                Method::GET,
+                header::RANGE,
+                "bytes=9-2".into(),
+                StatusCode::RANGE_NOT_SATISFIABLE,
+            ),
+        ] {
+            let mut request = req(&f.video());
+            *request.method_mut() = method;
+            request
+                .headers_mut()
+                .insert(header, HeaderValue::from_str(&value).unwrap());
+            assert_eq!(app.clone().oneshot(request).await.unwrap().status(), status);
+        }
+        assert_eq!(
+            app.clone()
+                .oneshot(req(&f.derivative()))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        drop(held);
+        assert_eq!(
+            app.clone().oneshot(req(&f.video())).await.unwrap().status(),
+            StatusCode::OK
+        );
+    }
 }
 
 #[test]

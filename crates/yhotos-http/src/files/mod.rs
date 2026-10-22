@@ -39,19 +39,19 @@ pub struct FileCache {
 }
 impl Default for FileCache {
     fn default() -> Self {
-        Self::new(4)
+        Self::new(4, 64)
     }
 }
 impl FileCache {
-    /// Sets a positive per-IP original stream cap; zero fails closed for all streams.
+    /// Caps original and video streams per IP and globally; zero fails closed.
     #[must_use]
-    pub fn new(original_stream_cap: usize) -> Self {
+    pub fn new(per_ip_stream_cap: usize, global_stream_cap: u16) -> Self {
         Self {
             rows: Cache::builder()
                 .max_capacity(50_000)
                 .time_to_live(Duration::from_secs(60))
                 .build(),
-            streams: streams::Streams::new(original_stream_cap),
+            streams: streams::Streams::new(per_ip_stream_cap, global_stream_cap),
         }
     }
     /// Invalidates origin metadata after an admin mutation, or for cold-path measurement.
@@ -268,7 +268,7 @@ async fn serve(
     if request.method() == Method::HEAD {
         return Ok(response);
     }
-    let permit = if selector.area == Area::Originals {
+    let permit = if matches!(selector.area, Area::Originals | Area::Video) {
         let ip = request
             .extensions()
             .get::<ClientIp>()
@@ -283,10 +283,10 @@ async fn serve(
             .await
             .map_err(|error| HttpError::Internal(error.into()))?;
     }
-    let body = Body::from_stream(ReaderStream::with_capacity(file.take(range.len), BUFFER));
+    let stream = ReaderStream::with_capacity(file.take(range.len), BUFFER);
     *response.body_mut() = match permit {
-        Some(permit) => streams::guard(body, permit),
-        None => body,
+        Some(permit) => Body::from_stream(streams::GuardedStream::new(stream, permit)),
+        None => Body::from_stream(stream),
     };
     Ok(response)
 }
