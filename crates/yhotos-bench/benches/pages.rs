@@ -56,6 +56,23 @@ fn reviewed_layouts(criterion: &mut Criterion, page: &AlbumPage, context: &PageC
             ))
         });
     });
+    let mut malformed = page.clone();
+    for photo in &mut malformed.photos {
+        for mut derivative in photo.derivatives.clone() {
+            derivative.variant = "a-b".into();
+            photo.derivatives.push(derivative);
+        }
+    }
+    criterion.bench_function("pages/render_album/60_with_malformed_variants", |b| {
+        b.iter(|| {
+            black_box(render_album(
+                black_box(&malformed),
+                1,
+                PageSort::Taken,
+                context,
+            ))
+        });
+    });
 }
 
 fn main() -> Result<(), Box<dyn Error>> {

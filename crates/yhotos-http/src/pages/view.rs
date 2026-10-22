@@ -1,6 +1,6 @@
 //! Validated presentation values. Only generated numeric/base64 CSS bypasses escaping.
 use super::grid::justified_rows;
-use crate::error::HttpError;
+use crate::{error::HttpError, files::valid_derivative_selector};
 use askama::Template;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use std::fmt::Write;
@@ -85,13 +85,7 @@ fn derivative_url(d: &PageDerivative) -> Option<String> {
             .hash
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        || d.variant.is_empty()
-        || d.variant.len() > 16
-        || !d
-            .variant
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-        || !matches!(d.format.as_str(), "jpeg" | "avif" | "jxl")
+        || !valid_derivative_selector(&d.variant, &d.format)
         || d.w == 0
         || d.h == 0
         || d.w > 100_000

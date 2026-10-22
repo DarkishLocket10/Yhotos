@@ -391,6 +391,53 @@ async fn invalid_hashes_and_selectors_never_reach_database_or_missing_store() {
     assert_eq!(state.files.rows.entry_count(), 0);
 }
 
+#[test]
+fn derivative_selector_alphabet_and_length_match_storage() {
+    let hash = "a".repeat(64);
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path()).unwrap();
+    for (variant, valid) in [
+        ("small", true),
+        ("square2x", true),
+        ("0123456789abcdef", true),
+        ("", false),
+        ("a-b", false),
+        ("a_b", false),
+        ("Small", false),
+        ("é", false),
+        ("abcdefghijklmnopq", false),
+    ] {
+        for format in ["jpeg", "avif", "jxl"] {
+            for hdr in [false, true] {
+                let suffix = if hdr { ".hdr" } else { "" };
+                assert_eq!(
+                    Selector::parse(
+                        &hash,
+                        &format!("{variant}.{format}{suffix}"),
+                        Area::Derivatives
+                    )
+                    .is_ok(),
+                    valid
+                );
+                assert_eq!(
+                    store
+                        .path_derivative(&DerivativeKey {
+                            hash: &hash.parse().unwrap(),
+                            variant,
+                            format,
+                            hdr,
+                        })
+                        .is_ok(),
+                    valid
+                );
+            }
+        }
+    }
+    for name in ["small.JPEG", "small.png"] {
+        assert!(Selector::parse(&hash, name, Area::Derivatives).is_err());
+    }
+}
+
 // Keep callsite interest enabled for the lifetime of the test process. A task
 // local routes events to the current observer without counting parallel tests.
 static CAPTURE_INIT: std::sync::Once = std::sync::Once::new();

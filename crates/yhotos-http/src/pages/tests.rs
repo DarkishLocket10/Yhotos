@@ -548,6 +548,71 @@ async fn legacy_visibility_matches_pages_for_targets_and_ancestors(pool: PgPool)
 }
 
 #[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn malformed_derivative_selectors_cannot_displace_valid_sources(pool: PgPool) {
+    let f = Fixture::new(pool, 1).await;
+    let mut album = f.album_row(&SessionIdentity::Anonymous).await;
+    let photo = &mut album.photos[0];
+    for mut derivative in photo.derivatives.clone() {
+        if derivative.format != "jpeg" {
+            derivative.hdr = true;
+            photo.derivatives.push(derivative);
+        }
+    }
+    // Exercise dimension inference as well as photos with original dimensions.
+    for infer_dimensions in [false, true] {
+        if infer_dimensions {
+            album.photos[0].width = None;
+            album.photos[0].height = None;
+        }
+        let render = |mut album: albums::AlbumPage| {
+            album.album.cover = Some(album.photos[0].clone());
+            album.children = vec![album.album.clone()];
+            let photo = photos::PhotoPage {
+                photo: album.photos[0].clone(),
+                chain: vec![],
+                previous: None,
+                next: None,
+            };
+            [
+                render_home(&album.children, &context()).unwrap(),
+                render_album(&album, 1, PageSort::Taken, &context()).unwrap(),
+                render_photo(&photo, PageSort::Taken, &context()).unwrap(),
+            ]
+        };
+        let expected = render(album.clone());
+        for (variant, format) in [
+            ("a-b", None),
+            ("", None),
+            ("Small", None),
+            ("a_b", None),
+            ("a/b", None),
+            ("é", None),
+            ("abcdefghijklmnopq", None),
+            ("small", Some("JPEG")),
+            ("small", Some("png")),
+        ] {
+            let mut malformed = album.clone();
+            for mut derivative in album.photos[0].derivatives.clone() {
+                derivative.variant = variant.into();
+                if let Some(format) = format {
+                    derivative.format = format.into();
+                }
+                // Same-width malformed variants sort before the valid sources.
+                derivative.hash = "0".repeat(64);
+                malformed.photos[0].derivatives.push(derivative);
+            }
+            assert_eq!(render(malformed.clone()), expected, "{variant}/{format:?}");
+            malformed.photos[0].derivatives.reverse();
+            assert_eq!(
+                render(malformed),
+                expected,
+                "{variant}/{format:?}, reversed"
+            );
+        }
+    }
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
 async fn responsive_sources_exclude_crops_and_resolve_width_ties(pool: PgPool) {
     let f = Fixture::new(pool, 3).await;
     let row = f.album_row(&SessionIdentity::Anonymous).await;
