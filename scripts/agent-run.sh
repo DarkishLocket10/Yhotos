@@ -78,13 +78,20 @@ if [[ "$(uname)" == "Darwin" ]]; then
   MAX_SWAP_GB="${YHOTOS_AGENT_MAX_SWAP_GB:-3}"
   export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-3}"
 else
-  MIN_FREE="${YHOTOS_AGENT_MIN_FREE_GB:-14}"
+  # yesktop is shared with the owner's other work; leave it room.
+  MIN_FREE="${YHOTOS_AGENT_MIN_FREE_GB:-20}"
   MAX_RUNNING="${YHOTOS_AGENT_MAX_RUNNING:-1}"
   MAX_SWAP_GB="${YHOTOS_AGENT_MAX_SWAP_GB:-2}"
-  export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-6}"
+  export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}"
 fi
 export RUST_TEST_THREADS="${RUST_TEST_THREADS:-2}"
+# Above MEM_HIGH the kernel throttles and reclaims; only MEM_MAX kills. At 12G with no soft
+# limit, agents were OOM-killed mid-run on 2026-10-22 while linking test binaries.
+MEM_HIGH="${YHOTOS_AGENT_MEM_HIGH:-9G}"
 MEM_MAX="${YHOTOS_AGENT_MEM_MAX:-12G}"
+# Full debug info dominates rustc and linker memory; line tables keep backtraces useful.
+export CARGO_PROFILE_DEV_DEBUG="${CARGO_PROFILE_DEV_DEBUG:-line-tables-only}"
+export CARGO_PROFILE_TEST_DEBUG="${CARGO_PROFILE_TEST_DEBUG:-line-tables-only}"
 swap_used_gb() {
   if [[ "$(uname)" == "Darwin" ]]; then
     sysctl -n vm.swapusage | awk '{for (i=1;i<=NF;i++) if ($i=="used") {v=$(i+2); sub(/M/,"",v); printf "%d", v/1024}}'
@@ -162,8 +169,8 @@ echo "running codex ($MODEL, effort $EFFORT) in $WT on $BRANCH (cargo jobs $CARG
 SCOPE=()
 if [[ "$(uname)" == "Linux" ]] && command -v systemd-run >/dev/null 2>&1 \
   && systemd-run --user --scope -q -p MemoryMax=64M true 2>/dev/null; then
-  SCOPE=(systemd-run --user --scope -q -p "MemoryMax=$MEM_MAX" -p MemorySwapMax=0 --)
-  echo "agent memory ceiling: $MEM_MAX"
+  SCOPE=(systemd-run --user --scope -q -p "MemoryHigh=$MEM_HIGH" -p "MemoryMax=$MEM_MAX" -p MemorySwapMax=0 --)
+  echo "agent memory: throttle above $MEM_HIGH, hard ceiling $MEM_MAX"
 fi
 ${SCOPE[@]+"${SCOPE[@]}"} codex exec \
   -C "$WT" \
