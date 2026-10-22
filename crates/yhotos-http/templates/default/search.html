@@ -1,0 +1,10 @@
+{% extends "default/base.html" %}
+{% block content %}<main><h1>Search photos</h1>
+<form method="get" action="{{ action }}"><label for="search-query">Words or filters</label><input id="search-query" name="q" value="{{ query }}" maxlength="256" list="search-suggestions" autocomplete="off"><datalist id="search-suggestions"></datalist><button type="submit">Search</button></form>
+{% if action == "/admin/people/search" %}<p>Use person:"Name" to find a named person. <a href="/admin/people">Return to People</a></p>{% else %}<p>Try sunset tag:beach year:2025. Filters: camera, lens, tag, place, year, month, color, is, before, after. Put multiword values in quotes.</p>{% endif %}
+<ul aria-label="Active filters" class="filter-chips">{% for chip in chips %}<li>{{ chip }}</li>{% endfor %}</ul>
+<p>Top {{ total }} matches</p><section aria-label="Photos" class="photo-grid">{% for row in rows %}<div class="grid-row">{% for cell in row.cells %}<a class="cell" id="cell{{ cell.index }}" href="{{ cell.href }}">{% let image = cell.image %}{% include "default/partials/picture.html" %}{% if !cell.badge.is_empty() %}<span class="badge">{{ cell.badge }}</span>{% endif %}</a>{% endfor %}</div>{% endfor %}</section>
+{% if rows.is_empty() %}<p>No matching photos.</p>{% endif %}
+{% if !excerpts.is_empty() %}<details><summary>Recognized text in these photos</summary>{% for excerpt in excerpts %}<p>{{ excerpt }}</p>{% endfor %}</details>{% endif %}
+<nav aria-label="Pagination">{% if let Some(url) = previous %}<a rel="prev" href="{{ url }}">Previous page</a>{% endif %}{% if let Some(url) = next %}<a rel="next" href="{{ url }}">Next page</a>{% endif %}</nav>
+<script type="module" nonce="{{ context.nonce }}" src="{{ search_script }}"></script></main>{% endblock %}

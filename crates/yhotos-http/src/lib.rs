@@ -2,11 +2,13 @@
 
 //! Isolated public and admin routers, compiled templates and request controls.
 
+mod api;
 pub mod auth;
 pub mod error;
 pub mod files;
 pub mod middleware;
 pub mod pages;
+pub mod search;
 mod share;
 mod state;
 pub use state::{AppResources, AppState};
@@ -36,23 +38,12 @@ use yhotos_http::admin_router;
 ```"
 )]
 pub fn public_router(state: AppState) -> Router {
-    let files = Router::new()
-        .route("/i/{hash}/{name}", get(files::derivative))
-        .route("/o/{hash}/{name}", get(files::original))
-        .route("/v/{hash}/{name}", get(files::video));
-    let router = Router::new()
-        .route("/", get(pages::home))
-        .route("/a/{*path}", get(pages::album))
-        .route("/p/{id}", get(pages::photo))
-        .route("/legacy/{*path}", get(pages::legacy))
-        .route("/index.php", get(pages::legacy))
-        .route("/picture.php", get(pages::legacy))
-        .route_layer(from_fn(pages::privacy))
+    let router = gallery_routes()
         .merge(auth::routes(auth::Audience(false)))
         .merge(share::routes())
         .route("/healthz", get(health).with_state(()))
         .route("/static/{*path}", get(static_assets::serve))
-        .merge(files);
+        .merge(file_routes());
     #[cfg(test)]
     let router = router
         .route(
@@ -84,13 +75,36 @@ pub fn public_router(state: AppState) -> Router {
     stack(router, state, auth::Audience(false))
 }
 
+fn gallery_routes() -> Router<AppState> {
+    Router::new()
+        .route("/", get(pages::home))
+        .route("/a/{*path}", get(pages::album))
+        .route("/p/{id}", get(pages::photo))
+        .route("/search", get(search::page))
+        .route("/api/v1/search", get(api::search))
+        .route("/api/v1/suggest", get(api::suggest))
+        .route("/legacy/{*path}", get(pages::legacy))
+        .route("/index.php", get(pages::legacy))
+        .route("/picture.php", get(pages::legacy))
+        .route_layer(from_fn(pages::privacy))
+}
+fn file_routes() -> Router<AppState> {
+    Router::new()
+        .route("/i/{hash}/{name}", get(files::derivative))
+        .route("/o/{hash}/{name}", get(files::original))
+        .route("/v/{hash}/{name}", get(files::video))
+}
+
 /// Compiles only with `admin`, and must be served on the separate admin socket.
 #[cfg(feature = "admin")]
 pub fn admin_router(state: AppState) -> Router {
     stack(
         Router::new()
+            .merge(gallery_routes())
+            .merge(file_routes())
             .merge(auth::routes(auth::Audience(true)))
             .merge(share::admin_routes())
+            .merge(search::people::routes())
             .route("/admin/healthz", get(health))
             .route("/admin/", get(health))
             .route("/admin/setup-mfa", get(auth::security::setup))

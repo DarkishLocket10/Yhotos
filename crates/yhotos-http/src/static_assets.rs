@@ -57,6 +57,17 @@ static PASSKEY: LazyLock<Option<Asset>> = LazyLock::new(|| {
 pub(crate) fn passkey_url() -> Result<&'static str, HttpError> {
     Ok(&required(PASSKEY.as_ref())?.url)
 }
+static SEARCH: LazyLock<Option<Asset>> = LazyLock::new(|| {
+    Asset::new(
+        "search",
+        "js",
+        "js/search.js",
+        "text/javascript; charset=utf-8",
+    )
+});
+pub(crate) fn search_url() -> Result<&'static str, HttpError> {
+    Ok(&required(SEARCH.as_ref())?.url)
+}
 
 fn required(asset: Option<&'static Asset>) -> Result<&'static Asset, HttpError> {
     asset.ok_or_else(|| HttpError::Internal(anyhow::anyhow!("embedded asset missing")))
@@ -72,6 +83,7 @@ pub(crate) async fn serve(Path(path): Path<String>) -> Result<Response, HttpErro
         required(CSS.as_ref())?,
         required(JS.as_ref())?,
         required(PASSKEY.as_ref())?,
+        required(SEARCH.as_ref())?,
     ] {
         if asset.url.strip_prefix("/static/") == Some(path.as_str()) {
             return Ok((

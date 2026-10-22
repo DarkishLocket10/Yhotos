@@ -93,10 +93,6 @@ async fn run(process_deadline: &mut Option<std::time::Instant>) -> Result<()> {
         &worker,
         &[
             JobKind::Ingest,
-            JobKind::MlEmbed,
-            JobKind::MlFaces,
-            JobKind::MlOcr,
-            JobKind::MlTags,
             JobKind::GeoReverse,
             JobKind::VideoTranscode,
         ],

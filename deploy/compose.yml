@@ -1,0 +1,35 @@
+# Postgres and HTTP join this internal network; provision TLS and roles separately.
+services:
+  ml:
+    build:
+      context: ..
+      dockerfile: ml/Dockerfile
+    platform: linux/amd64
+    environment:
+      YHOTOS_DATABASE_URL_WORKER: ${YHOTOS_DATABASE_URL_WORKER:?required}
+      YHOTOS_ML_MODELS: /app/models
+    volumes:
+      - ${YHOTOS_DATA_DIR:?required}:/data:ro
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    user: "10001:10001"
+    # Storage derivatives are 0640; use the writer's shared read group.
+    group_add: ["${YHOTOS_DATA_GID:-10001}"]
+    pids_limit: 128
+    mem_limit: 6g
+    networks: [internal]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+networks:
+  internal:
+    name: yhotos-internal
+    internal: true

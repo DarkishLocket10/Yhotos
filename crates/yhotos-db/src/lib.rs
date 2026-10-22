@@ -7,6 +7,8 @@ pub mod access_sql;
 pub mod albums;
 pub mod audit;
 pub mod derivatives;
+#[cfg(feature = "admin")]
+pub mod faces;
 pub mod flags;
 pub mod grants;
 pub mod groups;
@@ -15,6 +17,7 @@ pub mod likes;
 pub mod mfa;
 pub mod photos;
 pub mod redirects;
+pub mod search;
 pub mod sessions;
 pub mod settings;
 pub mod share_links;
@@ -146,13 +149,17 @@ impl Db {
             Role::Admin => ("yhotos_admin", "30000"),
             Role::Worker => ("yhotos_worker", "60000"),
         };
-        let options = tls
+        let mut options = tls
             .configure(PgConnectOptions::from_str(url.expose_secret())?)?
             .application_name(name)
             .options([
                 ("statement_timeout", timeout),
                 ("idle_in_transaction_session_timeout", "30000"),
             ]);
+        if role == Role::Public {
+            // Request budgets cannot absorb per-query JIT compilation.
+            options = options.options([("jit", "off"), ("hnsw.ef_search", "200")]);
+        }
         let pool = PgPoolOptions::new()
             .max_connections(max_conns)
             .acquire_timeout(Duration::from_secs(5))

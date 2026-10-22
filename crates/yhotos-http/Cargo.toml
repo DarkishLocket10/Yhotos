@@ -9,8 +9,9 @@ rust-version.workspace = true
 workspace = true
 
 [features]
-default = []
-admin = ["yhotos-config/admin"]
+default = ["ml-client"]
+ml-client = []
+admin = ["yhotos-config/admin", "yhotos-db/admin"]
 # Enables only an explicit test constructor; Auth::new retains production costs.
 test-util = ["yhotos-auth/test-util"]
 
@@ -28,6 +29,7 @@ axum.workspace = true
 tokio = { workspace = true, features = ["time", "net"] }
 tower-http = { workspace = true, features = ["trace", "limit", "timeout"] }
 tracing.workspace = true
+metrics.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
@@ -42,6 +44,7 @@ serde.workspace = true
 serde_json.workspace = true
 
 yhotos-auth = { path = "../yhotos-auth" }
+yhotos-jobs = { path = "../yhotos-jobs" }
 secrecy.workspace = true
 time.workspace = true
 zeroize.workspace = true

@@ -4916,6 +4916,7 @@ dependencies = [
  "http-body-util",
  "insta",
  "log",
+ "metrics",
  "moka",
  "qrcode",
  "rust-embed",
@@ -4941,6 +4942,7 @@ dependencies = [
  "yhotos-core",
  "yhotos-db",
  "yhotos-http",
+ "yhotos-jobs",
  "yhotos-storage",
  "zeroize",
 ]

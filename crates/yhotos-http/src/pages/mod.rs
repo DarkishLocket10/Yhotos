@@ -2,7 +2,7 @@
 pub mod grid;
 mod view;
 pub use view::{PageContext, render_album, render_home, render_photo};
-pub(crate) use view::{PhotoControls, render_scoped_photo};
+pub(crate) use view::{PhotoControls, render_scoped_photo, render_search};
 
 use crate::{
     AppState,

@@ -151,7 +151,7 @@ async fn grant_matrix_catalog_and_forbidden_statements(pool: PgPool) {
                 (true, true, true, true)
             }
             "yhotos_public" => (
-                !["user_mfa", "audit_log"].contains(&row.table.as_str()),
+                !["user_mfa", "audit_log", "faces", "persons"].contains(&row.table.as_str()),
                 [
                     "events",
                     "likes",

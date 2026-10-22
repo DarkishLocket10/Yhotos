@@ -9,12 +9,13 @@ rust-version.workspace = true
 workspace = true
 
 [features]
-default = []
+default = ["ml-client"]
+ml-client = ["yhotos-http/ml-client"]
 admin = ["yhotos-http/admin", "yhotos-config/admin"]
 
 [dependencies]
 yhotos-config = { path = "../yhotos-config" }
-yhotos-http = { path = "../yhotos-http" }
+yhotos-http = { path = "../yhotos-http", default-features = false }
 yhotos-db = { path = "../yhotos-db" }
 yhotos-storage = { path = "../yhotos-storage" }
 tokio = { workspace = true, features = ["net", "signal", "time", "sync"] }

@@ -370,58 +370,7 @@ pub fn render_album(
     sort: PageSort,
     context: &PageContext<'_>,
 ) -> Result<String, HttpError> {
-    let ratios: Vec<_> = page
-        .photos
-        .iter()
-        .map(|p| {
-            let (w, h) = dimensions(p);
-            (f64::from(w) / f64::from(h)).clamp(0.1, 10.0)
-        })
-        .collect();
-    let mut styles = card_styles(&page.children);
-    let rows = justified_rows(&ratios)
-        .iter()
-        .enumerate()
-        .map(|(row_index, row)| {
-            let cells = page
-                .photos
-                .iter()
-                .enumerate()
-                .take(row.end)
-                .skip(row.start)
-                .map(|(index, p)| {
-                    let ratio = ratios.get(index).copied().unwrap_or(1.0);
-                    let percent = ratio / row.ratio * 100.0;
-                    let (w, h) = dimensions(p);
-                    let _ = write!(
-                        styles,
-                        "#cell{index}{{flex:{ratio:.5} 1 {percent:.5}%;aspect-ratio:{w}/{h};{}}}",
-                        background(p, row_index == 0)
-                    );
-                    Cell {
-                        index,
-                        href: format!("/p/{}?sort={}", p.short_id, sort.as_str()),
-                        image: image(
-                            p,
-                            format!(
-                                "(max-width: 1232px) calc((100vw - 32px) * {:.6}), {:.0}px",
-                                percent / 100.0,
-                                1200.0 * percent / 100.0
-                            ),
-                            row_index == 0,
-                            true,
-                        ),
-                        badge: match p.kind.as_str() {
-                            "raw" => "RAW",
-                            "video" => "Play video",
-                            _ => "",
-                        },
-                    }
-                })
-                .collect();
-            Row { cells }
-        })
-        .collect();
+    let (rows, styles) = grid(&page.photos, card_styles(&page.children), sort);
     let href = path(&page.album.path)?;
     let page_url = |number| format!("{href}?page={number}&sort={}", sort.as_str());
     let island=serde_json::to_string(&serde_json::json!({"photos":page.photos.iter().map(|p|serde_json::json!({"id":p.short_id,"title":p.title})).collect::<Vec<_>>()})).map_err(|e|HttpError::Internal(e.into()))?.replace("</","<\\/")
@@ -462,6 +411,7 @@ struct PhotoTemplate<'a> {
     exif: Vec<(&'static str, String)>,
     map: Option<String>,
     badge: &'static str,
+    similar: String,
 }
 fn filename(value: &str) -> String {
     use std::fmt::Write;
@@ -600,6 +550,7 @@ fn render_photo_with_controls(
             format!("https://www.openstreetmap.org/?mlat={lat}&mlon={lon}#map=14/{lat}/{lon}")
         });
     PhotoTemplate {
+        similar: format!("/search?like={}", page.photo.short_id),
         context,
         title: &p.title,
         description: &p.description,
@@ -630,4 +581,148 @@ fn render_photo_with_controls(
     }
     .render()
     .map_err(|e| HttpError::Internal(e.into()))
+}
+
+fn grid(photos: &[PagePhoto], initial_styles: String, sort: PageSort) -> (Vec<Row>, String) {
+    let ratios: Vec<_> = photos
+        .iter()
+        .map(|p| {
+            let (w, h) = dimensions(p);
+            (f64::from(w) / f64::from(h)).clamp(0.1, 10.0)
+        })
+        .collect();
+    let mut styles = initial_styles;
+    let rows = justified_rows(&ratios)
+        .iter()
+        .enumerate()
+        .map(|(row_index, row)| {
+            let cells = photos
+                .iter()
+                .enumerate()
+                .take(row.end)
+                .skip(row.start)
+                .map(|(index, p)| {
+                    let ratio = ratios.get(index).copied().unwrap_or(1.0);
+                    let percent = ratio / row.ratio * 100.0;
+                    let (w, h) = dimensions(p);
+                    let _ = write!(
+                        styles,
+                        "#cell{index}{{flex:{ratio:.5} 1 {percent:.5}%;aspect-ratio:{w}/{h};{}}}",
+                        background(p, row_index == 0)
+                    );
+                    Cell {
+                        index,
+                        href: format!("/p/{}?sort={}", p.short_id, sort.as_str()),
+                        image: image(
+                            p,
+                            format!(
+                                "(max-width: 1232px) calc((100vw - 32px) * {:.6}), {:.0}px",
+                                percent / 100.0,
+                                1200.0 * percent / 100.0
+                            ),
+                            row_index == 0,
+                            true,
+                        ),
+                        badge: match p.kind.as_str() {
+                            "raw" => "RAW",
+                            "video" => "Play video",
+                            _ => "",
+                        },
+                    }
+                })
+                .collect();
+            Row { cells }
+        })
+        .collect();
+    (rows, styles)
+}
+
+#[derive(Template)]
+#[template(path = "default/search.html")]
+struct SearchTemplate<'a> {
+    context: &'a PageContext<'a>,
+    title: &'static str,
+    description: &'static str,
+    styles: String,
+    query: &'a str,
+    rows: Vec<Row>,
+    total: usize,
+    chips: Vec<String>,
+    excerpts: Vec<&'a str>,
+    previous: Option<String>,
+    next: Option<String>,
+    search_script: &'static str,
+    action: &'a str,
+}
+pub(crate) fn render_search(
+    results: &crate::search::Results,
+    query: &str,
+    like: Option<&str>,
+    context: &PageContext<'_>,
+    action: &str,
+) -> Result<String, HttpError> {
+    let photos: Vec<_> = results
+        .rows
+        .iter()
+        .map(|r| r.candidate.photo.clone())
+        .collect();
+    let (rows, mut styles) = grid(&photos, String::new(), PageSort::parse("taken"));
+    styles.push_str(".filter-chips{display:flex;flex-wrap:wrap;gap:.5rem;list-style:none;padding:0}.filter-chips:empty{display:none}.filter-chips li{border:1px solid currentColor;border-radius:999px;padding:.25rem .65rem}");
+    let url = |page| {
+        format!(
+            "{action}?q={}&page={page}{}",
+            filename_query(query),
+            like.map(|v| format!("&like={}", filename_query(v)))
+                .unwrap_or_default()
+        )
+    };
+    SearchTemplate {
+        context,
+        action,
+        title: "Search photos",
+        description: "Search photos by text, tags and filters",
+        styles,
+        query,
+        rows,
+        total: results.total,
+        chips: results
+            .parsed
+            .filters
+            .iter()
+            .map(|f| {
+                let value = if f.key == "color" {
+                    f.value
+                        .parse::<u32>()
+                        .map(|v| format!("#{v:06x}"))
+                        .unwrap_or_default()
+                } else {
+                    f.value.clone()
+                };
+                format!("{}:{value}", f.key)
+            })
+            .collect(),
+        excerpts: results
+            .rows
+            .iter()
+            .map(|r| r.candidate.text.as_str())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        previous: (results.page > 1).then(|| url(results.page - 1)),
+        next: (usize::try_from(results.page).unwrap_or(10) * 60 < results.total)
+            .then(|| url(results.page + 1)),
+        search_script: crate::static_assets::search_url()?,
+    }
+    .render()
+    .map_err(|e| HttpError::Internal(e.into()))
+}
+fn filename_query(value: &str) -> String {
+    let mut result = String::new();
+    for b in value.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            result.push(char::from(b));
+        } else {
+            let _ = write!(result, "%{b:02X}");
+        }
+    }
+    result
 }

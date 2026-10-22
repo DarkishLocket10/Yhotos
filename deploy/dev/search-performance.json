@@ -1,0 +1,17 @@
+{
+  "photos": 10000,
+  "embedding_dimensions": 768,
+  "warm_samples": 1000,
+  "scope": "Three concurrent database candidate lists and Rust reciprocal rank fusion; query embedding and HTML rendering excluded.",
+  "first_implementation_p99_ms": 2288.567417,
+  "final_p99_ms": 27.47875,
+  "budget_ms": 50,
+  "parser_ns": "385.75 ns 391.87 ns 393.39 ns",
+  "criterion_fused": "17.605 ms 17.858 ms 17.921 ms",
+  "postgres_options": {
+    "jit": "off",
+    "hnsw.ef_search": 200
+  },
+  "fixture_notes": "Synthetic ready photos with UUIDv7 ids, random 768-dimensional vectors, title matches, and no derivative or OCR rows.",
+  "gpu_timing": "Not measured; tower required."
+}

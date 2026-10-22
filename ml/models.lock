@@ -1,0 +1,37 @@
+[
+  {
+    "name": "siglip-vision.onnx",
+    "url": "https://huggingface.co/Xenova/siglip-base-patch16-224/resolve/4649052661e53c7000355844105f8a1792088239/onnx/vision_model.onnx",
+    "sha256": "f89d41bac7f4d4b87e010a467d93f98689d708916ed22f5a07f96fdfa26f475f"
+  },
+  {
+    "name": "siglip-text.onnx",
+    "url": "https://huggingface.co/Xenova/siglip-base-patch16-224/resolve/4649052661e53c7000355844105f8a1792088239/onnx/text_model.onnx",
+    "sha256": "3aa7fdbd20eaa8740cce17bf82913de641fcb632a768fed59f661cdcd0c32553"
+  },
+  {
+    "name": "tokenizer.json",
+    "url": "https://huggingface.co/Xenova/siglip-base-patch16-224/resolve/4649052661e53c7000355844105f8a1792088239/tokenizer.json",
+    "sha256": "4a17c975210be5ab4c36b47d8dae4eefb866dbfb1e676e394aad85dc30a3ae08"
+  },
+  {
+    "name": "scrfd.onnx",
+    "url": "https://huggingface.co/immich-app/buffalo_l/resolve/d09715916a0778919a770c343533641e250b8699/detection/model.onnx",
+    "sha256": "5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91"
+  },
+  {
+    "name": "arcface.onnx",
+    "url": "https://huggingface.co/immich-app/buffalo_l/resolve/d09715916a0778919a770c343533641e250b8699/recognition/model.onnx",
+    "sha256": "4c06341c33c2ca1f86781dab0e829f88ad5b64be9fba56e56bc9ebdefc619e43"
+  },
+  {
+    "name": "ocr-det.onnx",
+    "url": "package:rapidocr_onnxruntime/models/ch_PP-OCRv4_det_infer.onnx",
+    "sha256": "d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9"
+  },
+  {
+    "name": "ocr-rec.onnx",
+    "url": "package:rapidocr_onnxruntime/models/ch_PP-OCRv4_rec_infer.onnx",
+    "sha256": "48fc40f24f6d2a207a2b1091d3437eb3cc3eb6b676dc3ef9c37384005483683b"
+  }
+]

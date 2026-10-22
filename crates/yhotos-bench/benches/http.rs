@@ -16,6 +16,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
     let peer: SocketAddr = "127.0.0.1:1".parse()?;
     let config = Box::leak(Box::new(Config {
+        ml_address: "127.0.0.1:1".into(),
         worker: yhotos_config::Worker::default(),
         public_listen: peer,
         admin_listen: Some(peer),
