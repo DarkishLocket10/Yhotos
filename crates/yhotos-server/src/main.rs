@@ -2,7 +2,11 @@
 
 //! Wires validated configuration, tracing and isolated HTTP listeners.
 
+mod listener;
+
 use anyhow::{Context, Result};
+use axum::serve::ListenerExt;
+use listener::WriteTimeoutListener;
 use std::{net::SocketAddr, time::Duration};
 use tokio::{net::TcpListener, sync::watch};
 use tracing_subscriber::EnvFilter;
@@ -83,20 +87,20 @@ async fn run() -> Result<()> {
     let admin_db = None;
     // Both routers share one cache and cryptographic service. Each handler
     // selects only its listener's separately authenticated database pool.
-    let auth = yhotos_http::auth::Auth::new(config, public_db, admin_db).await?;
-    let state = AppState {
-        config,
-        auth: Some(auth),
-    };
+    let auth = yhotos_http::auth::Auth::new(config, public_db.clone(), admin_db).await?;
+    let store =
+        yhotos_storage::Store::open(&config.data_dir).context("could not open file store")?;
+    let state = AppState::new(config, public_db.pool().clone(), store, Some(auth));
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let public = axum::serve(
-        public,
+        // TapIo preserves SocketAddr connect info for the custom listener.
+        WriteTimeoutListener::new(public, config.write_timeout).tap_io(|_| {}),
         public_router(state.clone()).into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(wait_for_shutdown(shutdown_rx.clone()));
     #[cfg(feature = "admin")]
     let admin = axum::serve(
-        admin,
+        WriteTimeoutListener::new(admin, config.write_timeout).tap_io(|_| {}),
         yhotos_http::admin_router(state).into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(wait_for_shutdown(shutdown_rx));

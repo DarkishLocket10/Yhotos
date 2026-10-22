@@ -3,7 +3,7 @@
 
 use axum::{body::Body, extract::ConnectInfo, http::Request};
 use criterion::Criterion;
-use std::{hint::black_box, net::SocketAddr};
+use std::{hint::black_box, net::SocketAddr, time::Duration};
 use tower::ServiceExt;
 use yhotos_config::{Config, LogFormat, RateLimits, Upload};
 use yhotos_http::{AppState, public_router};
@@ -31,6 +31,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .into(),
         trust_proxy: false,
+        global_stream_cap: 64,
+        write_timeout: Duration::from_secs(30),
+        transfer_deadline: Duration::from_mins(30),
         rate_limits: RateLimits {
             cheap_per_min: u32::MAX,
             expensive_per_min: u32::MAX,
@@ -43,7 +46,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         log_format: LogFormat::Json,
     }));
     let _runtime_guard = runtime.enter();
-    let app = public_router(AppState { config, auth: None });
+    let app = public_router(AppState::new(
+        config,
+        yhotos_db::Db::connect_lazy(
+            &config.database_url_public,
+            yhotos_db::Role::Public,
+            2,
+            yhotos_db::DatabaseTls::Require,
+        )?
+        .pool()
+        .clone(),
+        yhotos_storage::Store::open(dir.path())?,
+        None,
+    ));
     criterion.bench_function("http/healthz/known_ip", |b| {
         b.iter(|| {
             let mut request = Request::new(Body::empty());

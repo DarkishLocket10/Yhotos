@@ -7,3 +7,22 @@ rust-version.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+default = ["heif"]
+heif = []
+raw = ["dep:rawler"]
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+nix.workspace = true
+rawler = { workspace = true, optional = true }
+
+[build-dependencies]
+bindgen.workspace = true
+pkg-config.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile.workspace = true

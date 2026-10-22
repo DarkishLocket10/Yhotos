@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO video_renditions(id,photo_id,codec,hash,width,height,bytes,duration_ms,hls) VALUES ($1,$2,'h264',$3,640,480,1024,1000,false)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "566f61ab0d6c458a49c85b54b5b0dfc6c5609e46b64440a5270abc94c994f179"
+}

@@ -4,7 +4,10 @@
 
 pub mod auth;
 pub mod error;
+pub mod files;
 pub mod middleware;
+mod state;
+pub use state::{AppResources, AppState};
 mod static_assets;
 
 use askama::Template;
@@ -20,16 +23,6 @@ use error::HttpError;
 use middleware::{rate_limit::RateLimiter, security_headers::Nonce};
 use std::time::Duration;
 use tower_http::{limit::RequestBodyLimitLayer, timeout::TimeoutLayer, trace::TraceLayer};
-use yhotos_config::Config;
-
-/// Shared startup configuration, database services and bounded authentication cache.
-#[derive(Clone)]
-pub struct AppState {
-    /// Leaked once at startup so every handler borrows the same configuration.
-    pub config: &'static Config,
-    /// Shared authentication services; absent only for isolated skeleton tests.
-    pub auth: Option<std::sync::Arc<auth::Auth>>,
-}
 
 /// Builds only public routes, even when the admin feature is enabled.
 ///
@@ -43,11 +36,16 @@ use yhotos_http::admin_router;
 ```"
 )]
 pub fn public_router(state: AppState) -> Router {
+    let files = Router::new()
+        .route("/i/{hash}/{name}", get(files::derivative))
+        .route("/o/{hash}/{name}", get(files::original))
+        .route("/v/{hash}/{name}", get(files::video));
     let router = Router::new()
         .merge(auth::routes(auth::Audience(false)))
         .route("/", get(home))
-        .route("/healthz", get(health))
-        .route("/static/{*path}", get(static_assets::serve));
+        .route("/healthz", get(health).with_state(()))
+        .route("/static/{*path}", get(static_assets::serve))
+        .merge(files);
     #[cfg(test)]
     let router = router
         .route(

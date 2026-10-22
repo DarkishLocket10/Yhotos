@@ -14,6 +14,14 @@ admin = ["yhotos-config/admin"]
 
 [dependencies]
 yhotos-config = { path = "../yhotos-config" }
+yhotos-core = { path = "../yhotos-core" }
+yhotos-db = { path = "../yhotos-db" }
+yhotos-storage = { path = "../yhotos-storage" }
+sqlx.workspace = true
+moka.workspace = true
+tokio-util.workspace = true
+futures-core.workspace = true
+http-body-util.workspace = true
 axum.workspace = true
 tokio = { workspace = true, features = ["time", "net"] }
 tower-http = { workspace = true, features = ["trace", "limit", "timeout"] }
@@ -31,13 +39,10 @@ subtle.workspace = true
 serde.workspace = true
 
 yhotos-auth = { path = "../yhotos-auth" }
-yhotos-db = { path = "../yhotos-db" }
-yhotos-core = { path = "../yhotos-core" }
 secrecy.workspace = true
 serde_json.workspace = true
 time.workspace = true
 zeroize.workspace = true
-moka.workspace = true
 qrcode.workspace = true
 
 [dev-dependencies]

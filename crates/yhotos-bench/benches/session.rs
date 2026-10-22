@@ -51,36 +51,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     runtime.block_on(sessions::create(&mut conn, &s))?;
     let peer: SocketAddr = "127.0.0.1:1".parse()?;
     let dir = tempfile::tempdir()?;
-    // A generated 32-byte token is also a valid master-key input after standard
-    // base64 encoding. Construct with a generated 32-byte digest for this bench.
-    let key = Token::generate().hash(TokenKind::Session);
-    let master = encode_standard(key.as_bytes());
-    let config = Box::leak(Box::new(Config {
-        public_listen: peer,
-        admin_listen: Some(peer),
-        database_url_public: url,
-        database_url_admin: None,
-        admin_base_url: None,
-        data_dir: dir.path().to_owned(),
-        public_base_url: "https://example.test".parse()?,
-        session_key: master.into(),
-        trust_proxy: false,
-        rate_limits: RateLimits {
-            cheap_per_min: u32::MAX,
-            expensive_per_min: u32::MAX,
-            auth_per_min: u32::MAX,
-        },
-        upload: Upload {
-            max_bytes: 1,
-            chunk_bytes: 1,
-        },
-        log_format: LogFormat::Json,
-    }));
-    let auth = runtime.block_on(Auth::new(config, db, None))?;
-    let app = public_router(AppState {
+    let config = config(dir.path(), url, peer)?;
+    let auth = runtime.block_on(Auth::new(config, db.clone(), None))?;
+    let app = public_router(AppState::new(
         config,
-        auth: Some(auth.clone()),
-    });
+        db.pool().clone(),
+        yhotos_storage::Store::open(dir.path())?,
+        Some(auth.clone()),
+    ));
     let bearer = format!("__Host-ys={}", token.encode(TokenKind::Session));
     let request = |authenticated: bool| -> Result<Request<Body>, axum::http::Error> {
         let mut r = Request::builder().uri("/");
@@ -118,6 +96,40 @@ fn main() -> Result<(), Box<dyn Error>> {
     runtime.block_on(sessions::revoke_all(&mut conn, user.id))?;
     criterion.final_summary();
     Ok(())
+}
+fn config(
+    dir: &std::path::Path,
+    url: SecretString,
+    peer: SocketAddr,
+) -> Result<&'static Config, Box<dyn Error>> {
+    // A generated 32-byte token is also a valid master-key input after standard
+    // base64 encoding. Construct with a generated 32-byte digest for this bench.
+    let key = Token::generate().hash(TokenKind::Session);
+    let master = encode_standard(key.as_bytes());
+    Ok(Box::leak(Box::new(Config {
+        public_listen: peer,
+        admin_listen: Some(peer),
+        database_url_public: url,
+        database_url_admin: None,
+        admin_base_url: None,
+        data_dir: dir.to_owned(),
+        public_base_url: "https://example.test".parse()?,
+        session_key: master.into(),
+        trust_proxy: false,
+        global_stream_cap: 64,
+        write_timeout: std::time::Duration::from_secs(30),
+        transfer_deadline: std::time::Duration::from_mins(30),
+        rate_limits: RateLimits {
+            cheap_per_min: u32::MAX,
+            expensive_per_min: u32::MAX,
+            auth_per_min: u32::MAX,
+        },
+        upload: Upload {
+            max_bytes: 1,
+            chunk_bytes: 1,
+        },
+        log_format: LogFormat::Json,
+    })))
 }
 fn bench_login_pages(
     criterion: &mut Criterion,

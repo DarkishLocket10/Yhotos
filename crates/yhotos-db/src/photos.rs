@@ -443,3 +443,137 @@ pub async fn replace_original(
     tx.commit().await?;
     Ok(())
 }
+
+/// An album's validated visibility and grants, ordered leaf to root in `OwnerRow`.
+#[derive(Clone, Debug)]
+pub struct AlbumOwner {
+    /// Album at this level.
+    pub id: AlbumId,
+    /// Visibility at this level only.
+    pub visibility: Visibility,
+    /// Explicit user and group grants at this level only.
+    pub grants: Vec<yhotos_core::access::Grant>,
+}
+
+/// Complete authorization context and response metadata for one live file owner.
+#[derive(Clone, Debug)]
+pub struct OwnerRow {
+    /// Owning photo; a digest can have more than one owner.
+    pub photo_id: PhotoId,
+    /// Explicit photo visibility.
+    pub photo_visibility: Visibility,
+    /// Photo grants, separate from album grants.
+    pub photo_grants: Vec<yhotos_core::access::Grant>,
+    /// Complete album chain, containing album first, nearest parent next.
+    pub albums: Vec<AlbumOwner>,
+    /// Stored original display name, never a filesystem path.
+    pub original_name: String,
+    /// Source media kind.
+    pub kind: MediaKind,
+    /// Database-derived MIME for the selected representation.
+    pub mime: String,
+    /// Nonnegative byte length of the selected representation.
+    pub bytes: u64,
+    /// Positive width, when known.
+    pub width: Option<i32>,
+    /// Positive height, when known.
+    pub height: Option<i32>,
+}
+
+struct FileOwnerDb {
+    photo_id: PhotoId,
+    photo_visibility: Visibility,
+    original_name: String,
+    kind: MediaKind,
+    bytes: i64,
+    mime: String,
+    width: Option<i32>,
+    height: Option<i32>,
+    photo_users: Vec<Uuid>,
+    photo_groups: Vec<Uuid>,
+    albums: serde_json::Value,
+}
+#[derive(serde::Deserialize)]
+struct AlbumOwnerDb {
+    id: AlbumId,
+    visibility: String,
+    users: Vec<Uuid>,
+    groups: Vec<Uuid>,
+}
+fn file_grants(users: Vec<Uuid>, groups: Vec<Uuid>) -> Vec<yhotos_core::access::Grant> {
+    use yhotos_core::{GroupId, UserId, access::Grant};
+    users
+        .into_iter()
+        .map(|id| Grant::User(UserId(id)))
+        .chain(groups.into_iter().map(|id| Grant::Group(GroupId(id))))
+        .collect()
+}
+
+/// All live owners of an original, including complete ancestor grants, in one query.
+/// Multiple owners are preserved so a restricted duplicate cannot conceal a public copy.
+///
+/// # Errors
+/// Returns database failures or invalid stored metadata. Never authorizes the caller.
+pub async fn owner_of_hash(conn: &mut PgConnection, hash: &str) -> Result<Vec<OwnerRow>, DbError> {
+    file_owners(conn, hash, "original", "", "", false).await
+}
+
+pub(crate) async fn file_owners(
+    conn: &mut PgConnection,
+    hash: &str,
+    area: &str,
+    variant: &str,
+    format: &str,
+    hdr: bool,
+) -> Result<Vec<OwnerRow>, DbError> {
+    let rows = sqlx::query_file_as!(
+        FileOwnerDb,
+        "queries/file_owners.sql",
+        hash,
+        area,
+        variant,
+        format,
+        hdr
+    )
+    .fetch_all(conn)
+    .await?;
+    rows.into_iter()
+        .map(|row| {
+            let chain: Vec<AlbumOwnerDb> =
+                serde_json::from_value(row.albums).map_err(|_| DbError::InvalidInput)?;
+            let albums = chain
+                .into_iter()
+                .map(|album| {
+                    let visibility = match album.visibility.as_str() {
+                        "public" => Visibility::Public,
+                        "restricted" => Visibility::Restricted,
+                        _ => return Err(DbError::InvalidInput),
+                    };
+                    Ok(AlbumOwner {
+                        id: album.id,
+                        visibility,
+                        grants: file_grants(album.users, album.groups),
+                    })
+                })
+                .collect::<Result<Vec<_>, DbError>>()?;
+            if albums.is_empty()
+                || row.width.is_some_and(|n| n <= 0)
+                || row.height.is_some_and(|n| n <= 0)
+            {
+                return Err(DbError::InvalidInput);
+            }
+            Ok(OwnerRow {
+                photo_id: row.photo_id,
+                photo_visibility: row.photo_visibility,
+                photo_grants: file_grants(row.photo_users, row.photo_groups),
+                albums,
+                original_name: row.original_name,
+                kind: row.kind,
+                mime: row.mime,
+                bytes: u64::try_from(row.bytes).map_err(|_| DbError::InvalidInput)?,
+                width: row.width,
+                height: row.height,
+            })
+        })
+        .collect()
+}

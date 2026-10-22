@@ -110,11 +110,17 @@ pub(crate) async fn secure(mut request: Request, next: Next) -> Response {
     );
     headers.insert(
         "cross-origin-resource-policy",
-        HeaderValue::from_static(if cross_origin {
-            "cross-origin"
-        } else {
-            "same-origin"
-        }),
+        HeaderValue::from_static(
+            if cross_origin
+                && headers
+                    .get(axum::http::header::CACHE_CONTROL)
+                    .is_none_or(|v| v.as_bytes() != b"private, no-store")
+            {
+                "cross-origin"
+            } else {
+                "same-origin"
+            },
+        ),
     );
     if auth_page {
         response.headers_mut().insert(

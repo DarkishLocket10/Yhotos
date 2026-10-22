@@ -8,9 +8,14 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+raw = ["yhotos-codec/raw"]
+
 [dev-dependencies]
 criterion.workspace = true
 base64.workspace = true
+sqlx.workspace = true
+http-body-util.workspace = true
 yhotos-auth = { path = "../yhotos-auth" }
 yhotos-db = { path = "../yhotos-db" }
 secrecy.workspace = true
@@ -19,6 +24,8 @@ time.workspace = true
 yhotos-core = { path = "../yhotos-core" }
 yhotos-config = { path = "../yhotos-config" }
 yhotos-http = { path = "../yhotos-http" }
+yhotos-storage = { path = "../yhotos-storage" }
+yhotos-codec = { path = "../yhotos-codec" }
 axum.workspace = true
 tokio.workspace = true
 tower = { workspace = true, features = ["util"] }
@@ -43,4 +50,16 @@ harness = false
 
 [[bench]]
 name = "session"
+harness = false
+
+[[bench]]
+name = "storage"
+harness = false
+
+[[bench]]
+name = "files"
+harness = false
+
+[[bench]]
+name = "codec"
 harness = false

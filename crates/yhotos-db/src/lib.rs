@@ -5,6 +5,7 @@
 
 pub mod albums;
 pub mod audit;
+pub mod derivatives;
 pub mod flags;
 pub mod grants;
 pub mod groups;
@@ -120,6 +121,22 @@ impl Db {
         max_conns: u32,
         tls: DatabaseTls,
     ) -> Result<Self, DbError> {
+        let db = Self::connect_lazy(url, role, max_conns, tls)?;
+        db.pool.acquire().await?;
+        Ok(db)
+    }
+
+    /// Configures the same role and TLS boundary, connecting on the first query.
+    /// This keeps HTTP startup independent of cold metadata access.
+    ///
+    /// # Errors
+    /// Rejects malformed URLs, zero pool size and invalid plaintext policies.
+    pub fn connect_lazy(
+        url: &SecretString,
+        role: Role,
+        max_conns: u32,
+        tls: DatabaseTls,
+    ) -> Result<Self, DbError> {
         if max_conns == 0 {
             return Err(DbError::InvalidInput);
         }
@@ -154,8 +171,7 @@ impl Db {
                     Ok(())
                 })
             })
-            .connect_with(options)
-            .await?;
+            .connect_lazy_with(options);
         Ok(Self { pool, role })
     }
     /// Applies migrations idempotently using the administrative deployment login.

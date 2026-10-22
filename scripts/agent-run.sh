@@ -62,8 +62,16 @@ free_gb() {
   fi
 }
 FREE="$(free_gb)"
-if (( FREE < 8 )); then
-  echo "refusing to start: only ${FREE} GB free memory" >&2
+# vm_stat undercounts reclaimable memory on macOS, so the Mac uses a lower floor and
+# caps cargo parallelism instead. Override with YHOTOS_AGENT_MIN_FREE_GB.
+if [[ "$(uname)" == "Darwin" ]]; then
+  MIN_FREE="${YHOTOS_AGENT_MIN_FREE_GB:-6}"
+  export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}"
+else
+  MIN_FREE="${YHOTOS_AGENT_MIN_FREE_GB:-8}"
+fi
+if (( FREE < MIN_FREE )); then
+  echo "refusing to start: only ${FREE} GB free memory (need ${MIN_FREE})" >&2
   exit 3
 fi
 
@@ -110,6 +118,7 @@ codex exec \
   -C "$WT" \
   --add-dir "$REPO_ROOT/.git" \
   --add-dir "$HOME/.cargo" \
+  --add-dir "$HOME/.rustup" \
   -m "$MODEL" \
   -c "model_reasoning_effort=\"$EFFORT\"" \
   -c 'approval_policy="never"' \

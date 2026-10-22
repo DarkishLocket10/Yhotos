@@ -14,24 +14,42 @@ use axum::{
 use std::sync::Arc;
 use subtle::ConstantTimeEq;
 use yhotos_auth::{SessionPolicy, SessionState, TokenKind, session_state};
-use yhotos_core::{GroupId, UserId};
+use yhotos_core::{GroupId, UserId, access::Principal};
 use yhotos_db::sessions;
 
-/// Owned request identity; privilege is suppressed on the public listener.
-#[derive(Clone, Default)]
-pub enum Principal {
-    /// No valid, unexpired session.
+/// An owned verified identity; request headers and cookies never construct this type.
+#[derive(Clone, Debug, Default)]
+pub enum SessionIdentity {
+    /// No valid, unexpired session for this listener.
     #[default]
     Anonymous,
-    /// Identity and group membership loaded from trusted database state.
+    /// Supplied only by trusted session loading, with verified group memberships.
     User {
-        /// Account identifier.
+        /// Verified user id.
         id: UserId,
-        /// Verified memberships.
-        groups: Arc<[GroupId]>,
-        /// True only for an admin account on the admin listener.
+        /// Verified group membership.
+        groups: Vec<GroupId>,
+        /// Verified administrator flag.
         is_admin: bool,
     },
+}
+impl SessionIdentity {
+    /// Borrows the pure access principal without copying group memberships.
+    #[must_use]
+    pub fn principal(&self) -> Principal<'_> {
+        match self {
+            Self::Anonymous => Principal::Anonymous,
+            Self::User {
+                id,
+                groups,
+                is_admin,
+            } => Principal::User {
+                id: *id,
+                groups,
+                is_admin: *is_admin,
+            },
+        }
+    }
 }
 /// Authenticated session context, available only after expiry and audience validation.
 #[derive(Clone)]
@@ -85,16 +103,16 @@ async fn run(
                     session_state(created, seen, now, p) == SessionState::Active
                 })
     });
-    let mut principal = Principal::Anonymous;
+    let mut identity = SessionIdentity::Anonymous;
     let mut gate = None;
     let path = request.uri().path();
     if let Some(s) = &loaded {
         if a.0 && !s.is_admin {
             return Err(HttpError::NotFound);
         }
-        principal = Principal::User {
+        identity = SessionIdentity::User {
             id: s.session.user_id,
-            groups: s.groups.clone().into(),
+            groups: s.groups.clone(),
             is_admin: a.0 && s.is_admin,
         };
         if state.auth.is_some() {
@@ -125,7 +143,7 @@ async fn run(
     } else if a.0 && !path.starts_with("/admin/login") && !path.starts_with("/static/") {
         gate = Some(auth::redirect(a.login()));
     }
-    request.extensions_mut().insert(principal);
+    request.extensions_mut().insert(identity);
     let mut response = if let Some(gate) = gate {
         gate
     } else {

@@ -25,6 +25,7 @@ use yhotos_db::{DatabaseTls, Db, Role, mfa, sessions, users};
 use yhotos_http::{AppState, auth::Auth, public_router};
 
 struct Client {
+    dir: Arc<tempfile::TempDir>,
     app: Router,
     state: AppState,
     pool: PgPool,
@@ -48,6 +49,7 @@ impl Reply {
 }
 impl Client {
     async fn new(pool: PgPool, admin: bool) -> Self {
+        let dir = Arc::new(tempfile::tempdir().unwrap());
         let url = SecretString::from(pool.connect_options().to_url_lossy().to_string());
         let db = Arc::new(
             Db::connect(&url, Role::Public, 1, DatabaseTls::Disable)
@@ -60,10 +62,7 @@ impl Client {
             yhotos_config::Config::from_figment(
                 figment::Figment::new()
                     .merge(("database_url_public", url.expose_secret()))
-                    .merge((
-                        "data_dir",
-                        std::env::current_dir().unwrap().to_string_lossy().as_ref(),
-                    ))
+                    .merge(("data_dir", dir.path().to_string_lossy().as_ref()))
                     .merge(("public_base_url", "https://example.test"))
                     .merge(("admin_listen", "127.0.0.1:8081"))
                     .merge(("admin_base_url", "https://admin.example.test:8443"))
@@ -81,10 +80,12 @@ impl Client {
         ));
         #[cfg(not(feature = "admin"))]
         let admin_db = None;
-        let state = AppState {
+        let state = AppState::new(
             config,
-            auth: Some(Auth::new(config, db.clone(), admin_db).await.unwrap()),
-        };
+            db.pool().clone(),
+            yhotos_storage::Store::open(&config.data_dir).unwrap(),
+            Some(Auth::new(config, db.clone(), admin_db).await.unwrap()),
+        );
         #[cfg(feature = "admin")]
         let app = if admin {
             yhotos_http::admin_router(state.clone())
@@ -97,6 +98,7 @@ impl Client {
             public_router(state.clone())
         };
         Self {
+            dir,
             app,
             state,
             pool,
@@ -115,6 +117,7 @@ impl Client {
     #[cfg(feature = "admin")]
     fn listener(&self, admin: bool) -> Self {
         Self {
+            dir: self.dir.clone(),
             app: if admin {
                 yhotos_http::admin_router(self.state.clone())
             } else {
@@ -513,6 +516,105 @@ async fn login_rotation_logout_cookie_and_audit(pool: PgPool) {
     );
     assert!(actions.iter().any(|a| a == "session.revoke"));
 }
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn real_sessions_authorize_files_by_group_and_logout_revokes_warm_access(pool: PgPool) {
+    use yhotos_core::{
+        Slug,
+        access::{Grant, Visibility},
+    };
+    use yhotos_db::{albums, grants, groups, photos};
+    use yhotos_http::middleware::session::SessionIdentity;
+
+    let mut c = Client::new(pool, false).await;
+    // Public login of an administrator must still obey the user's grants.
+    let (user, name, password) = c.seed(false, true).await;
+    let mut conn = c.pool.acquire().await.unwrap();
+    let group = groups::create(&mut conn, "Readers").await.unwrap();
+    groups::add_member(&mut conn, group.id, user).await.unwrap();
+    let album = albums::create(
+        &mut conn,
+        None,
+        &Slug::new("session-files").unwrap(),
+        "Session files",
+        Visibility::Public,
+    )
+    .await
+    .unwrap();
+    let content = b"restricted original fixture";
+    let put = yhotos_storage::Store::open(c.dir.path())
+        .unwrap()
+        .put_original(content.as_slice(), u64::try_from(content.len()).unwrap())
+        .await
+        .unwrap();
+    let photo = photos::create(
+        &mut conn,
+        &photos::NewPhoto {
+            album_id: album.id,
+            title: "Restricted".into(),
+            original_hash: put.hash.to_string(),
+            original_name: "restricted.jpeg".into(),
+            original_bytes: i64::try_from(content.len()).unwrap(),
+            mime: "image/jpeg".into(),
+            kind: photos::MediaKind::Image,
+        },
+    )
+    .await
+    .unwrap();
+    photos::set_visibility(&mut conn, &[photo.id], Visibility::Restricted)
+        .await
+        .unwrap();
+    let path = format!("/o/{}/ignored.jpeg", put.hash);
+    drop(conn);
+    let denied = c.get(&path).await;
+    assert_eq!(denied.status, StatusCode::NOT_FOUND);
+    // Incoming extensions cannot bypass the real session boundary either.
+    let mut injected = Request::builder().uri(&path).body(Body::empty()).unwrap();
+    injected.extensions_mut().insert(ConnectInfo(c.network));
+    injected.extensions_mut().insert(SessionIdentity::User {
+        id: user,
+        groups: vec![group.id],
+        is_admin: true,
+    });
+    assert_eq!(
+        c.app.clone().oneshot(injected).await.unwrap().status(),
+        StatusCode::NOT_FOUND
+    );
+
+    location(&c.login(&name, &password, false).await, "/");
+    assert_eq!(
+        c.get(&path).await.status,
+        StatusCode::NOT_FOUND,
+        "public sessions must suppress admin privilege"
+    );
+    grants::grant_photo(
+        &mut c.pool.acquire().await.unwrap(),
+        photo.id,
+        Grant::Group(group.id),
+    )
+    .await
+    .unwrap();
+    c.state.files.invalidate_all();
+    for _ in 0..2 {
+        let allowed = c.get(&path).await;
+        assert_eq!(allowed.status, StatusCode::OK);
+        assert_eq!(allowed.body.as_bytes(), content);
+        assert_eq!(allowed.headers[header::CACHE_CONTROL], "private, no-store");
+        assert_eq!(allowed.headers[header::VARY], "Cookie");
+        assert_eq!(
+            allowed.headers["cross-origin-resource-policy"],
+            "same-origin"
+        );
+    }
+    let token = c.jar.get("__Host-ys").unwrap().clone();
+    c.get("/u/security").await;
+    location(&c.post("/logout", &[]).await, "/login");
+    c.jar.insert("__Host-ys".into(), token);
+    let revoked = c.get(&path).await;
+    assert_eq!(revoked.status, StatusCode::NOT_FOUND);
+    assert_eq!(revoked.body, denied.body);
+    assert!(!c.jar.contains_key("__Host-ys"));
+}
+
 #[sqlx::test(migrations = "../yhotos-db/migrations")]
 async fn failures_are_identical_and_fifth_failure_locks(pool: PgPool) {
     let mut c = Client::new(pool, false).await;
@@ -1499,7 +1601,12 @@ async fn cross_listener_invalidation(pool: PgPool, password_change: bool) {
             .is_some()
     );
     let mut remote = public.listener(false);
-    remote.state.auth = Some(remote_auth.clone());
+    remote.state = AppState::new(
+        remote.state.config,
+        remote.state.pool.clone(),
+        remote.state.store.clone(),
+        Some(remote_auth.clone()),
+    );
     remote.app = public_router(remote.state.clone());
     remote.jar = public.jar.clone();
     assert_eq!(remote.get("/u/security").await.status, StatusCode::OK);

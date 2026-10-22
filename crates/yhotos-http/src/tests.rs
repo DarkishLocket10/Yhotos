@@ -12,8 +12,13 @@ use http_body_util::BodyExt;
 use secrecy::ExposeSecret;
 use std::net::SocketAddr;
 use tower::ServiceExt;
+use yhotos_config::Config;
 
-fn state(trust_proxy: bool, cheap: u32) -> AppState {
+pub(crate) fn state(trust_proxy: bool, cheap: u32) -> AppState {
+    state_with_global_cap(trust_proxy, cheap, 64)
+}
+
+pub(crate) fn state_with_global_cap(trust_proxy: bool, cheap: u32, global: u16) -> AppState {
     let dir = tempfile::tempdir().unwrap();
     let f = Figment::new()
         .merge((
@@ -30,11 +35,17 @@ fn state(trust_proxy: bool, cheap: u32) -> AppState {
         .merge(("admin_base_url", "https://admin.example.test:8443"))
         .merge(("database_url_admin", "postgres://127.0.0.1/test"))
         .merge(("trust_proxy", trust_proxy))
+        .merge(("global_stream_cap", global))
         .merge(("rate_limits.cheap_per_min", cheap));
-    AppState {
-        config: Box::leak(Box::new(Config::from_figment(f).unwrap())),
-        auth: None,
-    }
+    let config = Box::leak(Box::new(Config::from_figment(f).unwrap()));
+    AppState::new(
+        config,
+        sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://127.0.0.1/test")
+            .unwrap(),
+        yhotos_storage::Store::open(dir.path()).unwrap(),
+        None,
+    )
 }
 fn request(path: &str, ip: &str) -> Request<Body> {
     let mut req = Request::builder().uri(path).body(Body::empty()).unwrap();
@@ -471,7 +482,12 @@ async fn auth_posts_share_a_bucket_and_get_forms_use_the_cheap_bucket() {
         )
         .unwrap()
     }));
-    let app = public_router(AppState { config, auth: None });
+    let app = public_router(AppState::new(
+        config,
+        state.pool.clone(),
+        state.store.clone(),
+        None,
+    ));
     for path in ["/login", "/login/mfa", "/u/security"] {
         let response = app
             .clone()
