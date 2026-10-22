@@ -76,10 +76,10 @@ if [[ -z "$RESUME_MSG" ]]; then
     exit 1
   fi
   if git show-ref --quiet "refs/remotes/origin/$BRANCH"; then
-    git worktree add -q "$WT" "$BRANCH"
-  else
-    git worktree add -q -b "$BRANCH" "$WT" "$BASE"
+    echo "remote branch $BRANCH already exists; delete it (git push origin --delete $BRANCH) to start over, or use --resume" >&2
+    exit 1
   fi
+  git worktree add -q -b "$BRANCH" "$WT" "$BASE"
 else
   [[ -d "$WT" ]] || { echo "no worktree to resume at $WT" >&2; exit 1; }
 fi
