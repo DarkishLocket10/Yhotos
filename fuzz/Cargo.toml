@@ -24,3 +24,10 @@ path = "fuzz_targets/token_parse.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "safe_join"
+path = "fuzz_targets/safe_join.rs"
+test = false
+doc = false
+bench = false
