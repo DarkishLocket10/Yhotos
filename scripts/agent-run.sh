@@ -100,6 +100,7 @@ codex exec \
   -c "model_reasoning_effort=\"$EFFORT\"" \
   -c 'approval_policy="never"' \
   -c 'mcp_servers={}' \
+  -c 'sandbox_workspace_write.network_access=true' \
   -s workspace-write \
   --output-last-message "$LAST_MSG" \
   - < "$PROMPT_FILE"
