@@ -7,3 +7,25 @@ rust-version.workspace = true
 
 [lints]
 workspace = true
+
+[features]
+test-hooks = []
+
+[dependencies]
+yhotos-core = { path = "../yhotos-core", features = ["sqlx"] }
+yhotos-db = { path = "../yhotos-db" }
+yhotos-storage = { path = "../yhotos-storage" }
+yhotos-jobs = { path = "../yhotos-jobs" }
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+tokio = { workspace = true, features = ["process", "fs", "io-util", "time"] }
+blake3.workspace = true
+base64.workspace = true
+uuid.workspace = true
+time = { workspace = true, features = ["parsing", "macros"] }
+async-trait.workspace = true
+nix.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

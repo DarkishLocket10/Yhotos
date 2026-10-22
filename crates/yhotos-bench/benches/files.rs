@@ -64,6 +64,7 @@ async fn stream(app: &Router, path: &str) -> BenchResult<()> {
 fn config(dir: &std::path::Path) -> BenchResult<&'static Config> {
     let peer = "127.0.0.1:1".parse()?;
     Ok(Box::leak(Box::new(Config {
+        worker: yhotos_config::Worker::default(),
         public_listen: peer,
         admin_listen: Some(peer),
         database_url: std::env::var("DATABASE_URL")?.into(),

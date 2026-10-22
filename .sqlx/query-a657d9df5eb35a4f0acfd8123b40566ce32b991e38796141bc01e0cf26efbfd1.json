@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "describe": {
+    "columns": [],
+    "nullable": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "Int4Array",
+        "Int4Array",
+        "Int8Array"
+      ]
+    }
+  },
+  "hash": "a657d9df5eb35a4f0acfd8123b40566ce32b991e38796141bc01e0cf26efbfd1",
+  "query": "INSERT INTO derivatives(id,photo_id,variant,format,hdr,hash,width,height,bytes) SELECT id,$1,variant,format,false,hash,width,height,bytes FROM UNNEST($2::uuid[],$3::text[],$4::text[],$5::text[],$6::int[],$7::int[],$8::bigint[]) AS d(id,variant,format,hash,width,height,bytes) ON CONFLICT(photo_id,variant,format,hdr) DO UPDATE SET hash=excluded.hash,width=excluded.width,height=excluded.height,bytes=excluded.bytes"
+}

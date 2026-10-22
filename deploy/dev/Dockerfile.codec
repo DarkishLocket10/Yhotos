@@ -16,4 +16,4 @@ RUN rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy
 # Runtime: --network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges,
 # original mounted read-only; only out_dir writable.
 # Development validation compiles under the writable checkout; production never does.
-CMD ["cargo", "test", "--offline", "--frozen", "-p", "yhotos-codec", "-p", "yhotos-codec-host", "--all-features"]
+CMD ["cargo", "test", "--offline", "--frozen", "-p", "yhotos-codec", "-p", "yhotos-codec-host", "-p", "yhotos-jobs", "-p", "yhotos-pipeline", "--all-features"]

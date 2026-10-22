@@ -100,3 +100,14 @@ features = ["resource", "signal", "process"]
 [workspace.dependencies.seccompiler]
 version = "=0.5.0"
 
+
+[workspace.dependencies.async-trait]
+version = "=0.1.92"
+
+[workspace.dependencies.metrics]
+version = "=0.24.6"
+
+[workspace.dependencies.metrics-exporter-prometheus]
+version = "=0.18.3"
+default-features = false
+features = ["http-listener"]

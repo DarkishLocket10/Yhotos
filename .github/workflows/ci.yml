@@ -124,6 +124,20 @@ jobs:
 
   codec:
     runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
+        env:
+          POSTGRES_USER: yhotos
+          POSTGRES_DB: yhotos_test
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready --username yhotos --dbname yhotos_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -131,4 +145,4 @@ jobs:
       - name: Build codec image from pinned base digest
         run: docker build --iidfile /tmp/codec-image -f deploy/dev/Dockerfile.codec .
       - name: Test Linux codec and seccomp inside the built image digest
-        run: docker run --rm --network=none -v "$PWD:/workspace" "$(cat /tmp/codec-image)"
+        run: docker run --rm --network=host -e SQLX_OFFLINE=true -e DATABASE_URL=postgres://yhotos@127.0.0.1:5432/yhotos_test?sslmode=disable -v "$PWD:/workspace" "$(cat /tmp/codec-image)"

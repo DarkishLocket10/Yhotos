@@ -1,0 +1,119 @@
+{
+  "db_name": "PostgreSQL",
+  "describe": {
+    "columns": [
+      {
+        "name": "status!",
+        "ordinal": 0,
+        "origin": "Expression",
+        "type_info": "Text"
+      },
+      {
+        "name": "width",
+        "ordinal": 1,
+        "origin": {
+          "Table": {
+            "name": "width",
+            "table": "photos"
+          }
+        },
+        "type_info": "Int4"
+      },
+      {
+        "name": "height",
+        "ordinal": 2,
+        "origin": {
+          "Table": {
+            "name": "height",
+            "table": "photos"
+          }
+        },
+        "type_info": "Int4"
+      },
+      {
+        "name": "orientation",
+        "ordinal": 3,
+        "origin": {
+          "Table": {
+            "name": "orientation",
+            "table": "photos"
+          }
+        },
+        "type_info": "Int4"
+      },
+      {
+        "name": "placeholder",
+        "ordinal": 4,
+        "origin": {
+          "Table": {
+            "name": "placeholder",
+            "table": "photos"
+          }
+        },
+        "type_info": "Bytea"
+      },
+      {
+        "name": "dominant_colors",
+        "ordinal": 5,
+        "origin": {
+          "Table": {
+            "name": "dominant_colors",
+            "table": "photos"
+          }
+        },
+        "type_info": "Int4Array"
+      },
+      {
+        "name": "camera_make",
+        "ordinal": 6,
+        "origin": {
+          "Table": {
+            "name": "camera_make",
+            "table": "photos"
+          }
+        },
+        "type_info": "Text"
+      },
+      {
+        "name": "gps_lat",
+        "ordinal": 7,
+        "origin": {
+          "Table": {
+            "name": "gps_lat",
+            "table": "photos"
+          }
+        },
+        "type_info": "Float8"
+      },
+      {
+        "name": "gps_lon",
+        "ordinal": 8,
+        "origin": {
+          "Table": {
+            "name": "gps_lon",
+            "table": "photos"
+          }
+        },
+        "type_info": "Float8"
+      }
+    ],
+    "nullable": [
+      null,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      true
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    }
+  },
+  "hash": "98d2d246d169428b49f3e69d7339f1e9bf9a781e96992019d7b58e5b69a84444",
+  "query": "SELECT status::text AS \"status!\",width,height,orientation,placeholder,dominant_colors,camera_make,gps_lat,gps_lon FROM photos WHERE id=$1"
+}

@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "describe": {
+    "columns": [
+      {
+        "name": "locked_by",
+        "ordinal": 0,
+        "origin": {
+          "Table": {
+            "name": "locked_by",
+            "table": "jobs"
+          }
+        },
+        "type_info": "Text"
+      }
+    ],
+    "nullable": [
+      true
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    }
+  },
+  "hash": "c696a5e925deb8d424496c8fc52ae1fab23044430739f0391c1e19b55d6c76b6",
+  "query": "SELECT locked_by FROM jobs WHERE id=$1"
+}

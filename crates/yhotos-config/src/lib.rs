@@ -41,6 +41,8 @@ pub struct Config {
     pub upload: Upload,
     /// Structured or interactive tracing output.
     pub log_format: LogFormat,
+    /// CPU worker limits and trusted codec executable.
+    pub worker: Worker,
 }
 /// Positive per-minute capacities for independent request classes.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -59,6 +61,40 @@ pub struct Upload {
     pub max_bytes: u64,
     /// Maximum individual chunk size.
     pub chunk_bytes: u32,
+}
+/// CPU worker settings, configured through `YHOTOS_WORKER__*` variables.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Worker {
+    /// Simultaneous host processes, default half the CPU count, minimum one.
+    pub concurrency: u16,
+    /// Trusted absolute codec executable; canonicalized by the worker at startup.
+    pub codec_host_path: PathBuf,
+    /// Codec wall-clock deadline in seconds, 1..=600, default 300.
+    pub codec_timeout: u32,
+    /// Threads per host, 1..=64, default two.
+    pub vips_concurrency: u8,
+    /// Optional structured pipeline plan; omitted uses architecture defaults.
+    pub variant_plan: Option<serde_json::Value>,
+    /// Explicit local-only plaintext opt-in; the database layer rejects remote hosts.
+    pub local_plaintext_database: bool,
+    /// Loopback-only Prometheus listener, default 127.0.0.1:9101.
+    pub metrics_listen: SocketAddr,
+}
+impl Default for Worker {
+    fn default() -> Self {
+        Self {
+            concurrency: std::thread::available_parallelism().map_or(1, |n| {
+                u16::try_from((n.get() / 2).max(1)).unwrap_or(u16::MAX)
+            }),
+            codec_host_path: PathBuf::from("/usr/local/bin/yhotos-codec-host"),
+            codec_timeout: 300,
+            vips_concurrency: 2,
+            variant_plan: None,
+            local_plaintext_database: false,
+            metrics_listen: SocketAddr::from(([127, 0, 0, 1], 9101)),
+        }
+    }
 }
 /// Lowercase output format accepted from the environment.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -81,6 +117,7 @@ struct Defaults {
     transfer_deadline_secs: u32,
     upload: Upload,
     log_format: LogFormat,
+    worker: Worker,
 }
 impl Default for Defaults {
     fn default() -> Self {
@@ -101,6 +138,7 @@ impl Default for Defaults {
                 chunk_bytes: 8 * 1024 * 1024,
             },
             log_format: LogFormat::Json,
+            worker: Worker::default(),
         }
     }
 }
@@ -161,6 +199,19 @@ impl Config {
         let max_bytes = read::<u64>(&f, "upload.max_bytes", &mut errors);
         let chunk_bytes = read::<u32>(&f, "upload.chunk_bytes", &mut errors);
         let log_format = read::<LogFormat>(&f, "log_format", &mut errors);
+        let worker = read::<Worker>(&f, "worker", &mut errors);
+        if let Some(w) = &worker
+            && (w.concurrency == 0
+                || w.concurrency > 1024
+                || w.codec_timeout == 0
+                || w.codec_timeout > 600
+                || !(1..=64).contains(&w.vips_concurrency)
+                || !w.codec_host_path.is_absolute()
+                || !w.metrics_listen.ip().is_loopback())
+        {
+            errors
+                .push("worker: invalid concurrency, timeout, codec path or metrics address".into());
+        }
         if let Some(Some(addr)) = admin_listen
             && addr.ip().to_canonical().is_unspecified()
         {
@@ -250,6 +301,7 @@ impl Config {
             max_bytes,
             chunk_bytes,
             log_format,
+            worker,
         ) {
             (
                 Some(public_listen),
@@ -268,6 +320,7 @@ impl Config {
                 Some(max_bytes),
                 Some(chunk_bytes),
                 Some(log_format),
+                Some(worker),
             ) => Ok(Self {
                 public_listen,
                 admin_listen,
@@ -289,6 +342,7 @@ impl Config {
                     chunk_bytes,
                 },
                 log_format,
+                worker,
             }),
             _ => Err(ConfigError(vec!["configuration is incomplete".into()])),
         }
@@ -329,6 +383,45 @@ mod tests {
         let debug = format!("{config:?}");
         assert!(!debug.contains(config.database_url.expose_secret()));
         assert!(!debug.contains(config.session_key.expose_secret()));
+    }
+    #[test]
+    fn worker_settings_are_bounded_and_overridable() {
+        let dir = tempfile::tempdir().unwrap();
+        let worker = Worker {
+            concurrency: 4,
+            codec_timeout: 120,
+            vips_concurrency: 3,
+            ..Worker::default()
+        };
+        let config =
+            Config::from_figment(valid(dir.path()).merge(("worker", worker.clone()))).unwrap();
+        assert_eq!(config.worker.concurrency, 4);
+        assert_eq!(config.worker.codec_timeout, 120);
+        assert_eq!(config.worker.vips_concurrency, 3);
+        for bad in [
+            Worker {
+                concurrency: 0,
+                ..worker.clone()
+            },
+            Worker {
+                codec_timeout: 601,
+                ..worker.clone()
+            },
+            Worker {
+                vips_concurrency: 0,
+                ..worker.clone()
+            },
+            Worker {
+                codec_host_path: PathBuf::from("relative"),
+                ..worker.clone()
+            },
+            Worker {
+                metrics_listen: SocketAddr::from(([0, 0, 0, 0], 9101)),
+                ..worker.clone()
+            },
+        ] {
+            assert!(Config::from_figment(valid(dir.path()).merge(("worker", bad))).is_err());
+        }
     }
     #[test]
     fn reports_all_problems_and_never_echoes_bad_secrets() {

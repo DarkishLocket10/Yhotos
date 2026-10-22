@@ -161,12 +161,29 @@ impl From<CodecError> for Failure {
 // A new exec clears env before any libvips initialization, without unsafe Rust
 // environment mutation. No PATH/HOME/LD_*/VIPS_* supplied by the caller survives.
 fn clean_environment() -> Result<(), Failure> {
-    let expected = [
-        ("VIPS_CONCURRENCY", "2"),
+    let concurrency = std::env::var("VIPS_CONCURRENCY")
+        .ok()
+        .and_then(|s| s.parse::<u8>().ok())
+        .filter(|n| (1..=64).contains(n))
+        .unwrap_or(2)
+        .to_string();
+    #[allow(unused_mut)]
+    let mut expected = vec![
+        ("VIPS_CONCURRENCY", concurrency.as_str()),
         ("VIPS_WARNING", "0"),
         ("VIPS_DISC_THRESHOLD", "3g"),
         ("LC_ALL", "C"),
     ];
+    #[cfg(feature = "test-hooks")]
+    let test_delay = std::env::var("YHOTOS_TEST_DELAY_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .filter(|ms| *ms <= 60_000)
+        .map(|n| n.to_string());
+    #[cfg(feature = "test-hooks")]
+    if let Some(delay) = test_delay.as_deref() {
+        expected.push(("YHOTOS_TEST_DELAY_MS", delay));
+    }
     if std::env::vars_os()
         .filter(|(name, _)| name != "__CF_USER_TEXT_ENCODING")
         .count()
@@ -252,6 +269,12 @@ fn run() -> Result<(), Failure> {
         let pid = pid.parse().map_err(|_| Failure(3, "invalid test target"))?;
         return yhotos_codec::sandbox::check_process_isolation(pid)
             .map_err(|_| Failure(3, "process sandbox failed"));
+    }
+    #[cfg(feature = "test-hooks")]
+    if let Ok(delay) = std::env::var("YHOTOS_TEST_DELAY_MS")
+        && let Ok(ms) = delay.parse::<u64>()
+    {
+        std::thread::sleep(std::time::Duration::from_millis(ms.min(60_000)));
     }
     let mut bytes = Vec::new();
     std::io::stdin()

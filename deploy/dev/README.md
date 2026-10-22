@@ -49,3 +49,43 @@ claims return `false` without altering a replacement worker's claim.
 
 Stop the database with `docker compose -f deploy/dev/compose.yml down`. The named
 volume preserves it; remove the volume before regenerating an existing password.
+
+## CPU worker tuning
+
+`YHOTOS_WORKER__CONCURRENCY` limits simultaneous codec hosts (default half the
+available CPUs, minimum one). `YHOTOS_WORKER__VIPS_CONCURRENCY` controls threads
+per host (default 2, range 1..=64). Start with eight hosts and two threads on
+tower's sixteen cores; lower the host count when memory or disk bandwidth is the
+limit. `YHOTOS_WORKER__CODEC_HOST_PATH` must be an absolute trusted executable
+path. `YHOTOS_WORKER__CODEC_TIMEOUT` is a wall-clock limit in seconds (default
+300, maximum 600). `YHOTOS_WORKER__VARIANT_PLAN` optionally supplies a structured
+`{ variants: [...] }` plan with `name`, `long_edge`, `square`, `formats`
+(`avif`, `jxl`, `jpeg`) and `scale2x`; names, uniqueness and the 32-output cap
+are checked before consuming jobs. The worker uses `Role::Worker` and verified
+database TLS, with an explicit loopback-only development opt-in
+`YHOTOS_WORKER__LOCAL_PLAINTEXT_DATABASE=true`. SIGTERM/SIGINT drains for up to
+29 seconds before cancelling and releasing remaining claims. Unimplemented ML, geo and video handlers defer for one hour
+without exhausting their attempt allowance.
+
+Queue facade metrics are `yhotos_jobs_claimed_total`,
+`yhotos_jobs_completed_total`, `yhotos_jobs_failed_total` (all labelled `kind`),
+`yhotos_jobs_duration_seconds` (histogram) and `yhotos_jobs_queue_depth` (gauge,
+refreshed every ten seconds). The worker installs a Prometheus recorder and
+serves `/metrics` at `YHOTOS_WORKER__METRICS_LISTEN` (default
+`127.0.0.1:9101`; only loopback addresses are accepted). Duration observations
+export as histogram buckets, sum and count.
+
+`cargo test -p yhotos-codec-host --all-features --test pipeline` runs the actual
+host against the dev database. The host-package harness gives Cargo access to
+`CARGO_BIN_EXE_yhotos-codec-host`; the test bodies live in the pipeline crate.
+CI runs these tests inside `Dockerfile.codec` with its pgvector service.
+`test-hooks` enables an explicit bounded child-delay environment variable and
+an in-process parent verification barrier; production builds omit both hooks.
+
+Build the host in release mode, then run
+`cargo bench -p yhotos-bench --bench pipeline`. It reports single-photo and
+eight-photo parallel full ingests, resetting publication outside the measured
+region. It skips explicitly unless a fixture of at least 24 MP exists in
+`fixtures/large/`. The architecture's default sizes, 2x variants and encoder
+rules expand to 23 files; the performance document's older 13-file count does
+not match that plan.
