@@ -28,7 +28,7 @@ Areas: `deploy/` (Dockerfiles, `compose.yml`, `compose.staging.yml`, `.env.examp
 ## Design
 
 ### Images
-Multi-stage Dockerfiles: build with the pinned Rust toolchain; runtime on a minimal distroless or `debian:stable-slim` base with only libvips/libheif/libjxl/libaom/libultrahdr/ffmpeg where needed (worker image only; the public server image contains no codec libraries at all). Non-root user, read-only root filesystem, no shell in the public server image. `release.yml` on tags: build, SBOM (syft), sign with cosign keyless (OIDC), push to GHCR; images referenced by digest in compose.
+Multi-stage Dockerfiles: build with the pinned Rust toolchain, with an explicit feature list per image (never `--all-features`: the `test-util` features select deliberately weak test-only parameters, such as minimum-cost Argon2); add a release-workflow check that `cargo tree -e features` for each shipped binary does not contain `test-util`; runtime on a minimal distroless or `debian:stable-slim` base with only libvips/libheif/libjxl/libaom/libultrahdr/ffmpeg where needed (worker image only; the public server image contains no codec libraries at all). Non-root user, read-only root filesystem, no shell in the public server image. `release.yml` on tags: build, SBOM (syft), sign with cosign keyless (OIDC), push to GHCR; images referenced by digest in compose.
 
 ### Compose (tower)
 - `server-public`: public feature set, `/data` read-only, connects as the public DB login role, listens on an internal network only; `cloudflared` sidecar points the tunnel at it.
