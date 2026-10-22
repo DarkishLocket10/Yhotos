@@ -24,6 +24,7 @@ pub mod share_links;
 pub mod tags;
 pub mod uploads;
 pub mod users;
+pub mod zip;
 
 use secrecy::{ExposeSecret, SecretString};
 /// Connection type for composing repository calls in a transaction.

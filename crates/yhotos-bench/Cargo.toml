@@ -12,6 +12,7 @@ workspace = true
 raw = ["yhotos-codec/raw"]
 
 [dev-dependencies]
+nix.workspace = true
 criterion.workspace = true
 base64.workspace = true
 sqlx.workspace = true
@@ -89,4 +90,12 @@ harness = false
 
 [[bench]]
 name = "geo_views"
+harness = false
+
+[[bench]]
+name = "zip"
+harness = false
+
+[[bench]]
+name = "video"
 harness = false

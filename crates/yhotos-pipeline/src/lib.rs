@@ -6,6 +6,7 @@ mod protocol;
 mod publish;
 mod timestamp;
 pub mod validate;
+pub mod video;
 pub use plan::{Format, Variant, VariantPlan};
 pub use protocol::Limits;
 pub use yhotos_jobs::JobError;
@@ -35,6 +36,8 @@ pub struct Ingest {
     pub concurrency_per_host: u8,
     /// Wall-clock deadline covering writes, reads, and child exit, normally five minutes.
     pub codec_timeout: Duration,
+    /// Video parser paths, duration and transcode deadline.
+    pub video: video::Settings,
     /// Timezone for capture dates lacking an EXIF offset; defaults to UTC.
     /// DST folds choose the earlier instant and gaps shift forward by the gap.
     pub default_timezone: jiff::tz::TimeZone,
@@ -65,6 +68,7 @@ impl Ingest {
             limits: Limits::default(),
             concurrency_per_host: 2,
             codec_timeout: Duration::from_secs(300),
+            video: video::Settings::default(),
             default_timezone: jiff::tz::TimeZone::UTC,
             #[cfg(feature = "test-hooks")]
             test_delay: None,
@@ -117,7 +121,11 @@ impl Ingest {
             }
             Queue::enqueue_in(
                 &mut tx,
-                &Job::VideoTranscode { photo_id },
+                &Job::VideoTranscode {
+                    photo_id,
+                    original_hash: hash,
+                    generation: photo.generation,
+                },
                 followup_priority,
                 None,
             )
@@ -156,7 +164,7 @@ impl Ingest {
             }
             let placeholder = self.validate_report(&report)?;
             let verified = self.verify_outputs(dir.path(),&outputs,&report).await?;
-            self.publish(photo_id,&photo.original_hash,photo.generation,&marker,&report,&outputs,&verified,&placeholder,followup_priority).await
+            self.publish(photo_id,&photo.original_hash,photo.generation,&marker,&report,&outputs,&verified,&placeholder,followup_priority,None).await
         }.await;
         if let Err(error) = &result {
             let (status, reason) = match error {
@@ -250,6 +258,14 @@ impl JobHandler for Ingest {
                 .await
             }
             Job::Gc => self.sweep_uploads().await,
+            Job::VideoTranscode {
+                photo_id,
+                original_hash,
+                generation,
+            } => {
+                self.transcode_video_for(photo_id, Some((&original_hash, generation)), row.attempts)
+                    .await
+            }
             _ => Err(JobError::Retry {
                 after: Duration::from_secs(3600),
                 reason: "not implemented".into(),

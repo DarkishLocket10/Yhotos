@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT d.hash,v.duration_ms FROM derivatives d JOIN video_renditions v ON v.photo_id=d.photo_id WHERE d.photo_id=$1 AND d.variant='scrub' AND d.format='jpeg' AND NOT d.hdr AND v.codec='h264' AND NOT v.hls",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "derivatives",
+            "name": "hash"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "duration_ms",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "video_renditions",
+            "name": "duration_ms"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "4d049ce149076ecfccf5fbfe5b19a2b6f18dfc02eaf93873f47e15bbca275544"
+}

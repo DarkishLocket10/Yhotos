@@ -164,6 +164,7 @@ fn benchmark_config(
             expensive_per_min: u32::MAX,
             auth_per_min: u32::MAX,
         },
+        zip: yhotos_config::Zip::default(),
         global_stream_cap: 64,
         write_timeout: std::time::Duration::from_secs(30),
         transfer_deadline: std::time::Duration::from_mins(30),

@@ -1,0 +1,61 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH RECURSIVE identity AS (\n              SELECT $1::uuid AS user_id, $2::uuid[] AS groups, $3::bool AS admin,\n                     $4::uuid[] AS shared_albums, $5::uuid[] AS shared_photos\n            ), album_levels AS (\n              SELECT a.*, ARRAY[a.id] AS ids, a.slug::text AS path,\n                jsonb_build_array(jsonb_build_object('id',a.id,'title',a.title,'path',a.slug::text)) AS chain,\n                CASE WHEN a.visibility='restricted' THEN ARRAY[a.id] ELSE ARRAY[]::uuid[] END AS restricted_ids,\n                (a.visibility <> 'restricted' OR EXISTS (\n                  SELECT 1 FROM album_grants g WHERE g.album_id=a.id AND\n                   ((g.principal_kind='user' AND g.principal_id=i.user_id) OR\n                    (g.principal_kind='group' AND g.principal_id=ANY(i.groups))))) IS TRUE AS levels_pass\n              FROM albums a CROSS JOIN identity i WHERE a.parent_id IS NULL AND a.deleted_at IS NULL\n              UNION ALL\n              SELECT a.*, parent.ids || a.id, parent.path || '/' || a.slug::text,\n                parent.chain || jsonb_build_array(jsonb_build_object('id',a.id,'title',a.title,'path',parent.path || '/' || a.slug::text)),\n                parent.restricted_ids || CASE WHEN a.visibility='restricted' THEN ARRAY[a.id] ELSE ARRAY[]::uuid[] END,\n                parent.levels_pass AND (a.visibility <> 'restricted' OR EXISTS (\n                  SELECT 1 FROM album_grants g WHERE g.album_id=a.id AND\n                   ((g.principal_kind='user' AND g.principal_id=i.user_id) OR\n                    (g.principal_kind='group' AND g.principal_id=ANY(i.groups))))) IS TRUE\n              FROM albums a JOIN album_levels parent ON parent.id=a.parent_id CROSS JOIN identity i\n              WHERE a.deleted_at IS NULL AND NOT a.id=ANY(parent.ids)\n            ), visible_albums AS (\n              SELECT a.* FROM album_levels a CROSS JOIN identity i\n              WHERE i.admin OR (\n                ((i.user_id IS NOT NULL OR (cardinality(i.shared_albums)=0 AND cardinality(i.shared_photos)=0)) AND a.levels_pass)\n                OR EXISTS (SELECT FROM unnest(i.shared_albums) target\n                  WHERE target=ANY(a.ids) AND a.restricted_ids <@ ARRAY[target]))\n            ), visible_photos AS NOT MATERIALIZED (\n              SELECT p.*, coalesce((SELECT jsonb_agg(jsonb_build_object('codec',v.codec,'hash',v.hash,'duration_ms',v.duration_ms) ORDER BY v.codec) FROM video_renditions v WHERE v.photo_id=p.id AND NOT v.hls),'[]'::jsonb) AS video, ARRAY(SELECT target FROM unnest(i.shared_albums) target\n                WHERE p.visibility <> 'restricted' AND target=ANY(a.ids) AND a.restricted_ids <@ ARRAY[target]) AS shared_albums,\n                (i.admin OR (i.user_id IS NOT NULL AND a.levels_pass AND\n                (p.visibility <> 'restricted' OR EXISTS (SELECT FROM photo_grants g WHERE g.photo_id=p.id AND\n                  ((g.principal_kind='user' AND g.principal_id=i.user_id) OR\n                   (g.principal_kind='group' AND g.principal_id=ANY(i.groups))))))) AS account_view,\n                (p.id=ANY(i.shared_photos) AND cardinality(a.restricted_ids)=0) AS photo_link_view\n              FROM photos p JOIN album_levels a ON a.id=p.album_id CROSS JOIN identity i\n              WHERE p.deleted_at IS NULL AND (i.admin OR (\n                (a.levels_pass AND (i.user_id IS NOT NULL OR (cardinality(i.shared_albums)=0 AND cardinality(i.shared_photos)=0)) AND\n                  (p.visibility <> 'restricted' OR EXISTS (\n                    SELECT 1 FROM photo_grants g WHERE g.photo_id=p.id AND\n                     ((g.principal_kind='user' AND g.principal_id=i.user_id) OR\n                      (g.principal_kind='group' AND g.principal_id=ANY(i.groups))))))\n                OR (p.id=ANY(i.shared_photos) AND cardinality(a.restricted_ids)=0)\n                OR (p.visibility <> 'restricted' AND EXISTS (SELECT FROM unnest(i.shared_albums) target\n                  WHERE target=ANY(a.ids) AND a.restricted_ids <@ ARRAY[target]))))\n            ) ,\n      selected AS (\n        SELECT p.short_id,p.gps_lon AS lon,p.gps_lat AS lat,\n          CASE WHEN $10>=15 THEN p.gps_lon END AS point_lon,\n          CASE WHEN $10>=15 THEN p.gps_lat END AS point_lat,\n          CASE WHEN $10>=15 THEN 0::float8 ELSE\n            least($11::float8-1,floor((p.gps_lon-$6)/($8-$6)*$11::float8)) + 22 *\n            least($11::float8-1,floor((p.gps_lat-$7)/($9-$7)*$11::float8)) END AS cell\n        FROM visible_photos p WHERE p.gps_point IS NOT NULL AND\n          p.gps_point <@ box(point($6,$7),point($8,$9))\n      ), clustered AS (\n        SELECT count(*) AS count,\n          coalesce(point_lon,avg(lon)) AS lon,\n          coalesce(point_lat,avg(lat)) AS lat,\n          min(short_id COLLATE \"C\") COLLATE \"default\" AS short_id\n        FROM selected GROUP BY cell,point_lon,point_lat\n      ) SELECT count AS \"count!\",lon AS \"lon!\",lat AS \"lat!\",short_id AS \"short_id!\",\n        (SELECT d.hash FROM derivatives d\n          WHERE d.photo_id=(SELECT id FROM photos WHERE short_id=c.short_id) AND d.variant='thumb' AND d.format='jpeg' AND NOT d.hdr) AS thumb_hash\n      FROM clustered c ORDER BY count DESC,c.short_id COLLATE \"C\" LIMIT 500",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "lon!",
+        "type_info": "Float8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "lat!",
+        "type_info": "Float8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "short_id!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "thumb_hash",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray",
+        "Bool",
+        "UuidArray",
+        "UuidArray",
+        "Float8",
+        "Float8",
+        "Float8",
+        "Float8",
+        "Int4",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "7df4517c6c6cf218bece9e07dddc8a087598d800ccf796c82c5184312cd494da"
+}

@@ -4,7 +4,7 @@ use landlock::{
     ABI, Access, AccessFs, CompatLevel, Compatible, PathBeneath, PathFd, Ruleset, RulesetAttr,
     RulesetCreatedAttr, RulesetStatus,
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub(super) fn restrict(input: &Path, out: &Path) -> Result<(), Failure> {
     let unavailable = || Failure(3, "filesystem sandbox unavailable");
@@ -98,6 +98,49 @@ pub(super) fn probe(input: &Path, out: &Path) -> Result<(), Failure> {
         )
     {
         return Err(failed());
+    }
+    Ok(())
+}
+
+// Execute grants attach to canonical static binary inodes only. V3 is required for truncate control
+// and includes Execute; HardRequirement refuses unsupported kernels.
+pub(super) fn video(input: &Path, out: &Path, binaries: [&PathBuf; 2]) -> Result<(), Failure> {
+    let unavailable = || Failure(3, "video landlock unavailable");
+    let mut ruleset = Ruleset::default()
+        .set_compatibility(CompatLevel::HardRequirement)
+        .handle_access(AccessFs::from_all(ABI::V3))
+        .map_err(|_| unavailable())?
+        .create()
+        .map_err(|_| unavailable())?;
+    for (path, rights) in [
+        (input, AccessFs::ReadFile.into()),
+        (
+            out,
+            AccessFs::ReadFile
+                | AccessFs::ReadDir
+                | AccessFs::WriteFile
+                | AccessFs::MakeReg
+                | AccessFs::Truncate,
+        ),
+    ] {
+        ruleset = ruleset
+            .add_rule(PathBeneath::new(
+                PathFd::new(path).map_err(|_| unavailable())?,
+                rights,
+            ))
+            .map_err(|_| unavailable())?;
+    }
+    for binary in binaries {
+        ruleset = ruleset
+            .add_rule(PathBeneath::new(
+                PathFd::new(binary).map_err(|_| unavailable())?,
+                AccessFs::ReadFile | AccessFs::Execute,
+            ))
+            .map_err(|_| unavailable())?;
+    }
+    let status = ruleset.restrict_self().map_err(|_| unavailable())?;
+    if status.ruleset != RulesetStatus::FullyEnforced || !status.no_new_privs {
+        return Err(unavailable());
     }
     Ok(())
 }

@@ -4,6 +4,8 @@
 mod filesystem;
 #[cfg(target_os = "linux")]
 mod seccomp;
+#[cfg(target_os = "linux")]
+mod video;
 use base64::Engine;
 use nix::sys::resource::{Resource, setrlimit};
 use serde::{Deserialize, Serialize};
@@ -511,6 +513,28 @@ fn supervise() -> Result<(), Failure> {
     }
 }
 fn main() -> std::process::ExitCode {
+    #[cfg(target_os = "linux")]
+    if matches!(
+        std::env::args().nth(1).as_deref(),
+        Some("--video" | "--video-exec")
+    ) {
+        let result = if std::env::args().nth(1).as_deref() == Some("--video") {
+            video::run()
+        } else {
+            video::child()
+        };
+        return match result {
+            Ok(()) => std::process::ExitCode::SUCCESS,
+            Err(Failure(code, message)) => {
+                let _ = writeln!(std::io::stderr().lock(), "{message}");
+                std::process::ExitCode::from(code)
+            }
+        };
+    }
+    #[cfg(not(target_os = "linux"))]
+    if std::env::args().any(|s| s == "--video") {
+        return std::process::ExitCode::from(3);
+    }
     let result = if std::env::args_os()
         .nth(1)
         .is_some_and(|a| a == CHILD_ARGUMENT)

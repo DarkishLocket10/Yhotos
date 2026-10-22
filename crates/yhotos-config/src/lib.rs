@@ -46,6 +46,8 @@ pub struct Config {
     pub write_timeout: Duration,
     /// Absolute original/video body lifetime, from `YHOTOS_TRANSFER_DEADLINE_SECS` (default 1800).
     pub transfer_deadline: Duration,
+    /// Archive concurrency and byte ceiling.
+    pub zip: Zip,
     /// Maximum total upload and chunk lengths.
     pub upload: Upload,
     /// Structured or interactive tracing output.
@@ -138,6 +140,23 @@ pub struct Upload {
     /// Maximum individual chunk size.
     pub chunk_bytes: u32,
 }
+/// Archive limits from `YHOTOS_ZIP__*`; a stream uses one per-IP slot.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Zip {
+    /// Maximum concurrent archives across all clients.
+    pub concurrency: u16,
+    /// Maximum total archive bytes, including ZIP headers.
+    pub max_bytes: u64,
+}
+impl Default for Zip {
+    fn default() -> Self {
+        Self {
+            concurrency: 4,
+            max_bytes: 20 << 30,
+        }
+    }
+}
 /// CPU worker settings, configured through `YHOTOS_WORKER__*` variables.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, deny_unknown_fields)]
@@ -148,6 +167,14 @@ pub struct Worker {
     pub codec_host_path: PathBuf,
     /// Codec wall-clock deadline in seconds, 1..=600, default 300.
     pub codec_timeout: u32,
+    /// Video transcode deadline, default 30 minutes, at most two hours.
+    pub video_timeout: u32,
+    /// Maximum video duration in seconds, at most 30 minutes.
+    pub video_max_duration: u32,
+    /// Trusted video parser executables, canonicalized by the host.
+    pub ffmpeg_path: PathBuf,
+    /// Trusted video probe executable.
+    pub ffprobe_path: PathBuf,
     /// IANA timezone for offset-less EXIF dates; defaults to UTC.
     pub default_timezone: String,
     /// Threads per host, 1..=64, default two.
@@ -167,6 +194,10 @@ impl Default for Worker {
             }),
             codec_host_path: PathBuf::from("/usr/local/bin/yhotos-codec-host"),
             codec_timeout: 300,
+            video_timeout: 1800,
+            video_max_duration: 1800,
+            ffmpeg_path: "/usr/bin/ffmpeg".into(),
+            ffprobe_path: "/usr/bin/ffprobe".into(),
             default_timezone: "UTC".into(),
             vips_concurrency: 2,
             variant_plan: None,
@@ -197,6 +228,7 @@ struct Defaults {
     global_stream_cap: u16,
     write_timeout_secs: u32,
     transfer_deadline_secs: u32,
+    zip: Zip,
     upload: Upload,
     log_format: LogFormat,
     worker: Worker,
@@ -219,6 +251,7 @@ impl Default for Defaults {
             global_stream_cap: 64,
             write_timeout_secs: 30,
             transfer_deadline_secs: 30 * 60,
+            zip: Zip::default(),
             upload: Upload {
                 max_bytes: MAX_UPLOAD_BYTES,
                 chunk_bytes: 8 * 1024 * 1024,
@@ -291,6 +324,10 @@ impl Config {
         let max_bytes = read::<u64>(&f, "upload.max_bytes", &mut errors);
         let chunk_bytes = read::<u32>(&f, "upload.chunk_bytes", &mut errors);
         let log_format = read::<LogFormat>(&f, "log_format", &mut errors);
+        let zip = read::<Zip>(&f, "zip", &mut errors);
+        if zip.is_some_and(|z| z.concurrency == 0 || z.concurrency > 1024 || z.max_bytes == 0) {
+            errors.push("zip: invalid archive limits".into());
+        }
         let worker = read::<Worker>(&f, "worker", &mut errors);
         let map_tiles = read::<String>(&f, "map_tiles", &mut errors).and_then(|value| {
             match MapTiles::parse(&value) {
@@ -306,6 +343,10 @@ impl Config {
                 || w.concurrency > 1024
                 || w.codec_timeout == 0
                 || w.codec_timeout > 600
+                || !(1..=7200).contains(&w.video_timeout)
+                || !(1..=1800).contains(&w.video_max_duration)
+                || !w.ffmpeg_path.is_absolute()
+                || !w.ffprobe_path.is_absolute()
                 || !(1..=64).contains(&w.vips_concurrency)
                 || !w.codec_host_path.is_absolute()
                 || !w.metrics_listen.ip().is_loopback()
@@ -425,6 +466,7 @@ impl Config {
         if !errors.is_empty() {
             return Err(ConfigError(errors));
         }
+        let zip = zip.ok_or_else(|| ConfigError(vec!["zip: required".into()]))?;
         // All missing fields were reported above; this match keeps construction
         // total without unwraps, even if the extraction list changes later.
         match (
@@ -489,6 +531,7 @@ impl Config {
                     auth_per_min,
                 },
                 global_stream_cap,
+                zip,
                 write_timeout: Duration::from_secs(u64::from(write_timeout_secs)),
                 transfer_deadline: Duration::from_secs(u64::from(transfer_deadline_secs)),
                 upload: Upload {

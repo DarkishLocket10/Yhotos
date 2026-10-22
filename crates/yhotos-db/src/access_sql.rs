@@ -104,7 +104,7 @@ macro_rules! visible_page_query {
                 OR EXISTS (SELECT FROM unnest(i.shared_albums) target
                   WHERE target=ANY(a.ids) AND a.restricted_ids <@ ARRAY[target]))
             ), visible_photos AS NOT MATERIALIZED (
-              SELECT p.*, ARRAY(SELECT target FROM unnest(i.shared_albums) target
+              SELECT p.*, coalesce((SELECT jsonb_agg(jsonb_build_object('codec',v.codec,'hash',v.hash,'duration_ms',v.duration_ms) ORDER BY v.codec) FROM video_renditions v WHERE v.photo_id=p.id AND NOT v.hls),'[]'::jsonb) AS video, ARRAY(SELECT target FROM unnest(i.shared_albums) target
                 WHERE p.visibility <> 'restricted' AND target=ANY(a.ids) AND a.restricted_ids <@ ARRAY[target]) AS shared_albums,
                 (i.admin OR (i.user_id IS NOT NULL AND a.levels_pass AND
                 (p.visibility <> 'restricted' OR EXISTS (SELECT FROM photo_grants g WHERE g.photo_id=p.id AND

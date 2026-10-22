@@ -24,6 +24,7 @@ expression: "crate::pages::snapshot_html(html)"
 
 <form method="get" class="sort-form"><label for="sort">Sort photos</label><select name="sort" id="sort">
 <option value="taken">Date taken</option><option value="posted">Date posted</option><option value="name">Name</option><option value="manual" selected>Manual order</option></select><button type="submit">Apply sorting</button></form>
+
 <p>3 photos</p><section aria-label="Photos" class="photo-grid"><div class="grid-row"><a data-photo-link class="cell" id="cell0" href="/p/photo-1?sort=manual"><picture>
 
 

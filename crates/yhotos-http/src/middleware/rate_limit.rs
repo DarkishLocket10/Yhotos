@@ -233,7 +233,10 @@ pub(crate) async fn limit(
         return response;
     }
     // Both original and video bodies use the validated IP for stream accounting.
-    if request.uri().path().starts_with("/o/") || request.uri().path().starts_with("/v/") {
+    if request.uri().path().starts_with("/o/")
+        || request.uri().path().starts_with("/v/")
+        || request.uri().path() == "/zip"
+    {
         request.extensions_mut().insert(ClientIp(ip));
     }
     next.run(request).await

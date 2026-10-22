@@ -66,3 +66,44 @@ decode error.
 The syscall list must be audited with `strace -f -c` inside that image whenever
 native codec versions change. This workstation has no running Docker daemon;
 Linux execution and the strace inventory have not been verified locally.
+
+## Video mode
+
+`--video` accepts `{input,out_dir,settings,probe_only}`. Settings include absolute
+`ffmpeg`/`ffprobe` paths, `max_duration` (1..1800 seconds), `timeout` (1..7200
+seconds, default 1800), and `threads` (1..16). The supervisor bounds report
+capture to 1 MiB and invokes a fresh child for each probe/transcode/poster/sprite
+operation, with a single deadline for all video operations. The child closes
+inherited non-stdio descriptors and sets resource limits, parent-death SIGKILL,
+a process group, no-new-privileges, Landlock and seccomp before directly execing
+the parser. Unsupported Landlock fails closed with an operator-facing reason.
+
+Landlock grants input read-only, output read/write, and execution only on the
+configured parser binaries. The video parsers are pinned static ELF binaries. The host checks their bounded
+ELF program headers for PT_INTERP and refuses a dynamic loader before parsing
+media. No shared-library directories or loader receive access. This matters
+because Landlock requires EXECUTE on PT_INTERP too; static binaries preserve
+the exact two-file execution policy. The filesystem policy never grants
+directory execution.
+Video seccomp permits exec but denies fork/vfork, sockets, ptrace and mount;
+clone3 returns ENOSYS and clone accepts the inspected pthread flags only.
+Image mode retains its existing no-exec policy. Timeouts kill the parser's
+process group, and parent-death SIGKILL covers worker/supervisor cancellation.
+
+The probe accepts one H.264/HEVC video stream and known AAC/PCM/ALAC audio,
+at most four streams, 8K dimensions and configured duration. Every native
+invocation pins MOV demuxing and codec/protocol allow lists. Outputs are H.264
+High CRF21 (1080-pixel long edge), SVT-AV1 CRF30 (3840x2160 maximum, including portrait rotation), AAC160k,
+faststart MP4, JPEG poster at 10 percent and a 10x10 160-pixel scrub sprite.
+The worker sends the poster through the normal AVIF/JXL/JPEG image path.
+The authorized WebVTT route derives the 100 cell intervals from the committed
+duration, so no request parses video. HDR inputs become SDR BT.709 via zscale
+and Hable tone mapping; HDR delivery and HLS are outside this task.
+
+Local video tests use `deploy/dev/video-tools.sh`, which extracts the digest-pinned
+ffmpeg 9.0.2 static build into `target/video-tools` without installing host
+packages. `scripts/check.sh` runs this bootstrap automatically. Test requests
+can explicitly select another directory through `YHOTOS_TEST_VIDEO_BIN_DIR`;
+production paths still come only from validated worker configuration. The codec
+Dockerfile copies the same pinned static binaries to `/usr/bin/ffmpeg` and
+`/usr/bin/ffprobe`, so codec CI exercises the production sandbox.

@@ -242,6 +242,21 @@ impl Store {
         blocking(move || store.move_derivative(&src, &dest)).await
     }
 
+    /// Publishes a verified regular MP4 output beneath the safe video layout.
+    /// # Errors
+    /// Rejects unsafe keys/sources and returns redacted IO errors.
+    pub async fn put_video(
+        &self,
+        hash: &ContentHash,
+        codec: &str,
+        src: &Path,
+    ) -> Result<(), StorageError> {
+        let dest = self.path_video(hash, codec)?;
+        let src = src.to_path_buf();
+        let store = self.clone();
+        blocking(move || store.move_derivative(&src, &dest)).await
+    }
+
     /// Opens a regular file after rejecting symlinks in every component. The
     /// file supports streaming and `AsyncSeek` for HTTP range handling. Videos
     /// use a key with `variant = codec`, `format = "mp4"`, `hdr = false`.

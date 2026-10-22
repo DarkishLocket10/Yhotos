@@ -98,6 +98,7 @@ island_asset!(LIGHTBOX, lightbox_url, "lightbox");
 island_asset!(PREFETCH, prefetch_url, "prefetch");
 island_asset!(TRANSITIONS, transitions_url, "transitions");
 island_asset!(LIKES, likes_url, "likes");
+island_asset!(VIDEO, video_url, "video");
 #[cfg(feature = "admin")]
 static UPLOAD: LazyLock<Option<Asset>> = LazyLock::new(|| {
     Asset::new(
@@ -135,6 +136,7 @@ pub(crate) async fn serve(Path(path): Path<String>) -> Result<Response, HttpErro
         required(PREFETCH.as_ref())?,
         required(TRANSITIONS.as_ref())?,
         required(LIKES.as_ref())?,
+        required(VIDEO.as_ref())?,
     ] {
         if asset.url.strip_prefix("/static/") == Some(path.as_str()) {
             return Ok((

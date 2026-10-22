@@ -58,6 +58,21 @@ impl Ingest {
         request: &serde_json::Value,
         attempt: i32,
     ) -> Result<T, JobError> {
+        self.request_host_mode(request, attempt, false).await
+    }
+    pub(crate) async fn request_video_host<T: serde::de::DeserializeOwned>(
+        &self,
+        request: &serde_json::Value,
+        attempt: i32,
+    ) -> Result<T, JobError> {
+        self.request_host_mode(request, attempt, true).await
+    }
+    async fn request_host_mode<T: serde::de::DeserializeOwned>(
+        &self,
+        request: &serde_json::Value,
+        attempt: i32,
+        video: bool,
+    ) -> Result<T, JobError> {
         let data = serde_json::to_vec(&request)
             .map_err(|_| JobError::Fatal("invalid codec request".into()))?;
         let mut command = Command::new(&self.codec_host);
@@ -70,6 +85,9 @@ impl Ingest {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        if video {
+            command.arg("--video");
+        }
         // Each invocation gets a fresh process group. Dropping the guard kills both
         // the host supervisor and its sandbox child, including on task cancellation.
         command.process_group(0);
@@ -114,12 +132,26 @@ impl Ingest {
                     serde_json::from_slice(&stdout).map_err(|_| retry("invalid codec report"))
                 }
                 Some(2) => Err(JobError::Fatal(failure_reason(&stderr))),
-                Some(3) if attempt >= 2 => Err(JobError::Fatal("image processing failed".into())),
+                Some(3) if attempt >= 2 => Err(JobError::Fatal(if video {
+                    failure_reason(&stderr)
+                } else {
+                    "image processing failed".into()
+                })),
+                Some(3) if video => Err(retry(&failure_reason(&stderr))),
                 Some(4) => Err(retry("codec timed out")),
                 _ => Err(retry("image processing failed")),
             }
         };
-        if let Ok(result) = tokio::time::timeout(self.codec_timeout, operation).await {
+        if let Ok(result) = tokio::time::timeout(
+            if video {
+                Duration::from_secs(u64::from(self.video.timeout)) + Duration::from_secs(5)
+            } else {
+                self.codec_timeout
+            },
+            operation,
+        )
+        .await
+        {
             result
         } else {
             let _ = child.kill().await;

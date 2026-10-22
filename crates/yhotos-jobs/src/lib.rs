@@ -24,11 +24,11 @@ macro_rules! kinds {
             /// Maximum wall time of a single claim.
             #[must_use]
             pub const fn timeout(self) -> Duration {
-                Duration::from_secs(match self { Self::Ingest => 600, Self::Zip => 1800, Self::Gc => 3600, _ => 300 })
+                Duration::from_secs(match self { Self::Ingest => 600, Self::Zip | Self::VideoTranscode => 1800, Self::Gc => 3600, _ => 300 })
             }
             /// Maximum attempts; placeholders explicitly defer without consuming attempts.
             #[must_use]
-            pub const fn max_attempts(self) -> i32 { if matches!(self, Self::Ingest) { 3 } else { 5 } }
+            pub const fn max_attempts(self) -> i32 { if matches!(self, Self::Ingest | Self::VideoTranscode) { 3 } else { 5 } }
         }
     }
 }
@@ -89,6 +89,11 @@ pub enum Job {
     VideoTranscode {
         /// Existing photo identifier.
         photo_id: PhotoId,
+        /// Immutable original and replacement generation, also part of deduplication.
+        #[serde(with = "original_hash")]
+        original_hash: ContentHash,
+        /// Fences delayed transcodes against replacements, including identical bytes.
+        generation: i64,
     },
     /// Build an archive.
     #[serde(rename = "zip")]
@@ -190,6 +195,7 @@ pub trait JobHandler: Send + Sync + 'static {
 pub struct Queue {
     pool: PgPool,
     config: QueueConfig,
+    video_timeout: Duration,
 }
 impl Queue {
     /// Uses CPU-scaled concurrency and the production polling/shutdown intervals.
@@ -198,6 +204,7 @@ impl Queue {
         Self {
             pool,
             config: QueueConfig::default(),
+            video_timeout: JobKind::VideoTranscode.timeout(),
         }
     }
     /// Installs bounded worker settings.
@@ -211,7 +218,29 @@ impl Queue {
         {
             return Err(JobsError::InvalidJob);
         }
-        Ok(Self { pool, config })
+        Ok(Self {
+            pool,
+            config,
+            video_timeout: JobKind::VideoTranscode.timeout(),
+        })
+    }
+    /// Extends the video claim watchdog to include the configured transcode,
+    /// poster processing and publication; stale-lock recovery uses the same value.
+    /// # Errors
+    /// Rejects zero or a watchdog longer than three hours.
+    pub fn with_video_timeout(mut self, timeout: Duration) -> Result<Self, JobsError> {
+        if timeout.is_zero() || timeout > Duration::from_hours(3) {
+            return Err(JobsError::InvalidJob);
+        }
+        self.video_timeout = timeout;
+        Ok(self)
+    }
+    fn claim_timeout(&self, kind: JobKind) -> Duration {
+        if kind == JobKind::VideoTranscode {
+            self.video_timeout
+        } else {
+            kind.timeout()
+        }
     }
     /// Atomically deduplicates unfinished identical envelopes and notifies on commit.
     ///
@@ -313,7 +342,11 @@ mod tests {
             Job::MlOcr { photo_id },
             Job::MlTags { photo_id },
             Job::GeoReverse { photo_id },
-            Job::VideoTranscode { photo_id },
+            Job::VideoTranscode {
+                photo_id,
+                original_hash: "a".repeat(64).parse().unwrap(),
+                generation: 0,
+            },
             Job::Zip {
                 request_id: uuid::Uuid::now_v7(),
             },

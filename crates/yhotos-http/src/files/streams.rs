@@ -19,20 +19,20 @@ use tokio_util::io::ReaderStream;
 
 const MAX_ACTIVE_IPS: usize = 16_384;
 
-pub(super) struct Streams {
+pub(crate) struct Streams {
     active: Mutex<HashMap<IpAddr, usize>>,
     cap: usize,
     global: Arc<Semaphore>,
 }
 impl Streams {
-    pub(super) fn new(cap: usize, global_cap: u16) -> Arc<Self> {
+    pub(crate) fn new(cap: usize, global_cap: u16) -> Arc<Self> {
         Arc::new(Self {
             active: Mutex::new(HashMap::new()),
             cap,
             global: Arc::new(Semaphore::new(usize::from(global_cap))),
         })
     }
-    pub(super) fn acquire(self: &Arc<Self>, ip: IpAddr) -> Result<Permit, HttpError> {
+    pub(crate) fn acquire(self: &Arc<Self>, ip: IpAddr) -> Result<Permit, HttpError> {
         let global = self
             .global
             .clone()
@@ -55,7 +55,7 @@ impl Streams {
         })
     }
 }
-pub(super) struct Permit {
+pub(crate) struct Permit {
     streams: Arc<Streams>,
     ip: IpAddr,
     _global: OwnedSemaphorePermit,
@@ -77,13 +77,13 @@ impl Drop for Permit {
 // The fixed deadline is checked before every read and wakes pending reads.
 // When socket backpressure stops body polls, the transport write timeout drops
 // the body instead; a body timer alone cannot reclaim that connection.
-pub(super) struct GuardedStream<R> {
+pub(crate) struct GuardedStream<R> {
     stream: ReaderStream<R>,
     permit: Option<Permit>,
     deadline: Pin<Box<Sleep>>,
 }
 impl<R> GuardedStream<R> {
-    pub(super) fn new(stream: ReaderStream<R>, permit: Permit, lifetime: Duration) -> Self {
+    pub(crate) fn new(stream: ReaderStream<R>, permit: Permit, lifetime: Duration) -> Self {
         Self {
             stream,
             permit: Some(permit),

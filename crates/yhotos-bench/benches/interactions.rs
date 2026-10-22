@@ -91,6 +91,7 @@ fn config(dir: &std::path::Path, url: secrecy::SecretString) -> BenchResult<&'st
             .encode(Token::generate().hash(TokenKind::Session).as_bytes())
             .into(),
         trust_proxy: false,
+        zip: yhotos_config::Zip::default(),
         global_stream_cap: 64,
         write_timeout: Duration::from_secs(30),
         transfer_deadline: Duration::from_mins(30),

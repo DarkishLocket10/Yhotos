@@ -34,6 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .into(),
         trust_proxy: false,
+        zip: yhotos_config::Zip::default(),
         global_stream_cap: 64,
         write_timeout: Duration::from_secs(30),
         transfer_deadline: Duration::from_mins(30),

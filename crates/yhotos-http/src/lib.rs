@@ -12,6 +12,7 @@ pub mod middleware;
 pub mod pages;
 mod share;
 mod state;
+pub mod zip;
 pub use state::{AppResources, AppState};
 mod static_assets;
 
@@ -42,6 +43,7 @@ pub fn public_router(state: AppState) -> Router {
     let files = Router::new()
         .route("/i/{hash}/{name}", get(files::derivative))
         .route("/o/{hash}/{name}", get(files::original))
+        .route("/v/{hash}/scrub.vtt", get(files::index_response))
         .route("/v/{hash}/{name}", get(files::video));
     let router = Router::new()
         .route("/", get(pages::home))
@@ -64,7 +66,8 @@ pub fn public_router(state: AppState) -> Router {
         .merge(api::routes())
         .route("/healthz", get(health).with_state(()))
         .route("/static/{*path}", get(static_assets::serve))
-        .merge(files);
+        .merge(files)
+        .route("/zip", get(zip::album).post(zip::selection));
     #[cfg(test)]
     let router = router
         .route(

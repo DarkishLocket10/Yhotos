@@ -1,10 +1,14 @@
+FROM mwader/static-ffmpeg:9.0.2-1@sha256:f5d100184884eb3e82b0eb14bb5ebf98da99826ac824989720297fb9ef21c822 AS video_tools
 FROM rust:1.99.1-trixie@sha256:c3d8fc865b8bee83c7894fb833c2c78c8cac5e865d45afc9d05ed026a6301c14
 RUN apt-get update && apt-get install -y --no-install-recommends \
     clang libclang-dev pkg-config libvips-dev libvips-tools liblcms2-dev \
     libheif-dev libjxl-dev libaom-dev librav1e-dev libheif-plugin-x265 libheif-plugin-aomenc libheif-plugin-aomdec \
     libheif-plugin-libde265 libheif-plugin-rav1e \
+    unzip \
     strace python3 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+COPY --from=video_tools /ffmpeg /usr/bin/ffmpeg
+COPY --from=video_tools /ffprobe /usr/bin/ffprobe
 ENV VIPS_CONCURRENCY=2
 WORKDIR /workspace
 # The runtime has no network. Install the repository toolchain (including its
@@ -18,3 +22,7 @@ RUN rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy
 # Development validation compiles under the writable checkout; production never does.
 # Preserve fidelity scores in successful codec CI logs for the PR comparison table.
 CMD ["cargo", "test", "--offline", "--frozen", "-p", "yhotos-codec", "-p", "yhotos-codec-host", "-p", "yhotos-jobs", "-p", "yhotos-pipeline", "--all-features", "--", "--nocapture"]
+
+# Video input allow lists (also enforced in src/video/command.rs):
+# demuxer mov (MP4/MOV), decoders h264,hevc,aac,pcm_s16le,pcm_s24le,alac;
+# protocol file only. Encoders libx264,libsvtav1,aac,mjpeg; MP4/image2 output.

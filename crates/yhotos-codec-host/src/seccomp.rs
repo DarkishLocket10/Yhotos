@@ -11,6 +11,15 @@ use seccompiler::{
 use std::collections::BTreeMap;
 #[allow(clippy::too_many_lines)] // Keep syscall groups and the stacked policy auditable together.
 pub(super) fn apply() -> Result<(), ()> {
+    profile(false)
+}
+
+pub(super) fn apply_video() -> Result<(), ()> {
+    profile(true)
+}
+
+#[allow(clippy::too_many_lines)]
+fn profile(video: bool) -> Result<(), ()> {
     nix::sys::prctl::set_no_new_privs().map_err(|_| ())?;
     let mut rules: BTreeMap<i64, Vec<SeccompRule>> = BTreeMap::new();
     let calls = [
@@ -75,6 +84,25 @@ pub(super) fn apply() -> Result<(), ()> {
         libc::SYS_exit_group,
         libc::SYS_restart_syscall,
     ];
+    if video {
+        for call in [
+            libc::SYS_execve,
+            libc::SYS_execveat,
+            libc::SYS_set_tid_address,
+            libc::SYS_getrlimit,
+            libc::SYS_getpriority,
+            libc::SYS_sched_getparam,
+            libc::SYS_sched_getscheduler,
+            libc::SYS_sched_get_priority_max,
+            libc::SYS_sched_get_priority_min,
+            libc::SYS_pwrite64,
+            libc::SYS_msync,
+            libc::SYS_faccessat,
+            libc::SYS_faccessat2,
+        ] {
+            rules.insert(call, vec![]);
+        }
+    }
     for call in calls {
         rules.insert(call, vec![]);
     }
@@ -148,7 +176,24 @@ pub(super) fn apply() -> Result<(), ()> {
             .map_err(|_| ())?,
     ])
     .map_err(|_| ())?;
-    rules.insert(libc::SYS_clone, vec![clone]);
+    let mut clones = vec![clone];
+    if video {
+        // The pinned static tools use musl, which adds the kernel-ignored
+        // CLONE_DETACHED flag to the same pthread-only clone flags.
+        clones.push(
+            SeccompRule::new(vec![
+                SeccompCondition::new(
+                    0,
+                    SeccompCmpArgLen::Qword,
+                    SeccompCmpOp::Eq,
+                    thread_flags | u64::try_from(libc::CLONE_DETACHED).map_err(|_| ())?,
+                )
+                .map_err(|_| ())?,
+            ])
+            .map_err(|_| ())?,
+        );
+    }
+    rules.insert(libc::SYS_clone, clones);
     let filter: BpfProgram = SeccompFilter::new(
         rules,
         SeccompAction::Errno(u32::try_from(libc::EPERM).map_err(|_| ())?),

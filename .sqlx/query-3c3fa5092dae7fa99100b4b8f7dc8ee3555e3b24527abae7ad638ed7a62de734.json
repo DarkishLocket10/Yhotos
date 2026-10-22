@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO events(id,kind,album_id,visitor_hash,extra) VALUES($1,'zip_download',$2,$3,$4)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Bytea",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3c3fa5092dae7fa99100b4b8f7dc8ee3555e3b24527abae7ad638ed7a62de734"
+}

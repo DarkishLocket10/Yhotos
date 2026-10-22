@@ -64,6 +64,7 @@ fn config(dir: &std::path::Path, url: SecretString) -> BenchResult<&'static Conf
         public_base_url: "https://example.test".parse()?,
         session_key: STANDARD.encode(key.as_bytes()).into(),
         trust_proxy: false,
+        zip: yhotos_config::Zip::default(),
         global_stream_cap: 64,
         write_timeout: Duration::from_secs(30),
         transfer_deadline: Duration::from_mins(30),

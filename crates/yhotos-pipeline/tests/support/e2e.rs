@@ -307,7 +307,7 @@ async fn video_never_spawns_codec(pool: PgPool) {
     ingest.ingest(id).await.unwrap();
     let jobs = sqlx::query!(
         "SELECT kind,priority FROM jobs WHERE payload=$1 ORDER BY kind",
-        serde_json::json!({"photo_id":id})
+        serde_json::json!({"photo_id":id,"original_hash":blake3::hash(&std::fs::read(fixture("chart-srgb.png")).unwrap()).to_hex().to_string(),"generation":0})
     )
     .fetch_all(&pool)
     .await

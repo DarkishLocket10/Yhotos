@@ -76,6 +76,7 @@ fn config(dir: &std::path::Path) -> BenchResult<&'static Config> {
         public_base_url: "https://example.test".parse()?,
         session_key: format!("{}{}", Uuid::now_v7().simple(), Uuid::now_v7().simple()).into(),
         trust_proxy: false,
+        zip: yhotos_config::Zip::default(),
         global_stream_cap: 64,
         write_timeout: Duration::from_secs(30),
         transfer_deadline: Duration::from_mins(30),
