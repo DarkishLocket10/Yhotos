@@ -46,7 +46,7 @@ Areas: `crates/yhotos-http/src/admin/` (pages and `/admin/api/*` JSON), template
 Each page is server-rendered; islands handle drag-and-drop, multi-select, and inline edits through `/admin/api/*` JSON endpoints that require the admin session, MFA-complete session (`mfa_at`), CSRF header, and same-origin. Bulk endpoints take up to 1,000 ids per request and run in one transaction. Every mutation writes `audit_log` with before/after for changed fields (secrets never logged).
 
 ### Cache invalidation
-Mutations that affect public pages purge the relevant cache tags: in-process caches immediately, and the edge via a `CachePurger` trait (Cloudflare implementation reads an API token from config; no-op implementation when unset; tested with a mock).
+Mutations that affect public pages purge the relevant cache tags: in-process caches immediately, and the edge via a `CachePurger` trait (Cloudflare implementation reads an API token from config; no-op implementation when unset; tested with a mock). Besides `album:<id>` and `photo:<id>`, every visibility change, grant change, photo move, delete, restore, replace, and GPS or place edit also purges the aggregate tags emitted by task 015: `visibility`, `map`, `calendar`, `places` and `place:<id>` for the affected places. Test that a visibility change purges each of them.
 
 ### Tests
 - Every admin route returns 404 on the public listener (generated test over the router table).
