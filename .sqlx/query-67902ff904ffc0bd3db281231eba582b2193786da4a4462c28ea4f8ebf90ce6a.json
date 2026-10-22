@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO photos(id,short_id,album_id,title,original_hash,original_name,original_bytes,mime,kind,width,height) SELECT id,short,$3,short,repeat('a',64),'bench.jpeg',1,'image/jpeg','image',6000,4000 FROM unnest($1::uuid[],$2::text[]) AS p(id,short)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "TextArray",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "67902ff904ffc0bd3db281231eba582b2193786da4a4462c28ea4f8ebf90ce6a"
+}

@@ -1,0 +1,54 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH RECURSIVE identity AS (\n          SELECT $1::uuid AS user_id, $2::uuid[] AS groups, $3::bool AS admin,\n                 $4::uuid[] AS shared_albums, $5::uuid[] AS shared_photos\n        ), photo AS (\n          SELECT p.id,p.album_id,p.visibility,\n            (p.visibility <> 'restricted' OR EXISTS (SELECT FROM photo_grants g\n              WHERE g.photo_id=p.id AND ((g.principal_kind='user' AND g.principal_id=i.user_id)\n                OR (g.principal_kind='group' AND g.principal_id=ANY(i.groups))))) AS levels_pass\n          FROM photos p CROSS JOIN identity i WHERE p.short_id=$6 AND p.deleted_at IS NULL\n        ), chain AS (\n          SELECT a.id,a.parent_id,a.visibility,ARRAY[a.id] AS visited,\n            (a.visibility <> 'restricted' OR EXISTS (SELECT FROM album_grants g\n              WHERE g.album_id=a.id AND ((g.principal_kind='user' AND g.principal_id=i.user_id)\n                OR (g.principal_kind='group' AND g.principal_id=ANY(i.groups))))) AS levels_pass\n          FROM albums a JOIN photo p ON p.album_id=a.id CROSS JOIN identity i\n          WHERE a.deleted_at IS NULL\n          UNION ALL\n          SELECT a.id,a.parent_id,a.visibility,c.visited || a.id,\n            (a.visibility <> 'restricted' OR EXISTS (SELECT FROM album_grants g\n              WHERE g.album_id=a.id AND ((g.principal_kind='user' AND g.principal_id=i.user_id)\n                OR (g.principal_kind='group' AND g.principal_id=ANY(i.groups))))) AS levels_pass\n          FROM albums a JOIN chain c ON a.id=c.parent_id CROSS JOIN identity i\n          WHERE a.deleted_at IS NULL AND NOT a.id=ANY(c.visited)\n        ), scope AS (\n          SELECT array_agg(id) AS ids,\n            coalesce(array_agg(id) FILTER (WHERE visibility='restricted'),ARRAY[]::uuid[]) AS restricted_ids,\n            bool_and(levels_pass) AS levels_pass, bool_or(parent_id IS NULL) AS complete\n          FROM chain\n        ), authorized AS (\n          SELECT p.id, (i.admin OR (i.user_id IS NOT NULL AND a.levels_pass AND p.levels_pass)) AS account_view,\n            ARRAY(SELECT target FROM unnest(i.shared_albums) target\n              WHERE p.visibility <> 'restricted' AND target=ANY(a.ids)\n                AND a.restricted_ids <@ ARRAY[target]) AS shared_albums,\n            (i.user_id IS NOT NULL OR (cardinality(i.shared_albums)=0 AND cardinality(i.shared_photos)=0))\n              AND a.levels_pass AND p.levels_pass AS ordinary_view,\n            p.id=ANY(i.shared_photos) AND cardinality(a.restricted_ids)=0 AS photo_link_view,\n            i.admin\n          FROM photo p CROSS JOIN scope a CROSS JOIN identity i WHERE a.complete\n        ) SELECT id AS \"id: yhotos_core::PhotoId\", account_view AS \"account_view!\", photo_link_view AS \"photo_link_view!\",\n          shared_albums AS \"shared_albums!\" FROM authorized\n          WHERE admin OR ordinary_view OR photo_link_view OR cardinality(shared_albums)>0",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: yhotos_core::PhotoId",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "account_view!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "photo_link_view!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "shared_albums!",
+        "type_info": "UuidArray",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray",
+        "Bool",
+        "UuidArray",
+        "UuidArray",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "1d6c242ea600bc1203e37eb94693a9e1450c8060bf00d11b43c7dcad44c60098"
+}

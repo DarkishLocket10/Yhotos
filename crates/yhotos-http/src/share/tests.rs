@@ -90,6 +90,9 @@ impl Client {
         } else {
             request = request.header(header::CONTENT_TYPE, "application/x-www-form-urlencoded");
         }
+        if path.starts_with("/api/v1/") && json {
+            request = request.header("x-requested-with", "yhotos");
+        }
         let mut request = request.body(Body::from(body)).unwrap();
         request
             .extensions_mut()
@@ -146,7 +149,10 @@ impl Client {
         self.send(
             app,
             Method::POST,
-            &format!("/api/v1/photos/{id}/{action}"),
+            &format!(
+                "/api/v1/photos/{}/{action}",
+                yhotos_core::ShortId::from_photo_id(id)
+            ),
             "{}".into(),
             true,
             false,
@@ -393,6 +399,14 @@ fn flags() -> LinkFlags {
 }
 async fn concealed(reply: &Reply) {
     assert_eq!(reply.status, StatusCode::NOT_FOUND, "{}", reply.text());
+    if reply
+        .headers
+        .get(header::CONTENT_TYPE)
+        .is_some_and(|v| v == "application/json")
+    {
+        assert_eq!(reply.body, b"{\"error\":\"not_found\"}");
+        return;
+    }
     let expected = crate::pages::not_found()
         .into_body()
         .collect()
@@ -596,7 +610,7 @@ async fn capabilities_and_link_attribution(pool: PgPool) {
         for action in ["like", "flag"] {
             let reply = client.action(&f.app, f.photo, action).await;
             if enabled {
-                assert_eq!(reply.status, StatusCode::NO_CONTENT, "{}", reply.text());
+                assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
             } else {
                 concealed(&reply).await;
             }
@@ -710,6 +724,40 @@ async fn scope_descendants_restricted_ancestors_photo_only_and_user_union(pool: 
         single_client.get(&f.app, &image).await.status,
         StatusCode::OK
     );
+    // An unrelated album grant must not reveal the photo-only target's album.
+    assert_eq!(
+        single_client.get(&f.app, &path).await.status,
+        StatusCode::OK
+    );
+    let direct = single_client
+        .get(
+            &f.app,
+            &format!("/p/{}", yhotos_core::ShortId::from_photo_id(photo)),
+        )
+        .await;
+    assert_eq!(direct.status, StatusCode::OK);
+    assert!(!direct.text().contains("/a/"));
+    assert!(!direct.text().contains("photo-target"));
+    // The unrelated link's interaction caps must not authorize this photo either.
+    for action in ["like", "flag"] {
+        concealed(&single_client.action(&f.app, photo, action).await).await;
+    }
+    concealed(
+        &single_client
+            .send(
+                &f.app,
+                Method::DELETE,
+                &format!(
+                    "/api/v1/photos/{}/like",
+                    yhotos_core::ShortId::from_photo_id(photo)
+                ),
+                String::new(),
+                true,
+                false,
+            )
+            .await,
+    )
+    .await;
     concealed(&single_client.get(&f.app, "/a/photo-target").await).await;
     concealed(&single_client.get(&f.app, &sibling).await).await;
     concealed(
@@ -890,7 +938,7 @@ async fn admin_create_patch_stats_revoke_and_listener_isolation(pool: PgPool) {
     assert_eq!(client.get(&f.app, &f.original).await.status, StatusCode::OK);
     assert_eq!(
         client.action(&f.app, f.photo, "flag").await.status,
-        StatusCode::NO_CONTENT
+        StatusCode::OK
     );
     let stats = admin.get(&app, &format!("{base}/{id}/stats")).await;
     assert_eq!(stats.status, StatusCode::OK);
@@ -1083,7 +1131,15 @@ async fn album_page_snapshot_uses_shared_responsive_template(pool: PgPool) {
         .await;
     assert_eq!(page.status, StatusCode::OK, "{}", page.text());
     assert_eq!(page.headers[header::CACHE_CONTROL], "private, no-store");
-    assert_eq!(page.text().matches("<picture>").count(), 3);
+    assert_eq!(
+        page.text()
+            .split("</section>")
+            .next()
+            .unwrap()
+            .matches("<picture>")
+            .count(),
+        3
+    );
     assert!(page.text().contains("image/jxl"));
     assert!(page.text().contains("image/avif"));
     assert!(page.text().contains("class=\"grid-row\""));
@@ -1127,7 +1183,7 @@ async fn album_page_snapshot_uses_shared_responsive_template(pool: PgPool) {
                 &format!("photo-{}", index + 1),
             );
     }
-    insta::assert_snapshot!("share_album", html);
+    insta::assert_snapshot!("share_album", crate::pages::snapshot_html(html));
 }
 
 #[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
@@ -1296,6 +1352,9 @@ async fn page_controls_keep_each_links_capabilities_with_its_own_scope(pool: PgP
         assert!(!page.text().contains(control));
     }
     concealed(&client.get(&f.app, &original).await).await;
+    for action in ["like", "flag"] {
+        concealed(&client.action(&f.app, photo, action).await).await;
+    }
     grants::grant_photo(
         &mut f.pool.acquire().await.unwrap(),
         photo,
@@ -1308,6 +1367,12 @@ async fn page_controls_keep_each_links_capabilities_with_its_own_scope(pool: PgP
     assert_eq!(page.status, StatusCode::OK);
     assert!(page.text().contains("Download photo"));
     assert_eq!(client.get(&f.app, &original).await.status, StatusCode::OK);
+    for action in ["like", "flag"] {
+        assert_eq!(
+            client.action(&f.app, photo, action).await.status,
+            StatusCode::OK
+        );
+    }
 }
 
 #[tokio::test]
@@ -1922,4 +1987,53 @@ async fn warm_protected_landings_only_write_opens_and_coalesce_recency(pool: PgP
     let (reply, queries) = crate::files::tests::count_queries(client.get(&f.app, &path)).await;
     assert_eq!(reply.status, StatusCode::OK);
     assert_eq!(queries, 1);
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn retained_photo_link_loses_capabilities_when_its_album_becomes_restricted(pool: PgPool) {
+    let f = Fixture::new(pool).await;
+    let album = f.album(None, "later-restricted", Visibility::Public).await;
+    let (photo, _, _) = Fixture::add_photo(&f.pool, &f.state, album, "Linked photo").await;
+    let (_, photo_link) = f.link(ShareTarget::Photo(photo), None, flags()).await;
+    let (_, album_link) = f
+        .link(
+            ShareTarget::Album(album),
+            None,
+            LinkFlags {
+                view: true,
+                ..LinkFlags::default()
+            },
+        )
+        .await;
+    let mut client = Client::default();
+    assert_eq!(client.get(&f.app, &photo_link).await.status, StatusCode::OK);
+    assert_eq!(client.get(&f.app, &album_link).await.status, StatusCode::OK);
+    // While the album is public, the photo link independently covers the photo.
+    assert_eq!(
+        client.action(&f.app, photo, "like").await.status,
+        StatusCode::OK
+    );
+    sqlx::query!(
+        "UPDATE albums SET visibility='restricted'::visibility WHERE id=$1",
+        album as _
+    )
+    .execute(&f.pool)
+    .await
+    .unwrap();
+    f.invalidate();
+    // The view-only album link still shows the photo, but the retained photo link
+    // no longer covers it, so its like and flag capabilities must not be borrowed.
+    let page = client
+        .get(
+            &f.app,
+            &format!("/p/{}", yhotos_core::ShortId::from_photo_id(photo)),
+        )
+        .await;
+    assert_eq!(page.status, StatusCode::OK, "{}", page.text());
+    for control in ["Download photo", "Like photo", "Flag photo"] {
+        assert!(!page.text().contains(control), "{control}");
+    }
+    for action in ["like", "flag"] {
+        concealed(&client.action(&f.app, photo, action).await).await;
+    }
 }

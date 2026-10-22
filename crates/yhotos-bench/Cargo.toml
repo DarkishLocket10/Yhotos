@@ -80,5 +80,9 @@ name = "pipeline"
 harness = false
 
 [[bench]]
+name = "interactions"
+harness = false
+
+[[bench]]
 name = "upload"
 harness = false

@@ -194,7 +194,7 @@ async fn album_snapshots_anonymous_and_user_with_grant(pool: PgPool) {
     assert_eq!(anonymous.total, 2);
     insta::assert_snapshot!(
         "album_anonymous",
-        render_album(&anonymous, 1, PageSort::Taken, &context()).unwrap()
+        snapshot_html(render_album(&anonymous, 1, PageSort::Taken, &context()).unwrap())
     );
     let identity = SessionIdentity::User {
         id: f.user,
@@ -205,7 +205,7 @@ async fn album_snapshots_anonymous_and_user_with_grant(pool: PgPool) {
     assert_eq!(granted.total, 3);
     insta::assert_snapshot!(
         "album_granted",
-        render_album(&granted, 1, PageSort::Taken, &context()).unwrap()
+        snapshot_html(render_album(&granted, 1, PageSort::Taken, &context()).unwrap())
     );
     let response = f.get_as_user("/a/gallery").await;
     assert_eq!(response.status(), StatusCode::OK);
@@ -249,10 +249,25 @@ async fn pagination_sorting_counts_and_private_cache(pool: PgPool) {
     }
     drop(conn);
     let page = body(f.get("/a/gallery?per_page=1000").await).await;
-    assert_eq!(page.matches("<img ").count(), 60);
+    assert_eq!(
+        page.split("</section>")
+            .next()
+            .unwrap()
+            .matches("<img ")
+            .count(),
+        60
+    );
     assert!(page.contains("Next page"));
     let second = body(f.get("/a/gallery?page=2&sort=manual").await).await;
-    assert_eq!(second.matches("<img ").count(), 1);
+    assert_eq!(
+        second
+            .split("</section>")
+            .next()
+            .unwrap()
+            .matches("<img ")
+            .count(),
+        1
+    );
     for suffix in [
         "?page=3",
         "?page=0",
@@ -392,7 +407,8 @@ async fn photos_have_sorted_neighbours_metadata_hdr_downloads_and_og(pool: PgPoo
     ] {
         assert!(html.contains(value), "{value}");
     }
-    assert!(!html.contains("prefetch"));
+    // Hover prefetch is an island (task 013); `<link rel="prefetch">` is never emitted.
+    assert!(!html.contains("rel=\"prefetch\""));
     let response = f.get(&format!("/p/{}?sort=manual", f.photos[1])).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert!(
@@ -457,8 +473,8 @@ async fn hdr_jpeg_only_representation_precedes_sdr_sources(pool: PgPool) {
         let fallback = picture.split("<img ").nth(1).unwrap();
         assert!(!fallback.contains(".hdr"));
     }
-    insta::assert_snapshot!("photo_hdr_jpeg", detail);
-    insta::assert_snapshot!("album_hdr_jpeg", grid);
+    insta::assert_snapshot!("photo_hdr_jpeg", snapshot_html(detail));
+    insta::assert_snapshot!("album_hdr_jpeg", snapshot_html(grid));
 }
 
 #[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
@@ -1161,4 +1177,108 @@ async fn mobile_grid_and_cover_sources_are_capped_across_formats(pool: PgPool) {
             assert!(picture.contains("2048w"));
         }
     }
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn api_visibility_pagination_and_private_state(pool: PgPool) {
+    let f = Fixture::new(pool, 61).await;
+    let mut conn = f.state.pool.acquire().await.unwrap();
+    photos::set_visibility(
+        &mut conn,
+        &[PhotoId(Uuid::from_u128(1))],
+        Visibility::Restricted,
+    )
+    .await
+    .unwrap();
+    drop(conn);
+    let restricted = f.get(&format!("/api/v1/photos/{}", f.photos[0])).await;
+    let missing = f
+        .get(&format!(
+            "/api/v1/photos/{}",
+            ShortId::from_photo_id(PhotoId::new())
+        ))
+        .await;
+    assert_eq!(restricted.status(), StatusCode::NOT_FOUND);
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+    assert_eq!(body(restricted).await, body(missing).await);
+    let album = format!("/api/v1/albums/{}/photos", f.album);
+    let response = f.get(&album).await;
+    assert_eq!(
+        response.headers()[header::CACHE_CONTROL],
+        "public, max-age=60"
+    );
+    let data: serde_json::Value = serde_json::from_str(&body(response).await).unwrap();
+    assert_eq!(data["photos"].as_array().unwrap().len(), 60);
+    assert_eq!(data["next_page"], serde_json::Value::Null);
+    assert_eq!(
+        f.get(&format!("{album}?page=2")).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    assert!(
+        data["photos"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p["caps"]["like"] == false)
+    );
+    let response = f
+        .get_as_user(&format!("/api/v1/photos/{}", f.photos[1]))
+        .await;
+    assert_eq!(
+        response.headers()[header::CACHE_CONTROL],
+        "private, no-store"
+    );
+    let data: serde_json::Value = serde_json::from_str(&body(response).await).unwrap();
+    assert_eq!(data["state"]["liked"], false);
+    assert!(data["state"].get("like_count").is_none());
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn api_like_unlike_and_concurrent_flags_are_idempotent(pool: PgPool) {
+    let f = Fixture::new(pool, 2).await;
+    let app = crate::public_router(f.state.clone());
+    let action = |method: &str, action: &str| {
+        let mut request = Fixture::request(&format!("/api/v1/photos/{}/{action}", f.photos[0]));
+        *request.method_mut() = method.parse().unwrap();
+        request
+            .headers_mut()
+            .insert("x-requested-with", "yhotos".parse().unwrap());
+        request
+            .headers_mut()
+            .insert("sec-fetch-site", "same-origin".parse().unwrap());
+        request
+            .headers_mut()
+            .insert(header::COOKIE, f.cookie.parse().unwrap());
+        request
+    };
+    for (method, liked) in [
+        ("POST", true),
+        ("POST", true),
+        ("DELETE", false),
+        ("DELETE", false),
+    ] {
+        let response = app.clone().oneshot(action(method, "like")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let data: serde_json::Value = serde_json::from_str(&body(response).await).unwrap();
+        assert_eq!(data["liked"], liked);
+        assert!(data.get("like_count").is_none());
+    }
+    let (first, second) = tokio::join!(
+        app.clone().oneshot(action("POST", "flag")),
+        app.clone().oneshot(action("POST", "flag"))
+    );
+    for response in [first.unwrap(), second.unwrap()] {
+        assert_eq!(response.status(), StatusCode::OK);
+        let data: serde_json::Value = serde_json::from_str(&body(response).await).unwrap();
+        assert_eq!(data["flagged"], true);
+    }
+    let flags = yhotos_db::flags::open_flags(&mut f.state.pool.acquire().await.unwrap(), 0)
+        .await
+        .unwrap();
+    assert_eq!(flags.len(), 1);
+    assert_eq!(flags[0].user_id, Some(f.user));
+    assert_eq!(
+        f.get_as_user(&format!("/p/{}", f.photos[1])).await.status(),
+        StatusCode::OK
+    );
 }

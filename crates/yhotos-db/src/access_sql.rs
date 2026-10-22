@@ -109,7 +109,8 @@ macro_rules! visible_page_query {
                 (i.admin OR (i.user_id IS NOT NULL AND a.levels_pass AND
                 (p.visibility <> 'restricted' OR EXISTS (SELECT FROM photo_grants g WHERE g.photo_id=p.id AND
                   ((g.principal_kind='user' AND g.principal_id=i.user_id) OR
-                   (g.principal_kind='group' AND g.principal_id=ANY(i.groups))))))) AS account_view
+                   (g.principal_kind='group' AND g.principal_id=ANY(i.groups))))))) AS account_view,
+                (p.id=ANY(i.shared_photos) AND cardinality(a.restricted_ids)=0) AS photo_link_view
               FROM photos p JOIN album_levels a ON a.id=p.album_id CROSS JOIN identity i
               WHERE p.deleted_at IS NULL AND (i.admin OR (
                 (a.levels_pass AND (i.user_id IS NOT NULL OR (cardinality(i.shared_albums)=0 AND cardinality(i.shared_photos)=0)) AND

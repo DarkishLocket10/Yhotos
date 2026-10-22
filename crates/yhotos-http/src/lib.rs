@@ -4,6 +4,7 @@
 
 #[cfg(feature = "admin")]
 pub mod admin;
+mod api;
 pub mod auth;
 pub mod error;
 pub mod files;
@@ -52,6 +53,7 @@ pub fn public_router(state: AppState) -> Router {
         .route_layer(from_fn(pages::privacy))
         .merge(auth::routes(auth::Audience(false)))
         .merge(share::routes())
+        .merge(api::routes())
         .route("/healthz", get(health).with_state(()))
         .route("/static/{*path}", get(static_assets::serve))
         .merge(files);
@@ -124,6 +126,7 @@ fn stack(router: Router<AppState>, state: AppState, audience: auth::Audience) ->
         )
         // Wrap short-circuiting layers as well as handlers, so 413/408/429 and
         // fallback responses have exactly the same security guarantees.
+        .layer(from_fn(api::envelope))
         .layer(from_fn(middleware::security_headers::secure))
         .layer(from_fn(middleware::request_id::assign))
         .with_state(state)

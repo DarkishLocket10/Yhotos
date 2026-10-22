@@ -1,6 +1,6 @@
 ---
 source: crates/yhotos-http/src/pages/tests.rs
-expression: detail
+expression: snapshot_html(detail)
 ---
 <!doctype html>
 <html lang="en">
@@ -35,8 +35,9 @@ expression: detail
 <img src="/i/dbe20967102be0a87131e9be345f342b10e32adcde50dafbd98d00c30388febd/medium.jpeg" srcset="/i/3b2b250ebd7cbd209b5be1bab8741021edc11ebd74c187ff81f5bfdd3592e5c3/small.jpeg 640w, /i/dbe20967102be0a87131e9be345f342b10e32adcde50dafbd98d00c30388febd/medium.jpeg 1280w, /i/64124e39b9341b76e3e5d01e18c0bbd1330332b8b80a4c4531488a2d5201c636/large.jpeg 2048w" sizes="100vw" width="1500" height="1000" loading="eager" decoding="async" alt="Photo 01" data-thumbhash="AAgCBwAAAAAAAAAAAAAAAAAAAAAAAAAA">
 </picture><figcaption>Garden detail</figcaption></figure>
 <nav aria-label="Photo navigation" class="pagination"></nav>
-<details><summary>Download photo</summary><ul><li><a href="/o/d14d9d7024a954714409ca8c6a9a0bf5325886e537a8ca32375820af184e4eab/garden.jpeg" download>Download original</a></li><li><a href="/i/3b2b250ebd7cbd209b5be1bab8741021edc11ebd74c187ff81f5bfdd3592e5c3/small.jpeg" download>Download small (640 × 426)</a></li><li><a href="/i/dbe20967102be0a87131e9be345f342b10e32adcde50dafbd98d00c30388febd/medium.jpeg" download>Download medium (1280 × 853)</a></li><li><a href="/i/64124e39b9341b76e3e5d01e18c0bbd1330332b8b80a4c4531488a2d5201c636/large.jpeg" download>Download large (2048 × 1365)</a></li></ul></details>
+<details><summary>Download photo</summary><ul><li><a href="/o/d14d9d7024a954714409ca8c6a9a0bf5325886e537a8ca32375820af184e4eab/garden.jpeg" download>Download original</a></li><li><a href="/i/3b2b250ebd7cbd209b5be1bab8741021edc11ebd74c187ff81f5bfdd3592e5c3/small.jpeg?download=1" download>Download small (640 × 426)</a></li><li><a href="/i/dbe20967102be0a87131e9be345f342b10e32adcde50dafbd98d00c30388febd/medium.jpeg?download=1" download>Download medium (1280 × 853)</a></li><li><a href="/i/64124e39b9341b76e3e5d01e18c0bbd1330332b8b80a4c4531488a2d5201c636/large.jpeg?download=1" download>Download large (2048 × 1365)</a></li></ul></details>
 <section aria-label="Photo details"><h2>Photo details</h2><dl><dt>Date taken</dt><dd>2026-01-01T00:00:00+00:00</dd><dt>Camera manufacturer</dt><dd>Fixture</dd><dt>Camera model</dt><dd>Camera</dd><dt>ISO sensitivity</dt><dd>100</dd></dl></section>
 <p><a href="https://www.openstreetmap.org/?mlat=43.65&#38;mlon=-79.38#map=14/43.65/-79.38" rel="noreferrer">View photo location on OpenStreetMap</a></p>
-</main><footer>Yhotos photo gallery</footer></body>
+<script type="application/json" nonce="fixture-nonce" id="photo-data">[JSON island data]</script>
+</main><script type="module" nonce="fixture-nonce" src="/static/prefetch.fixture.js"></script><script type="module" nonce="fixture-nonce" src="/static/transitions.fixture.js"></script><footer>Yhotos photo gallery</footer></body>
 </html>

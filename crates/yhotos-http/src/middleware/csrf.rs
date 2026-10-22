@@ -98,6 +98,25 @@ pub(crate) async fn protect(
     if !state_changing {
         return next.run(request).await;
     }
+    if request.uri().path().starts_with("/api/v1/") {
+        let headers = request.headers();
+        let single = |name: &str| {
+            let mut values = headers.get_all(name).iter();
+            let value = values.next().and_then(|v| v.to_str().ok());
+            if values.next().is_some() { None } else { value }
+        };
+        let expected = state.config.public_base_url.origin().ascii_serialization();
+        let valid = single("x-requested-with") == Some("yhotos")
+            && (!headers.contains_key("sec-fetch-site")
+                || single("sec-fetch-site") == Some("same-origin"))
+            && (!headers.contains_key(header::ORIGIN)
+                || single("origin") == Some(expected.as_str()));
+        return if valid {
+            next.run(request).await
+        } else {
+            HttpError::Csrf.into_response()
+        };
+    }
     let content_type = request
         .headers()
         .get(header::CONTENT_TYPE)
