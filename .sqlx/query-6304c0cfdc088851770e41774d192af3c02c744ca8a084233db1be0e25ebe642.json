@@ -1,0 +1,148 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT camera_make,camera_model,lens,focal_mm,aperture,shutter,iso,gps_lat,gps_lon,taken_at,taken_at_local FROM photos WHERE id=$1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "camera_make",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "camera_make"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "camera_model",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "camera_model"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "lens",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "lens"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "focal_mm",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "focal_mm"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "aperture",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "aperture"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "shutter",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "shutter"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "iso",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "iso"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "gps_lat",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "gps_lat"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "gps_lon",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "gps_lon"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "taken_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "taken_at"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "taken_at_local",
+        "type_info": "Timestamp",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "taken_at_local"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "6304c0cfdc088851770e41774d192af3c02c744ca8a084233db1be0e25ebe642"
+}

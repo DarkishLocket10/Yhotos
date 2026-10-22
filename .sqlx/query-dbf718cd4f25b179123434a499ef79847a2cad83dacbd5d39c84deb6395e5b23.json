@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "describe": {
+    "columns": [],
+    "nullable": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "TextArray",
+        "TextArray"
+      ]
+    }
+  },
+  "hash": "dbf718cd4f25b179123434a499ef79847a2cad83dacbd5d39c84deb6395e5b23",
+  "query": "DELETE FROM derivatives WHERE photo_id=$1 AND (hdr OR (variant,format) NOT IN (SELECT * FROM UNNEST($2::text[],$3::text[])))"
+}

@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "origin": {
+          "Table": {
+            "name": "id",
+            "table": "jobs"
+          }
+        },
+        "type_info": "Uuid"
+      }
+    ],
+    "nullable": [
+      false
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Jsonb"
+      ]
+    }
+  },
+  "hash": "d85991d59724f775e356d07090c3afe1f696167016c3fdd5debc9663e283abd9",
+  "query": "SELECT id FROM jobs WHERE kind=$1 AND payload=$2 AND finished_at IS NULL ORDER BY id LIMIT 1"
+}

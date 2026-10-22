@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "describe": {
+    "columns": [
+      {
+        "name": "kind",
+        "ordinal": 0,
+        "origin": {
+          "Table": {
+            "name": "kind",
+            "table": "jobs"
+          }
+        },
+        "type_info": "Text"
+      },
+      {
+        "name": "priority",
+        "ordinal": 1,
+        "origin": {
+          "Table": {
+            "name": "priority",
+            "table": "jobs"
+          }
+        },
+        "type_info": "Int4"
+      }
+    ],
+    "nullable": [
+      false,
+      false
+    ],
+    "parameters": {
+      "Left": [
+        "Jsonb"
+      ]
+    }
+  },
+  "hash": "3207d58a68a0a1b7bd0e3f8ccb984104eca85e62a1b68fba8b2a5fde5337eaa5",
+  "query": "SELECT kind,priority FROM jobs WHERE payload=$1 ORDER BY kind"
+}

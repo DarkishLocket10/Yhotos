@@ -7,3 +7,27 @@ rust-version.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+jiff.workspace = true
+yhotos-config = { path = "../yhotos-config" }
+yhotos-db = { path = "../yhotos-db" }
+yhotos-jobs = { path = "../yhotos-jobs" }
+yhotos-pipeline = { path = "../yhotos-pipeline" }
+yhotos-storage = { path = "../yhotos-storage" }
+anyhow.workspace = true
+tokio = { workspace = true, features = ["signal"] }
+tokio-util.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+serde_json.workspace = true
+metrics-exporter-prometheus.workspace = true
+metrics.workspace = true
+
+[dev-dependencies]
+sqlx.workspace = true
+yhotos-core = { path = "../yhotos-core" }
+tempfile.workspace = true
+base64.workspace = true
+nix.workspace = true
+blake3.workspace = true

@@ -115,3 +115,14 @@ pub fn check_process_isolation(other: u32) -> Result<(), CodecError> {
     }
     Ok(())
 }
+
+/// Loads trusted native plugins before filesystem confinement, without opening an input.
+/// First call must be during the host's single-threaded startup, before processing untrusted bytes.
+/// The first initialization sets the thread limit (1..=64); returns the effective native limit.
+///
+/// # Errors
+/// Returns a typed error if the thread limit is invalid or native initialization fails.
+pub fn initialize(concurrency: u8) -> Result<u8, CodecError> {
+    crate::native::init_with_concurrency(concurrency)?;
+    crate::native::concurrency()
+}

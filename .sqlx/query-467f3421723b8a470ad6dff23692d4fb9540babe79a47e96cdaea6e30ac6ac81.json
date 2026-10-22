@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT taken_at,taken_at_local FROM photos WHERE id=$1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "taken_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "taken_at"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "taken_at_local",
+        "type_info": "Timestamp",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "taken_at_local"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "467f3421723b8a470ad6dff23692d4fb9540babe79a47e96cdaea6e30ac6ac81"
+}

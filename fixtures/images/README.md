@@ -19,6 +19,9 @@ files lets Linux tests exercise high-bit-depth decode and JXL round trips with
 decoder-only libheif installations, without CLI encoder/version dependencies.
 
 `float.tif` is the chart converted to linear floating scRGB for decode benchmarks.
+`1bit.png`, `2bit.png` and `4bit.png` are 32x32 packed grayscale patterns
+written through the generator's libvips bindings. Pipeline tests identify their
+original sample depths and ingest each through the complete default plan.
 `gain-map.avif` is a 32x32 base plus a 16x16 gain image encoded locally with
 libavif 1.4.1. It contains a valid `tmap` derived image and `dimg` item references,
 with no gain-map text signatures. The inline C generator in
@@ -36,6 +39,11 @@ It exercises resampling without a third-party image or download.
 1600x1236, sRGB, stripped metadata, below 200 KB. It is the mandatory photographic
 SSIM fixture (threshold 0.98 against linear `vips thumbnail` at 800px). The
 generator preserves this photograph; it cannot regenerate an owner's original.
+
+`photo-large.jpg` is the same maintainer-supplied photograph at 3400x2627,
+sRGB with stripped metadata (about 1 MB). The default-plan pipeline fidelity
+test uses it for long edges above 1600px, so medium2x, large and xlarge are
+measured at their requested sizes. Smaller variants still use `photo.jpg`.
 
 Two complete runs on libvips 8.18.7 produced identical SHA-256 manifests.
 Bitwise equivalence across *different* libvips/lcms/encoder versions is not

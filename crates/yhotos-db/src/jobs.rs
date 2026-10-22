@@ -81,6 +81,34 @@ pub async fn enqueue(
     Ok(job)
 }
 
+/// Deduplicates an unfinished envelope inside the caller's transaction and notifies on commit.
+/// All deduplicating producers, including original replacement, share this advisory lock.
+///
+/// # Errors
+/// Returns database failures; the caller must roll back the transaction on error.
+pub async fn enqueue_unique(
+    conn: &mut PgConnection,
+    kind: &str,
+    payload: &serde_json::Value,
+    priority: i32,
+    run_after: Option<OffsetDateTime>,
+    max_attempts: i32,
+) -> Result<JobId, DbError> {
+    let lock = format!("{kind}:{payload}");
+    sqlx::query!("SELECT pg_advisory_xact_lock(hashtextextended($1,0))", lock)
+        .execute(&mut *conn)
+        .await?;
+    if let Some(row) = sqlx::query!("SELECT id FROM jobs WHERE kind=$1 AND payload=$2 AND finished_at IS NULL ORDER BY id LIMIT 1", kind, payload).fetch_optional(&mut *conn).await? {
+        return Ok(JobId(row.id));
+    }
+    let id = JobId::new();
+    sqlx::query!("INSERT INTO jobs(id,kind,payload,priority,run_after,max_attempts) VALUES($1,$2,$3,$4,coalesce($5,now()),$6)", id.0, kind, payload, priority, run_after, max_attempts).execute(&mut *conn).await?;
+    sqlx::query!("SELECT pg_notify('jobs','')")
+        .execute(conn)
+        .await?;
+    Ok(id)
+}
+
 /// Atomically claims the highest-priority due job of a supported kind with SKIP LOCKED; exhausted
 /// jobs are excluded. Returns the job and the token required to complete or fail this attempt.
 ///

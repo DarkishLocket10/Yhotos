@@ -23,6 +23,8 @@ pub struct Config {
     pub database_url_public: SecretString,
     /// Separate administrative login, required with the admin feature.
     pub database_url_admin: Option<SecretString>,
+    /// Separate worker login, required by worker startup and unused by servers.
+    pub database_url_worker: Option<SecretString>,
     /// Existing storage root.
     pub data_dir: PathBuf,
     /// Canonical HTTPS origin for public links.
@@ -45,6 +47,8 @@ pub struct Config {
     pub upload: Upload,
     /// Structured or interactive tracing output.
     pub log_format: LogFormat,
+    /// CPU worker limits and trusted codec executable.
+    pub worker: Worker,
 }
 /// Positive per-minute capacities for independent request classes.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -64,6 +68,43 @@ pub struct Upload {
     /// Maximum individual chunk size.
     pub chunk_bytes: u32,
 }
+/// CPU worker settings, configured through `YHOTOS_WORKER__*` variables.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Worker {
+    /// Simultaneous host processes, default half the CPU count, minimum one.
+    pub concurrency: u16,
+    /// Trusted absolute codec executable; canonicalized by the worker at startup.
+    pub codec_host_path: PathBuf,
+    /// Codec wall-clock deadline in seconds, 1..=600, default 300.
+    pub codec_timeout: u32,
+    /// IANA timezone for offset-less EXIF dates; defaults to UTC.
+    pub default_timezone: String,
+    /// Threads per host, 1..=64, default two.
+    pub vips_concurrency: u8,
+    /// Optional structured pipeline plan; omitted uses architecture defaults.
+    pub variant_plan: Option<serde_json::Value>,
+    /// Explicit local-only plaintext opt-in; the database layer rejects remote hosts.
+    pub local_plaintext_database: bool,
+    /// Loopback-only Prometheus listener, default 127.0.0.1:9101.
+    pub metrics_listen: SocketAddr,
+}
+impl Default for Worker {
+    fn default() -> Self {
+        Self {
+            concurrency: std::thread::available_parallelism().map_or(1, |n| {
+                u16::try_from((n.get() / 2).max(1)).unwrap_or(u16::MAX)
+            }),
+            codec_host_path: PathBuf::from("/usr/local/bin/yhotos-codec-host"),
+            codec_timeout: 300,
+            default_timezone: "UTC".into(),
+            vips_concurrency: 2,
+            variant_plan: None,
+            local_plaintext_database: false,
+            metrics_listen: SocketAddr::from(([127, 0, 0, 1], 9101)),
+        }
+    }
+}
 /// Lowercase output format accepted from the environment.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -79,6 +120,7 @@ struct Defaults {
     public_listen: &'static str,
     admin_listen: Option<SocketAddr>,
     database_url_admin: Option<String>,
+    database_url_worker: Option<String>,
     admin_base_url: Option<String>,
     trust_proxy: bool,
     rate_limits: RateLimits,
@@ -87,6 +129,7 @@ struct Defaults {
     transfer_deadline_secs: u32,
     upload: Upload,
     log_format: LogFormat,
+    worker: Worker,
 }
 impl Default for Defaults {
     fn default() -> Self {
@@ -94,6 +137,7 @@ impl Default for Defaults {
             public_listen: "0.0.0.0:8080",
             admin_listen: None,
             database_url_admin: None,
+            database_url_worker: None,
             admin_base_url: None,
             trust_proxy: false,
             rate_limits: RateLimits {
@@ -109,6 +153,7 @@ impl Default for Defaults {
                 chunk_bytes: 8 * 1024 * 1024,
             },
             log_format: LogFormat::Json,
+            worker: Worker::default(),
         }
     }
 }
@@ -158,6 +203,8 @@ impl Config {
         let database_url_public = read::<SecretString>(&f, "database_url_public", &mut errors);
         let database_url_admin =
             read::<Option<SecretString>>(&f, "database_url_admin", &mut errors);
+        let database_url_worker =
+            read::<Option<SecretString>>(&f, "database_url_worker", &mut errors);
         let admin_base_url = read::<Option<Url>>(&f, "admin_base_url", &mut errors);
         let data_dir = read::<PathBuf>(&f, "data_dir", &mut errors);
         let public_base_url = read::<Url>(&f, "public_base_url", &mut errors);
@@ -172,6 +219,22 @@ impl Config {
         let max_bytes = read::<u64>(&f, "upload.max_bytes", &mut errors);
         let chunk_bytes = read::<u32>(&f, "upload.chunk_bytes", &mut errors);
         let log_format = read::<LogFormat>(&f, "log_format", &mut errors);
+        let worker = read::<Worker>(&f, "worker", &mut errors);
+        if let Some(w) = &worker
+            && (w.concurrency == 0
+                || w.concurrency > 1024
+                || w.codec_timeout == 0
+                || w.codec_timeout > 600
+                || !(1..=64).contains(&w.vips_concurrency)
+                || !w.codec_host_path.is_absolute()
+                || !w.metrics_listen.ip().is_loopback()
+                || jiff::tz::TimeZone::get(&w.default_timezone).is_err())
+        {
+            errors.push(
+                "worker: invalid concurrency, timeout, codec path, metrics address or timezone"
+                    .into(),
+            );
+        }
         if let Some(Some(addr)) = admin_listen
             && addr.ip().to_canonical().is_unspecified()
         {
@@ -198,6 +261,10 @@ impl Config {
             (
                 "database_url_admin",
                 database_url_admin.as_ref().and_then(Option::as_ref),
+            ),
+            (
+                "database_url_worker",
+                database_url_worker.as_ref().and_then(Option::as_ref),
             ),
         ] {
             if let Some(url) = url
@@ -281,6 +348,7 @@ impl Config {
             admin_listen,
             database_url_public,
             database_url_admin,
+            database_url_worker,
             admin_base_url,
             data_dir,
             public_base_url,
@@ -295,12 +363,14 @@ impl Config {
             max_bytes,
             chunk_bytes,
             log_format,
+            worker,
         ) {
             (
                 Some(public_listen),
                 Some(admin_listen),
                 Some(database_url_public),
                 Some(database_url_admin),
+                Some(database_url_worker),
                 Some(admin_base_url),
                 Some(data_dir),
                 Some(public_base_url),
@@ -315,11 +385,13 @@ impl Config {
                 Some(max_bytes),
                 Some(chunk_bytes),
                 Some(log_format),
+                Some(worker),
             ) => Ok(Self {
                 public_listen,
                 admin_listen,
                 database_url_public,
                 database_url_admin,
+                database_url_worker,
                 admin_base_url,
                 data_dir,
                 public_base_url,
@@ -338,6 +410,7 @@ impl Config {
                     chunk_bytes,
                 },
                 log_format,
+                worker,
             }),
             _ => Err(ConfigError(vec!["configuration is incomplete".into()])),
         }
@@ -373,7 +446,11 @@ mod tests {
     #[test]
     fn defaults_and_secret_redaction() {
         let dir = tempfile::tempdir().unwrap();
-        let config = Config::from_figment(valid(dir.path())).unwrap();
+        let config = Config::from_figment(valid(dir.path()).merge((
+            "database_url_worker",
+            format!("postgres://{}@localhost/test", uuid::Uuid::now_v7()),
+        )))
+        .unwrap();
         assert!(!config.trust_proxy);
         assert_eq!(config.public_listen.to_string(), "0.0.0.0:8080");
         assert_eq!(config.rate_limits.cheap_per_min, 600);
@@ -384,7 +461,59 @@ mod tests {
         let debug = format!("{config:?}");
         assert!(!debug.contains(config.database_url_public.expose_secret()));
         assert!(!debug.contains(config.database_url_admin.as_ref().unwrap().expose_secret()));
+        assert!(!debug.contains(config.database_url_worker.as_ref().unwrap().expose_secret()));
         assert!(!debug.contains(config.session_key.expose_secret()));
+    }
+    #[test]
+    fn server_config_does_not_require_a_worker_login() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Config::from_figment(valid(dir.path())).unwrap();
+        assert!(config.database_url_worker.is_none());
+    }
+    #[test]
+    fn worker_settings_are_bounded_and_overridable() {
+        let dir = tempfile::tempdir().unwrap();
+        let worker = Worker {
+            concurrency: 4,
+            codec_timeout: 120,
+            vips_concurrency: 3,
+            default_timezone: "America/Toronto".into(),
+            ..Worker::default()
+        };
+        let config =
+            Config::from_figment(valid(dir.path()).merge(("worker", worker.clone()))).unwrap();
+        assert_eq!(config.worker.concurrency, 4);
+        assert_eq!(config.worker.codec_timeout, 120);
+        assert_eq!(config.worker.vips_concurrency, 3);
+        assert_eq!(config.worker.default_timezone, "America/Toronto");
+        for bad in [
+            Worker {
+                default_timezone: "invalid/timezone".into(),
+                ..worker.clone()
+            },
+            Worker {
+                concurrency: 0,
+                ..worker.clone()
+            },
+            Worker {
+                codec_timeout: 601,
+                ..worker.clone()
+            },
+            Worker {
+                vips_concurrency: 0,
+                ..worker.clone()
+            },
+            Worker {
+                codec_host_path: PathBuf::from("relative"),
+                ..worker.clone()
+            },
+            Worker {
+                metrics_listen: SocketAddr::from(([0, 0, 0, 0], 9101)),
+                ..worker.clone()
+            },
+        ] {
+            assert!(Config::from_figment(valid(dir.path()).merge(("worker", bad))).is_err());
+        }
     }
     #[test]
     fn reports_all_problems_and_never_echoes_bad_secrets() {
@@ -432,6 +561,7 @@ mod tests {
             ("admin_listen", "[::]:1"),
             ("database_url_public", "invalid"),
             ("database_url_admin", "invalid"),
+            ("database_url_worker", "invalid"),
             ("admin_base_url", "http://admin.example.test"),
             ("data_dir", "/a/nonexistent/yhotos/directory"),
             ("public_base_url", "invalid"),

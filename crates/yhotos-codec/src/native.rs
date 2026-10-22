@@ -21,13 +21,25 @@ pub(crate) const UCHAR: i32 = ffi::VipsBandFormat_VIPS_FORMAT_UCHAR;
 pub(crate) const USHORT: i32 = ffi::VipsBandFormat_VIPS_FORMAT_USHORT;
 const END: *const std::ffi::c_char = ptr::null();
 
-fn init() -> Result<(), CodecError> {
+pub(crate) fn init() -> Result<(), CodecError> {
+    init_with_concurrency(2)
+}
+
+pub(crate) fn init_with_concurrency(concurrency: u8) -> Result<(), CodecError> {
     static INIT: OnceLock<bool> = OnceLock::new();
+    if !(1..=64).contains(&concurrency) {
+        return Err(CodecError::Options);
+    }
     let ok = INIT.get_or_init(|| {
         // SAFETY: process-global initialization is serialized and its static name outlives the call.
         unsafe {
+            // SAFETY: null requests default initialization; no input is parsed.
+            // Plugins remain loaded for the lifetime of this one-job process.
+            if ffi::heif_init(ptr::null_mut()).code != 0 {
+                return false;
+            }
             let status = ffi::vips_init(c"yhotos-codec".as_ptr());
-            ffi::vips_concurrency_set(2);
+            ffi::vips_concurrency_set(i32::from(concurrency));
             ffi::vips_cache_set_max(0);
             ffi::vips_cache_set_max_files(0);
             for domain in [c"VIPS", c"GLib", c"GLib-GObject"] {
@@ -41,6 +53,11 @@ fn init() -> Result<(), CodecError> {
     } else {
         Err(CodecError::Unsupported)
     }
+}
+
+pub(crate) fn concurrency() -> Result<u8, CodecError> {
+    // SAFETY: callers initialize libvips first; this only reads its process-global thread limit.
+    u8::try_from(unsafe { ffi::vips_concurrency_get() }).map_err(|_| CodecError::Options)
 }
 unsafe extern "C" fn quiet_log(
     _: *const std::ffi::c_char,

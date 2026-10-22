@@ -67,3 +67,10 @@ harness = false
 [[bench]]
 name = "codec"
 harness = false
+
+[dev-dependencies.yhotos-pipeline]
+path = "../yhotos-pipeline"
+
+[[bench]]
+name = "pipeline"
+harness = false

@@ -22,6 +22,15 @@ impl Drop for Server {
 fn address(ip: &str) -> SocketAddr {
     TcpListener::bind((ip, 0)).unwrap().local_addr().unwrap()
 }
+fn admin_address() -> SocketAddr {
+    // macOS does not configure the rest of 127/8 as loopback aliases. IPv6
+    // loopback still provides a distinct address without changing host setup.
+    address(if cfg!(target_os = "macos") {
+        "::1"
+    } else {
+        "127.0.0.2"
+    })
+}
 fn command(dir: &std::path::Path, public: SocketAddr, admin: SocketAddr) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_yhotos-server"));
     command
@@ -85,7 +94,7 @@ fn ready(server: &mut Server, address: SocketAddr) {
 fn actual_listeners_are_separate_and_environment_nesting_works() {
     let dir = tempfile::tempdir().unwrap();
     let public = address("127.0.0.1");
-    let admin = address("127.0.0.2");
+    let admin = admin_address();
     let mut server = Server {
         child: command(dir.path(), public, admin).spawn().unwrap(),
     };
@@ -219,7 +228,7 @@ async fn create_admin_prints_one_policy_compliant_temporary_password() {
     // decomposed spellings. A created account must always be able to sign in.
     let dir = tempfile::tempdir().unwrap();
     let public = address("127.0.0.1");
-    let mut cmd = command(dir.path(), public, address("127.0.0.2"));
+    let mut cmd = command(dir.path(), public, admin_address());
     cmd.env("YHOTOS_RATE_LIMITS__CHEAP_PER_MIN", "100");
     let mut server = Server {
         child: cmd.spawn().unwrap(),
@@ -310,7 +319,7 @@ async fn startup_uses_separate_restricted_login_roles() {
     );
     let dir = tempfile::tempdir().unwrap();
     let public = address("127.0.0.1");
-    let admin = address("127.0.0.2");
+    let admin = admin_address();
     let mut cmd = command(dir.path(), public, admin);
     cmd.env("YHOTOS_DATABASE_URL_PUBLIC", public_url);
     #[cfg(feature = "admin")]

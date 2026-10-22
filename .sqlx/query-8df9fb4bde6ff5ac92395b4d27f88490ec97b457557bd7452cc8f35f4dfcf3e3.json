@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "describe": {
+    "columns": [
+      {
+        "name": "attempts",
+        "ordinal": 0,
+        "origin": {
+          "Table": {
+            "name": "attempts",
+            "table": "jobs"
+          }
+        },
+        "type_info": "Int4"
+      },
+      {
+        "name": "run_after",
+        "ordinal": 1,
+        "origin": {
+          "Table": {
+            "name": "run_after",
+            "table": "jobs"
+          }
+        },
+        "type_info": "Timestamptz"
+      },
+      {
+        "name": "finished_at",
+        "ordinal": 2,
+        "origin": {
+          "Table": {
+            "name": "finished_at",
+            "table": "jobs"
+          }
+        },
+        "type_info": "Timestamptz"
+      },
+      {
+        "name": "error",
+        "ordinal": 3,
+        "origin": {
+          "Table": {
+            "name": "error",
+            "table": "jobs"
+          }
+        },
+        "type_info": "Text"
+      },
+      {
+        "name": "locked_by",
+        "ordinal": 4,
+        "origin": {
+          "Table": {
+            "name": "locked_by",
+            "table": "jobs"
+          }
+        },
+        "type_info": "Text"
+      }
+    ],
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    }
+  },
+  "hash": "8df9fb4bde6ff5ac92395b4d27f88490ec97b457557bd7452cc8f35f4dfcf3e3",
+  "query": "SELECT attempts,run_after,finished_at,error,locked_by FROM jobs WHERE id=$1"
+}

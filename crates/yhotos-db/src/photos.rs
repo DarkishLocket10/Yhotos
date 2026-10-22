@@ -406,6 +406,7 @@ pub async fn purge_deleted_before(
 
 /// Replaces original metadata without changing the photo URL or interactions.
 /// Removes stale derivatives, video, tags and ML data in the same transaction.
+/// Resets publication and increments the ingest generation even for identical bytes.
 ///
 /// # Errors
 /// Returns constraint or connection failures; no partial replacement is committed.
@@ -417,7 +418,7 @@ pub async fn replace_original(
 ) -> Result<(), DbError> {
     use sqlx::Connection;
     let mut tx = conn.begin().await?;
-    sqlx::query!("UPDATE photos SET original_hash=$2, original_name=$3, original_bytes=$4, mime=$5, kind=$6 WHERE id=$1", id as _, original.original_hash, original.original_name, original.original_bytes, original.mime, original.kind as _).execute(&mut *tx).await?;
+    let replaced = sqlx::query!("UPDATE photos SET original_hash=$2, original_name=$3, original_bytes=$4, mime=$5, kind=$6,status='pending',failure_reason=NULL,derivative_plan=NULL,taken_at=NULL,taken_at_local=NULL,original_orientation=NULL,generation=generation+1 WHERE id=$1 RETURNING generation", id as _, original.original_hash, original.original_name, original.original_bytes, original.mime, original.kind as _).fetch_one(&mut *tx).await?;
     update_metadata(&mut tx, id, metadata).await?;
     sqlx::query!("DELETE FROM derivatives WHERE photo_id=$1", id as _)
         .execute(&mut *tx)
@@ -439,6 +440,15 @@ pub async fn replace_original(
         id as _
     )
     .execute(&mut *tx)
+    .await?;
+    crate::jobs::enqueue_unique(
+        &mut tx,
+        "ingest",
+        &serde_json::json!({"photo_id": id, "original_hash": original.original_hash, "generation": replaced.generation}),
+        0,
+        None,
+        3,
+    )
     .await?;
     tx.commit().await?;
     Ok(())
@@ -650,11 +660,11 @@ pub struct PagePhoto {
     pub original_name: String,
     /// Closed media vocabulary, checked by rendering.
     pub kind: String,
-    /// Optional source width.
+    /// Optional representation width; ingest stores the oriented display width.
     pub width: Option<u32>,
-    /// Optional source height.
+    /// Optional representation height; ingest stores the oriented display height.
     pub height: Option<u32>,
-    /// Source EXIF orientation; derivatives already have orientation applied.
+    /// Orientation of these dimensions; ingest publishes display dimensions with value 1.
     pub orientation: Option<u8>,
     /// RGB integers from extraction; out-of-range values are ignored.
     pub dominant_colors: Vec<i32>,
