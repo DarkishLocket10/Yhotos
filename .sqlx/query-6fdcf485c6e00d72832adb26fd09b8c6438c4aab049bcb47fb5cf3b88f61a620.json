@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "ANALYZE user_mfa",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "6fdcf485c6e00d72832adb26fd09b8c6438c4aab049bcb47fb5cf3b88f61a620"
+}

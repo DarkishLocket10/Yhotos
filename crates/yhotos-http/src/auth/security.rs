@@ -108,10 +108,11 @@ pub(crate) async fn password(
         .acquire_owned()
         .await
         .map_err(|_| HttpError::BadRequest)?;
+    let passwords = auth.passwords;
     let hash = tokio::task::spawn_blocking(move || {
         let _permit = permit;
         yhotos_auth::check_password_policy(&new, &username)?;
-        yhotos_auth::hash_password(&new)
+        passwords.hash_password(&new)
     })
     .await
     .map_err(|_| HttpError::BadRequest)??;

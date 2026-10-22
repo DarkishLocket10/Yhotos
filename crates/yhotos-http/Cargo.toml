@@ -11,6 +11,8 @@ workspace = true
 [features]
 default = []
 admin = ["yhotos-config/admin"]
+# Enables only an explicit test constructor; Auth::new retains production costs.
+test-util = ["yhotos-auth/test-util"]
 
 [dependencies]
 yhotos-config = { path = "../yhotos-config" }
@@ -46,6 +48,8 @@ zeroize.workspace = true
 qrcode.workspace = true
 
 [dev-dependencies]
+# Enable the constructor for integration tests, including default-feature test runs.
+yhotos-http = { path = ".", features = ["test-util"] }
 webauthn-authenticator-rs.workspace = true
 sqlx.workspace = true
 

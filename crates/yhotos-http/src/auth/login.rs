@@ -65,6 +65,7 @@ async fn verify(
         .acquire_owned()
         .await
         .map_err(|_| HttpError::BadRequest)?;
+    let passwords = auth.passwords;
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
         if let Some(hash) = hash.and_then(|v| PasswordHash::parse(&v).ok())
@@ -72,7 +73,7 @@ async fn verify(
         {
             return yhotos_auth::verify_password(&password, &hash).unwrap_or(false);
         }
-        yhotos_auth::dummy_verify();
+        passwords.dummy_verify();
         false
     })
     .await

@@ -15,8 +15,8 @@ pub mod webauthn;
 
 pub use keyring::Keyring;
 pub use password::{
-    PasswordHash, check_password_policy, dummy_verify, generate_temp_password, hash_password,
-    needs_rehash, verify_password,
+    PasswordHash, PasswordHasher, check_password_policy, dummy_verify, generate_temp_password,
+    hash_password, needs_rehash, verify_password,
 };
 pub use policy::{
     LockedUntil, LockoutPolicy, LockoutState, SessionPolicy, SessionState, Timestamp, session_state,

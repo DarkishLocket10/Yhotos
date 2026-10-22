@@ -1,7 +1,7 @@
 use std::{fmt, str::FromStr};
 
 use argon2::{Algorithm, Argon2, Params, Version};
-use password_hash::{PasswordHasher, PasswordVerifier, phc};
+use password_hash::{PasswordHasher as _, PasswordVerifier, phc};
 use rand::{Rng, RngCore, rngs::OsRng};
 use secrecy::{ExposeSecret, SecretString};
 use subtle::ConstantTimeEq;
@@ -57,9 +57,77 @@ impl FromStr for PasswordHash {
 }
 
 fn current_argon2() -> Result<Argon2<'static>, AuthError> {
-    let params =
-        Params::new(MEMORY_KIB, ITERATIONS, LANES, Some(32)).map_err(|_| AuthError::Crypto)?;
-    Ok(Argon2::new(Algorithm::Argon2id, Version::V0x13, params))
+    PasswordHasher::default().argon2()
+}
+
+/// Password hashing costs selected by trusted construction, never environment configuration.
+/// The default always uses the production Argon2id parameters.
+#[derive(Clone, Copy, Default)]
+pub struct PasswordHasher {
+    profile: PasswordProfile,
+}
+
+#[derive(Clone, Copy, Default)]
+enum PasswordProfile {
+    #[default]
+    Production,
+    #[cfg(feature = "test-util")]
+    Testing,
+}
+
+impl PasswordHasher {
+    /// Uses the minimum Argon2 costs exclusively for integration-test fixtures.
+    /// Production constructors and configuration cannot select this profile.
+    #[cfg(feature = "test-util")]
+    #[must_use]
+    pub fn for_tests() -> Self {
+        Self {
+            profile: PasswordProfile::Testing,
+        }
+    }
+
+    fn argon2(self) -> Result<Argon2<'static>, AuthError> {
+        let (memory, iterations, lanes) = match self.profile {
+            PasswordProfile::Production => (MEMORY_KIB, ITERATIONS, LANES),
+            #[cfg(feature = "test-util")]
+            PasswordProfile::Testing => {
+                (Params::MIN_M_COST, Params::MIN_T_COST, Params::MIN_P_COST)
+            }
+        };
+        let params =
+            Params::new(memory, iterations, lanes, Some(32)).map_err(|_| AuthError::Crypto)?;
+        Ok(Argon2::new(Algorithm::Argon2id, Version::V0x13, params))
+    }
+
+    /// Hashes a password with a fresh OS-random salt and this constructor's costs.
+    ///
+    /// # Errors
+    /// Returns a length error or a generic cryptographic error. This is blocking work.
+    pub fn hash_password(self, pw: &SecretString) -> Result<PasswordHash, AuthError> {
+        validate_length(pw)?;
+        let mut salt = [0; 16];
+        OsRng
+            .try_fill_bytes(&mut salt)
+            .map_err(|_| AuthError::Crypto)?;
+        let hash: phc::PasswordHash = self
+            .argon2()?
+            .hash_password_with_salt(pw.expose_secret().as_bytes(), &salt)
+            .map_err(|_| AuthError::Crypto)?;
+        Ok(PasswordHash(hash.to_string()))
+    }
+
+    /// Performs a failed verification at the same costs as this profile's real hashes.
+    pub fn dummy_verify(self) {
+        let hash = match self.profile {
+            PasswordProfile::Production => DUMMY_HASH.to_owned(),
+            // The reference digest deliberately mismatches at the test-only costs.
+            #[cfg(feature = "test-util")]
+            PasswordProfile::Testing => DUMMY_HASH.replace("m=65536,t=3,p=1", "m=8,t=1,p=1"),
+        };
+        // Public, deliberately mismatching dummy input; never an account credential.
+        let input = SecretString::from("yhotos unknown-user dummy input");
+        let _ = verify_password(&input, &PasswordHash(hash));
+    }
 }
 
 fn parse_hash(value: &str) -> Result<(phc::PasswordHash, Params), AuthError> {
@@ -97,15 +165,7 @@ fn parse_hash(value: &str) -> Result<(phc::PasswordHash, Params), AuthError> {
 /// # Errors
 /// Returns a length error or a generic cryptographic error. This is blocking work.
 pub fn hash_password(pw: &SecretString) -> Result<PasswordHash, AuthError> {
-    validate_length(pw)?;
-    let mut salt = [0; 16];
-    OsRng
-        .try_fill_bytes(&mut salt)
-        .map_err(|_| AuthError::Crypto)?;
-    let hash: phc::PasswordHash = current_argon2()?
-        .hash_password_with_salt(pw.expose_secret().as_bytes(), &salt)
-        .map_err(|_| AuthError::Crypto)?;
-    Ok(PasswordHash(hash.to_string()))
+    PasswordHasher::default().hash_password(pw)
 }
 
 fn validate_length(pw: &SecretString) -> Result<(), AuthError> {
@@ -132,10 +192,7 @@ pub fn verify_password(pw: &SecretString, hash: &PasswordHash) -> Result<bool, A
 
 /// Performs one full-cost failed verification for unknown-user paths.
 pub fn dummy_verify() {
-    let hash = PasswordHash(DUMMY_HASH.to_owned());
-    // Public, deliberately mismatching dummy input; never an account credential.
-    let input = SecretString::from("yhotos unknown-user dummy input");
-    let _ = verify_password(&input, &hash);
+    PasswordHasher::default().dummy_verify();
 }
 
 /// Flags older parameters, short salts/outputs, or unsupported storage values.
@@ -233,6 +290,29 @@ mod tests {
         assert!(verify_password(&pw, &a).unwrap());
         assert!(!verify_password(&generate_temp_password(), &a).unwrap());
         assert_eq!(format!("{a:?}"), "PasswordHash(<redacted>)");
+    }
+
+    #[cfg(feature = "test-util")]
+    #[test]
+    fn test_profile_uses_minimum_costs_without_changing_production_defaults() {
+        let pw = generate_temp_password();
+        let hasher = PasswordHasher::for_tests();
+        let hash = hasher.hash_password(&pw).unwrap();
+        let (_, params) = parse_hash(hash.as_str()).unwrap();
+        assert_eq!(
+            (params.m_cost(), params.t_cost(), params.p_cost()),
+            (8, 1, 1)
+        );
+        assert!(verify_password(&pw, &hash).unwrap());
+        assert!(!verify_password(&generate_temp_password(), &hash).unwrap());
+        assert!(needs_rehash(&hash));
+        assert_ne!(hash.as_str(), hasher.hash_password(&pw).unwrap().as_str());
+        hasher.dummy_verify();
+        let params = PasswordHasher::default().argon2().unwrap().params().clone();
+        assert_eq!(
+            (params.m_cost(), params.t_cost(), params.p_cost()),
+            (65_536, 3, 1)
+        );
     }
 
     #[test]

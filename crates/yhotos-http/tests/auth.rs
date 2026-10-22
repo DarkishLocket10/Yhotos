@@ -34,6 +34,7 @@ struct Client {
     csrf: String,
     network: SocketAddr,
     origin: String,
+    passwords: yhotos_auth::PasswordHasher,
 }
 struct Reply {
     status: StatusCode,
@@ -49,6 +50,9 @@ impl Reply {
 }
 impl Client {
     async fn new(pool: PgPool, admin: bool) -> Self {
+        Self::with_password_costs(pool, admin, false).await
+    }
+    async fn with_password_costs(pool: PgPool, admin: bool, production: bool) -> Self {
         let dir = Arc::new(tempfile::tempdir().unwrap());
         let url = SecretString::from(pool.connect_options().to_url_lossy().to_string());
         let db = Arc::new(
@@ -80,11 +84,18 @@ impl Client {
         ));
         #[cfg(not(feature = "admin"))]
         let admin_db = None;
+        let auth = if production {
+            Auth::new(config, db.clone(), admin_db).await.unwrap()
+        } else {
+            Auth::new_for_tests(config, db.clone(), admin_db)
+                .await
+                .unwrap()
+        };
         let state = AppState::new(
             config,
             db.pool().clone(),
             yhotos_storage::Store::open(&config.data_dir).unwrap(),
-            Some(Auth::new(config, db.clone(), admin_db).await.unwrap()),
+            Some(auth),
         );
         #[cfg(feature = "admin")]
         let app = if admin {
@@ -112,6 +123,11 @@ impl Client {
                 "https://example.test"
             }
             .into(),
+            passwords: if production {
+                yhotos_auth::PasswordHasher::default()
+            } else {
+                yhotos_auth::PasswordHasher::for_tests()
+            },
         }
     }
     #[cfg(feature = "admin")]
@@ -135,6 +151,7 @@ impl Client {
                 "https://example.test"
             }
             .into(),
+            passwords: self.passwords,
         }
     }
     async fn enroll_passkey(&mut self, authenticator: &mut WebauthnAuthenticator<SoftToken>) {
@@ -295,7 +312,8 @@ impl Client {
         let username = Uuid::now_v7().simple().to_string();
         let password = yhotos_auth::generate_temp_password();
         let p = password.clone();
-        let hash = tokio::task::spawn_blocking(move || yhotos_auth::hash_password(&p).unwrap())
+        let passwords = self.passwords;
+        let hash = tokio::task::spawn_blocking(move || passwords.hash_password(&p).unwrap())
             .await
             .unwrap();
         let mut c = self.pool.acquire().await.unwrap();
@@ -1279,7 +1297,8 @@ async fn pending_login_attempts_and_expiry_are_server_side(pool: PgPool) {
 #[ignore = "wall-clock timing assertion; run explicitly on an idle host"]
 #[sqlx::test(migrations = "../yhotos-db/migrations")]
 async fn unknown_and_wrong_password_timing_within_twenty_percent(pool: PgPool) {
-    let mut c = Client::new(pool, false).await;
+    // Keep the opt-in timing comparison representative of production Argon2 work.
+    let mut c = Client::with_password_costs(pool, false, true).await;
     let (_, name, _) = c.seed(false, false).await;
     let wrong = yhotos_auth::generate_temp_password();
     let mut times = [std::time::Duration::ZERO; 2];
@@ -1592,7 +1611,9 @@ async fn cross_listener_invalidation(pool: PgPool, password_change: bool) {
         .await
         .unwrap(),
     );
-    let remote_auth = Auth::new(admin.state.config, db, None).await.unwrap();
+    let remote_auth = Auth::new_for_tests(admin.state.config, db, None)
+        .await
+        .unwrap();
     assert!(
         remote_auth
             .load(&session.token_hash)

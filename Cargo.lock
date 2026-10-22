@@ -4583,6 +4583,7 @@ dependencies = [
  "yhotos-config",
  "yhotos-core",
  "yhotos-db",
+ "yhotos-http",
  "yhotos-storage",
  "zeroize",
 ]

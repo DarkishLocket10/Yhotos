@@ -37,6 +37,7 @@ pub struct Auth {
     listener_stop: Arc<tokio::sync::Notify>,
     pub(crate) password_slots: Arc<tokio::sync::Semaphore>,
     fingerprint_key: [u8; 32],
+    pub(crate) passwords: yhotos_auth::PasswordHasher,
 }
 #[derive(Default)]
 struct SessionEntry {
@@ -52,6 +53,39 @@ impl Auth {
         config: &yhotos_config::Config,
         public_db: Arc<Db>,
         admin_db: Option<Arc<Db>>,
+    ) -> Result<Arc<Self>, HttpError> {
+        Self::with_passwords(
+            config,
+            public_db,
+            admin_db,
+            yhotos_auth::PasswordHasher::default(),
+        )
+        .await
+    }
+    /// Constructs integration-test authentication with minimum Argon2 costs.
+    /// This profile is never selected by production constructors or configuration.
+    ///
+    /// # Errors
+    /// Rejects invalid key, relying-party configuration or LISTEN connection.
+    #[cfg(feature = "test-util")]
+    pub async fn new_for_tests(
+        config: &yhotos_config::Config,
+        public_db: Arc<Db>,
+        admin_db: Option<Arc<Db>>,
+    ) -> Result<Arc<Self>, HttpError> {
+        Self::with_passwords(
+            config,
+            public_db,
+            admin_db,
+            yhotos_auth::PasswordHasher::for_tests(),
+        )
+        .await
+    }
+    async fn with_passwords(
+        config: &yhotos_config::Config,
+        public_db: Arc<Db>,
+        admin_db: Option<Arc<Db>>,
+        passwords: yhotos_auth::PasswordHasher,
     ) -> Result<Arc<Self>, HttpError> {
         // Configuration permits keys longer than 32 bytes. Derive a fixed-size,
         // domain-separated encryption key instead of truncating key material.
@@ -87,6 +121,7 @@ impl Auth {
             listener_stop: Arc::new(tokio::sync::Notify::new()),
             password_slots: Arc::new(tokio::sync::Semaphore::new(4)),
             fingerprint_key: blake3::derive_key("yhotos login fingerprint v1", &raw),
+            passwords,
         });
         Self::listen(&auth, listener);
         let weak = Arc::downgrade(&auth);
