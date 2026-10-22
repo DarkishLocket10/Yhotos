@@ -23,7 +23,7 @@ Users can log in with username and password, are forced to change a temporary pa
 
 ## Scope
 
-`crates/yhotos-http/src/auth/` (new), `crates/yhotos-http/src/middleware/session.rs`, `crates/yhotos-http/templates/default/auth/*.html`, `crates/yhotos-db/src/{users,sessions,mfa}.rs` additions, `web/src/passkey.ts` (the only JS: WebAuthn ceremony glue), `crates/yhotos-bench/benches/session.rs`.
+Areas: `crates/yhotos-http/` (new `auth/` module, `middleware/session.rs`, router and `AppState` wiring, CSRF and rate-limit integration, error mapping additions, templates under `templates/default/auth/`, static asset wiring for `passkey.js`), `crates/yhotos-server/` (startup wiring, the `create-admin` CLI subcommand), `crates/yhotos-db/` (`users`, `sessions`, `mfa`, `audit` repository additions, migrations for `pending_webauthn`, `pending_login`, `sessions.reauth_at`, regenerated `.sqlx/` metadata), `crates/yhotos-auth/` only if a primitive is missing (say so in the PR), `web/src/passkey.ts`, `crates/yhotos-bench/` (`session` bench target), `scripts/auth-smoke.sh`, `deploy/dev/` if the dev database bootstrap needs fixing, plus the always-in-scope supporting files from `AGENTS.md`.
 
 ## Design
 
