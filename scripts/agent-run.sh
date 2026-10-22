@@ -7,7 +7,8 @@
 #   scripts/agent-run.sh NNN --host yesktop  run on yesktop over ssh (repo must exist at ~/work/Yhotos there)
 #   scripts/agent-run.sh NNN --base REF      branch from REF instead of origin/main
 #
-# Reads model/effort from the brief header. Refuses to start under 8 GB free memory.
+# Reads model/effort from the brief header. Refuses to start when free memory is low or the
+# host already runs its maximum number of agents; see the limits block below.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -62,18 +63,38 @@ free_gb() {
   fi
 }
 FREE="$(free_gb)"
-# vm_stat undercounts reclaimable memory on macOS, so the Mac uses a lower floor and
-# caps cargo parallelism instead. Override with YHOTOS_AGENT_MIN_FREE_GB.
+# Limits per host. vm_stat undercounts reclaimable memory on macOS, so the Mac uses a lower
+# floor. On Linux each agent also runs in a systemd scope with a hard memory ceiling, so a
+# runaway build is killed inside its own scope instead of exhausting the machine (an unbounded
+# cargo -j30 per agent caused global OOM kills on yesktop on 2026-10-21).
+# Overrides: YHOTOS_AGENT_MIN_FREE_GB, YHOTOS_AGENT_MAX_RUNNING, YHOTOS_AGENT_MEM_MAX.
 if [[ "$(uname)" == "Darwin" ]]; then
   MIN_FREE="${YHOTOS_AGENT_MIN_FREE_GB:-6}"
+  MAX_RUNNING="${YHOTOS_AGENT_MAX_RUNNING:-2}"
   export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}"
 else
-  MIN_FREE="${YHOTOS_AGENT_MIN_FREE_GB:-8}"
+  MIN_FREE="${YHOTOS_AGENT_MIN_FREE_GB:-14}"
+  MAX_RUNNING="${YHOTOS_AGENT_MAX_RUNNING:-2}"
+  export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}"
 fi
+MEM_MAX="${YHOTOS_AGENT_MEM_MAX:-14G}"
 if (( FREE < MIN_FREE )); then
   echo "refusing to start: only ${FREE} GB free memory (need ${MIN_FREE})" >&2
   exit 3
 fi
+# Count running agent runs on this host through pid files; stale files are ignored.
+RUN_DIR="$REPO_ROOT/.worktrees/.running"
+mkdir -p "$RUN_DIR"
+RUNNING=0
+for f in "$RUN_DIR"/*.pid; do
+  [[ -f "$f" ]] || continue
+  if kill -0 "$(cat "$f")" 2>/dev/null; then RUNNING=$((RUNNING + 1)); else rm -f "$f"; fi
+done
+if (( RUNNING >= MAX_RUNNING )); then
+  echo "refusing to start: ${RUNNING} agent runs already active on this host (max ${MAX_RUNNING})" >&2
+  exit 3
+fi
+echo $$ > "$RUN_DIR/$TASK_ID.pid"
 
 cd "$REPO_ROOT"
 git fetch -q origin
@@ -93,7 +114,7 @@ else
 fi
 
 PROMPT_FILE="$(mktemp)"
-trap 'rm -f "$PROMPT_FILE"' EXIT
+trap 'rm -f "$PROMPT_FILE" "$RUN_DIR/$TASK_ID.pid"' EXIT
 {
   echo "You are implementing one task for Yhotos. Read AGENTS.md first, then the brief below in full, then the docs it lists."
   echo "Work only inside this worktree. Do not push, do not open a PR, do not run git commands that touch other branches."
@@ -113,8 +134,14 @@ trap 'rm -f "$PROMPT_FILE"' EXIT
 } > "$PROMPT_FILE"
 
 LAST_MSG="$WT/.agent-last-message.md"
-echo "running codex ($MODEL, effort $EFFORT) in $WT on $BRANCH"
-codex exec \
+echo "running codex ($MODEL, effort $EFFORT) in $WT on $BRANCH (cargo jobs $CARGO_BUILD_JOBS)"
+SCOPE=()
+if [[ "$(uname)" == "Linux" ]] && command -v systemd-run >/dev/null 2>&1 \
+  && systemd-run --user --scope -q -p MemoryMax=64M true 2>/dev/null; then
+  SCOPE=(systemd-run --user --scope -q -p "MemoryMax=$MEM_MAX" -p MemorySwapMax=0 --)
+  echo "agent memory ceiling: $MEM_MAX"
+fi
+${SCOPE[@]+"${SCOPE[@]}"} codex exec \
   -C "$WT" \
   --add-dir "$REPO_ROOT/.git" \
   --add-dir "$HOME/.cargo" \
