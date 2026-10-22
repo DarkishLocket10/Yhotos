@@ -2509,6 +2509,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
 
 [[package]]
+name = "qrcode"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
+
+[[package]]
 name = "quick-error"
 version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4444,6 +4450,7 @@ name = "yhotos-bench"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64 0.23.1",
  "criterion",
  "http-body-util",
  "secrecy",
@@ -4532,6 +4539,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "unicode-normalization",
  "uuid",
  "yhotos-core",
 ]
@@ -4552,23 +4560,32 @@ dependencies = [
  "http-body-util",
  "log",
  "moka",
+ "qrcode",
  "rust-embed",
+ "secrecy",
  "serde",
+ "serde_json",
  "sqlx",
  "subtle",
  "tempfile",
  "thiserror 2.0.21",
+ "time",
  "tokio",
  "tokio-util",
  "tower",
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
+ "webauthn-authenticator-rs",
+ "yhotos-auth",
  "yhotos-config",
  "yhotos-core",
  "yhotos-db",
+ "yhotos-http",
  "yhotos-storage",
+ "zeroize",
 ]
 
 [[package]]
@@ -4592,6 +4609,7 @@ dependencies = [
  "base64 0.23.1",
  "figment",
  "mimalloc",
+ "secrecy",
  "sqlx",
  "tempfile",
  "tokio",
@@ -4600,6 +4618,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "yhotos-auth",
  "yhotos-config",
  "yhotos-core",
  "yhotos-db",

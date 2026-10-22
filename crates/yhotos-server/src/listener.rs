@@ -107,10 +107,12 @@ mod tests {
         let config = Box::leak(Box::new(
             Config::from_figment(
                 Figment::new()
-                    .merge(("database_url", "postgres://127.0.0.1/test"))
+                    .merge(("database_url_public", "postgres://127.0.0.1/test"))
                     .merge(("data_dir", dir.path().to_string_lossy().as_ref()))
                     .merge(("public_base_url", "https://example.test"))
                     .merge(("admin_listen", "127.0.0.1:8081"))
+                    .merge(("admin_base_url", "https://admin.example.test"))
+                    .merge(("database_url_admin", "postgres://127.0.0.1/test"))
                     .merge((
                         "session_key",
                         STANDARD.encode(format!("{}{}", Uuid::now_v7(), Uuid::now_v7())),
@@ -124,7 +126,7 @@ mod tests {
             .unwrap(),
         ));
         let path = format!("/o/{}/original.jpg", put.hash);
-        (dir, AppState::new(config, pool, store), path)
+        (dir, AppState::new(config, pool, store, None), path)
     }
 
     #[sqlx::test(migrator = "yhotos_db::MIGRATOR")]

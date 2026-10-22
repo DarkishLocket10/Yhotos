@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS(SELECT FROM pg_stat_activity\n                        WHERE datname=current_database() AND wait_event_type='Lock'\n                        AND query LIKE 'DELETE FROM sessions WHERE user_id=$1%') AS \"blocked!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "blocked!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "fa02732dbd54cedbdf971c9032d09900582690b409037165e320554973b81af2"
+}

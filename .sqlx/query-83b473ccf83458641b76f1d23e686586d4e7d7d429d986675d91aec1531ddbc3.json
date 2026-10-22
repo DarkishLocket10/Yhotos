@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE sessions SET created_at=now()-interval '16 days',last_seen_at=now()-interval '15 days' WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "83b473ccf83458641b76f1d23e686586d4e7d7d429d986675d91aec1531ddbc3"
+}
