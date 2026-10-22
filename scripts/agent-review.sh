@@ -58,7 +58,7 @@ LAST="$(mktemp)"
 # exhaust the host (yesktop crashed twice on 2026-10-22).
 SCOPE=()
 if [[ "$(uname)" != "Darwin" ]] && command -v systemd-run >/dev/null; then
-  SCOPE=(systemd-run --user --scope -q -p "MemoryMax=${YHOTOS_REVIEW_MEM_MAX:-4G}" -p MemorySwapMax=0 --)
+  SCOPE=(systemd-run --user --scope -q -p "MemoryHigh=${YHOTOS_REVIEW_MEM_HIGH:-4G}" -p "MemoryMax=${YHOTOS_REVIEW_MEM_MAX:-6G}" -p MemorySwapMax=0 --)
 fi
 ${SCOPE[@]+"${SCOPE[@]}"} codex exec \
   -C "$WT" \
@@ -70,7 +70,14 @@ ${SCOPE[@]+"${SCOPE[@]}"} codex exec \
   --output-last-message "$LAST" \
   - < "$PROMPT_FILE" > "$OUT" 2>&1 || true
 rm -f "$PROMPT_FILE"
-if [[ -s "$LAST" ]]; then cp "$LAST" "$OUT"; fi
+# Post only a real final message. A reviewer that died (for example killed at its memory
+# ceiling) leaves no final message; never post its raw log as the review.
+if [[ ! -s "$LAST" ]] || ! grep -q "VERDICT" "$LAST"; then
+  rm -f "$LAST"
+  echo "review did not complete; nothing posted. Log: $OUT" >&2
+  exit 4
+fi
+cp "$LAST" "$OUT"
 rm -f "$LAST"
 
 {
