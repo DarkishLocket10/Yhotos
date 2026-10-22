@@ -215,3 +215,30 @@ test('cancel after commit but before the final response reports the published ph
   await until(() => calls.includes('DELETE') && row().children[1].textContent !== 'Cancelling');
   assert.match(row().children[1].textContent, /^Already uploaded/);
 });
+
+for (const status of [408, 429, 500]) {
+  test(`cancel answered with ${status} is reported as unconfirmed and can be retried`, async () => {
+    const file = new File(['abcdef'], `unconfirmed-${status}.jpg`, { lastModified: 900 + status });
+    let deletes = 0;
+    let hold;
+    const held = new Promise(resolve => { hold = resolve; });
+    const app = island(async (path, options) => {
+      if (options.method === 'POST') return created('00000000-0000-4000-8000-000000000005');
+      if (options.method === 'PATCH') { await held; throw new DOMException('Aborted', 'AbortError'); }
+      if (options.method === 'DELETE') { deletes += 1; return new Response(null, { status: deletes === 1 ? status : 204 }); }
+      return new Response(null, { status: 404 });
+    });
+    app.choose([file]);
+    const row = () => app.elements.uploads.children[0];
+    await until(() => row()?.children[4]);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    const cancel = row().children[4];
+    cancel.listeners.click();
+    hold();
+    await until(() => row().children[1].textContent === 'Cancel not confirmed. Try again.');
+    assert.equal(cancel.disabled, false);
+    cancel.listeners.click();
+    await until(() => row().children[1].textContent === 'Cancelled');
+    assert.equal(deletes, 2);
+  });
+}

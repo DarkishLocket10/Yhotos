@@ -161,6 +161,9 @@ if (root) {
       cancel.addEventListener("click", () => {
         work.cancelled = true; work.abort.abort(); remember(key, null); retry.hidden = true; cancel.disabled = true;
         delete row.dataset.key;
+        // Termination failed or was not answered: the upload may still exist, or the
+        // final chunk may already have published it. Say so and let the admin retry.
+        const unconfirmed = () => { label.textContent = "Cancel not confirmed. Try again."; cancel.disabled = false; };
         if (!work.url) { label.textContent = "Cancelled"; return; }
         // Only a confirmed termination is reported as cancelled: the final chunk may
         // already have published the photo even though its response never arrived.
@@ -169,9 +172,9 @@ if (root) {
           .then(response => {
             if (response.status === 204 || response.status === 404) label.textContent = "Cancelled";
             else if (response.status === 409) label.textContent = "Already uploaded. Delete the photo from its album if it is not wanted.";
-            else label.textContent = "Cancelled. Temporary upload will expire automatically.";
+            else unconfirmed();
           })
-          .catch(() => { label.textContent = "Cancel not confirmed. Temporary upload will expire automatically."; });
+          .catch(unconfirmed);
       });
       row.append(name, label, progress, retry, cancel); list.append(row); waiting.push(work);
     }

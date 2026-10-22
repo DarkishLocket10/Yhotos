@@ -43,10 +43,15 @@ impl Ingest {
             .await
             .map_err(|_| retry("upload unavailable"))?;
         let magic = sniff(&head).ok_or_else(rejected)?;
-        let dir = self
-            .store
-            .tmp_dir()
-            .map_err(|_| retry("temporary storage unavailable"))?;
+        // Directory creation and its eventual cleanup fsync, so both stay off the
+        // async request threads (docs/architecture.md section 3).
+        let store = self.store.clone();
+        let dir = BlockingDrop(Some(
+            tokio::task::spawn_blocking(move || store.tmp_dir())
+                .await
+                .map_err(|_| retry("temporary storage unavailable"))?
+                .map_err(|_| retry("temporary storage unavailable"))?,
+        ));
         let report: IdentityReport = self
             .request_host(
                 &serde_json::json!({"input":path,"out_dir":dir.path(),"limits":self.limits,"outputs":[],"want":["identity"]}),
@@ -247,4 +252,28 @@ pub(crate) fn dimensions(limits: &crate::Limits, width: u32, height: u32, pages:
             .checked_mul(u64::from(height))
             .and_then(|n| n.checked_mul(u64::from(pages)))
             .is_some_and(|n| n <= limits.max_pixels)
+}
+
+/// Owns a temporary directory whose synchronous cleanup runs on the blocking pool.
+struct BlockingDrop(Option<yhotos_storage::TempDir>);
+
+impl BlockingDrop {
+    fn path(&self) -> &std::path::Path {
+        self.0
+            .as_ref()
+            .map_or(std::path::Path::new(""), |dir| dir.path())
+    }
+}
+
+impl Drop for BlockingDrop {
+    fn drop(&mut self) {
+        if let Some(dir) = self.0.take() {
+            match tokio::runtime::Handle::try_current() {
+                Ok(handle) => {
+                    drop(handle.spawn_blocking(move || drop(dir)));
+                }
+                Err(_) => drop(dir),
+            }
+        }
+    }
 }
