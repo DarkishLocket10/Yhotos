@@ -13,21 +13,32 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TASK_ID="${1:?task id required}"
 shift || true
+[[ "$TASK_ID" =~ ^[0-9]{3}$ ]] || { echo "task id must be three digits" >&2; exit 2; }
 RESUME_MSG=""
 HOST="local"
 BASE="origin/main"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --resume) RESUME_MSG="${2:?}"; shift 2 ;;
+    --resume-stdin) RESUME_MSG="$(cat)"; shift ;;
     --host) HOST="${2:?}"; shift 2 ;;
     --base) BASE="${2:?}"; shift 2 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+[[ "$HOST" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "bad host name" >&2; exit 2; }
+[[ "$BASE" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "bad base ref" >&2; exit 2; }
 
 if [[ "$HOST" != "local" ]]; then
-  # Re-invoke this script on the remote machine. The remote checkout pulls main first.
-  ssh -o BatchMode=yes "$HOST" "bash -lc 'cd ~/work/Yhotos && git fetch -q origin && git checkout -q main && git reset -q --hard origin/main && scripts/agent-run.sh $TASK_ID ${RESUME_MSG:+--resume \"$RESUME_MSG\"}'"
+  # Re-invoke this script on the remote machine. The remote checkout is moved to BASE so the
+  # scripts and briefs it runs are the ones from that ref. Free text (the resume message) travels
+  # on stdin, never on the command line, so it cannot be interpreted by the remote shell.
+  REMOTE_CMD="cd ~/work/Yhotos && git fetch -q origin && git checkout -q --detach $(printf %q "$BASE") && source ~/.cargo/env 2>/dev/null; scripts/agent-run.sh $(printf %q "$TASK_ID") --base $(printf %q "$BASE")"
+  if [[ -n "$RESUME_MSG" ]]; then
+    printf '%s' "$RESUME_MSG" | ssh -o BatchMode=yes "$HOST" "bash -lc $(printf %q "$REMOTE_CMD --resume-stdin")"
+  else
+    ssh -o BatchMode=yes "$HOST" "bash -lc $(printf %q "$REMOTE_CMD")" < /dev/null
+  fi
   exit $?
 fi
 

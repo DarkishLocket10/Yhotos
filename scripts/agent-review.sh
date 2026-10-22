@@ -7,6 +7,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TASK_ID="${1:?task id required}"
 shift || true
+[[ "$TASK_ID" =~ ^[0-9]{3}$ ]] || { echo "task id must be three digits" >&2; exit 2; }
 EFFORT=""
 HOST="local"
 while [[ $# -gt 0 ]]; do
@@ -16,9 +17,12 @@ while [[ $# -gt 0 ]]; do
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
+[[ "$HOST" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "bad host name" >&2; exit 2; }
+[[ -z "$EFFORT" || "$EFFORT" =~ ^(low|medium|high|xhigh|max)$ ]] || { echo "bad effort" >&2; exit 2; }
 
 if [[ "$HOST" != "local" ]]; then
-  ssh -o BatchMode=yes "$HOST" "bash -lc 'cd ~/work/Yhotos && git fetch -q origin && scripts/agent-review.sh $TASK_ID ${EFFORT:+--effort $EFFORT}'"
+  REMOTE_CMD="cd ~/work/Yhotos && git fetch -q origin && scripts/agent-review.sh $(printf %q "$TASK_ID")${EFFORT:+ --effort $EFFORT}"
+  ssh -o BatchMode=yes "$HOST" "bash -lc $(printf %q "$REMOTE_CMD")" < /dev/null
   exit $?
 fi
 
