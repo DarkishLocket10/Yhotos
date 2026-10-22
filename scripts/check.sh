@@ -2,6 +2,8 @@
 set -euo pipefail
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
+# Storage tests assert 0640/0750 modes; a stricter caller umask (agent sandboxes use 077) breaks them.
+umask 027
 
 run_step() {
     local step="$1"
