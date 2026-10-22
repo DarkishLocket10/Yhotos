@@ -23,3 +23,6 @@ dist/
 # Test artefacts
 /fixtures/large/
 /bench-results/
+
+# Agent worktrees
+/.worktrees/
