@@ -110,6 +110,7 @@ codex exec \
   -C "$WT" \
   --add-dir "$REPO_ROOT/.git" \
   --add-dir "$HOME/.cargo" \
+  --add-dir "$HOME/.rustup" \
   -m "$MODEL" \
   -c "model_reasoning_effort=\"$EFFORT\"" \
   -c 'approval_policy="never"' \
