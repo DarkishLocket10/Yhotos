@@ -22,30 +22,50 @@ impl Format {
             Self::Jpeg => "jpeg",
         }
     }
-    pub(crate) fn encode(self) -> serde_json::Value {
-        // All existing defaults pass the production-plan fidelity gates, so
-        // retain AVIF Q60/speed6, JXL distance1/effort7 and progressive JPEG
-        // Q90/4:4:4. Full-resolution local 8x8 SSIM vs an independent linear
-        // thumbnail of fixtures/images/photo.jpg (libvips 8.18.7):
+    pub(crate) fn encode(self, long_edge: u32) -> serde_json::Value {
+        // Small variants retain AVIF Q60/speed6, JXL distance1/effort7 and
+        // progressive JPEG Q90/4:4:4. Above 1600px, integer AVIF/JPEG quality
+        // and 0.01 JXL distance sweeps select the smallest passing settings:
+        // edge  | AVIF Q | JXL distance | JPEG Q
+        // 2048  |   86   |    0.68      |   98
+        // 2560  |   84   |    0.81      |   98
+        // 3200  |   83   |    0.98      |    -
+        // Each next smaller setting fails the unchanged 0.98 gate. Full-size
+        // local 8x8 SSIM vs independent linear thumbnails (libvips 8.18.7):
         // variant  | AVIF bytes/SSIM   | JXL bytes/SSIM    | JPEG bytes/SSIM
         // thumb    |   7603/0.980006   |  14741/0.990502   |  22472/0.979364
         // thumb2x  |  17616/0.981469   |  38290/0.990469   |  63871/0.977494
         // small    |  15027/0.982941   |  31830/0.990923   |  52478/0.980660
         // small2x  |  37968/0.983699   |  88095/0.992482   | 158388/0.980878
         // medium   |  37968/0.983699   |  88095/0.992482   | 158388/0.980878
-        // medium2x |  54073/0.986437   | 107632/0.994964   | 157509/0.984792
-        // large    |  54073/0.986437   | 107632/0.994964   | 157509/0.984792
-        // xlarge   |  54073/0.986437   | 107632/0.994964   |       -
-        // The 1600x1236 photograph is never upscaled; thumb variants crop first.
-        // P3 chart through the same plan: worst mean/max deltaE2000 by format
-        // AVIF 0.2086/0.5862, JXL 0.1683/0.4760, JPEG 0.4301/1.8245.
-        // AVIF/JXL keep ICC for every variant. The pipeline test remeasures all
-        // outputs and enforces the unchanged gates in docs/performance.md.
+        // medium2x | 702806/0.980711   | 667758/0.980060   |1828413/0.981021
+        // large    | 469754/0.980388   | 459335/0.980233   |1193745/0.980588
+        // xlarge   | 971377/0.981363   | 873372/0.980129   |       -
+        // photo.jpg supplies edges <=1600; photo-large.jpg supplies larger
+        // edges at their actual sizes. Thumb variants crop first, never upscale.
+        // The pipeline test also checks P3 chart deltaE and AVIF/JXL ICC retention.
         match self {
-            Self::Avif => serde_json::json!({"Avif":{"quality":60,"speed":6,"hdr":false}}),
-            Self::Jxl => serde_json::json!({"Jxl":{"distance":1.0,"effort":7,"hdr":false}}),
+            Self::Avif => {
+                let quality = match long_edge {
+                    0..=1600 => 60,
+                    1601..=2048 => 86,
+                    2049..=2560 => 84,
+                    _ => 83,
+                };
+                serde_json::json!({"Avif":{"quality":quality,"speed":6,"hdr":false}})
+            }
+            Self::Jxl => {
+                let distance = match long_edge {
+                    0..=1600 => 1.0,
+                    1601..=2048 => 0.68,
+                    2049..=2560 => 0.81,
+                    _ => 0.98,
+                };
+                serde_json::json!({"Jxl":{"distance":distance,"effort":7,"hdr":false}})
+            }
             Self::Jpeg => {
-                serde_json::json!({"Jpeg":{"quality":90,"progressive":true,"chroma_subsampling":false,"hdr":false}})
+                let quality = if long_edge > 1600 { 98 } else { 90 };
+                serde_json::json!({"Jpeg":{"quality":quality,"progressive":true,"chroma_subsampling":false,"hdr":false}})
             }
         }
     }
@@ -155,7 +175,9 @@ impl VariantPlan {
         if outputs.is_empty() || outputs.len() > 32 {
             return Err(JobError::Fatal("invalid output count".into()));
         }
-        let bytes = serde_json::to_vec(&(1, self))
+        // Encoder policy revision 2 invalidates derivatives made with the old
+        // large-output settings, even when the configured sizes are unchanged.
+        let bytes = serde_json::to_vec(&(2, self))
             .map_err(|_| JobError::Fatal("invalid variant plan".into()))?;
         Ok((blake3::hash(&bytes).to_hex().to_string(), outputs))
     }

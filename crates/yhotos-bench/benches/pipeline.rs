@@ -26,9 +26,14 @@ fn fixture(dir: &Path) -> Option<PathBuf> {
     }
     None
 }
-fn main() -> Result<(), Box<dyn Error>> {
+fn selected_fixture() -> Result<(PathBuf, &'static str), Box<dyn Error>> {
     let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures");
-    let (input, prefix) = if let Some(input) = fixture(&fixtures.join("large")) {
+    let (input, prefix) = if let Some(input) = std::env::var_os("YHOTOS_BENCH_PIPELINE_FIXTURE") {
+        (
+            PathBuf::from(input).canonicalize()?,
+            "pipeline/selected_fixture",
+        )
+    } else if let Some(input) = fixture(&fixtures.join("large")) {
         (input, "pipeline")
     } else {
         eprintln!(
@@ -39,6 +44,15 @@ fn main() -> Result<(), Box<dyn Error>> {
             "pipeline/metadata_fixture",
         )
     };
+    let identity = yhotos_codec::identify(&input, &yhotos_codec::Limits::default())?;
+    eprintln!(
+        "Pipeline fixture: {}x{}; eight-photo batch time / 8 is per-photo throughput",
+        identity.width, identity.height
+    );
+    Ok((input, prefix))
+}
+fn main() -> Result<(), Box<dyn Error>> {
+    let (input, prefix) = selected_fixture()?;
     let runtime = tokio::runtime::Runtime::new()?;
     let _context = runtime.enter();
     let url = std::env::var("DATABASE_URL")?.into();

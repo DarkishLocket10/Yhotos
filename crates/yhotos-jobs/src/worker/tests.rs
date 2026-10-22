@@ -283,7 +283,7 @@ async fn caller_deadline_is_not_restarted_by_queue_cleanup(pool: PgPool) {
     let queue = Queue::with_config(
         pool.clone(),
         QueueConfig {
-            shutdown_grace: Duration::from_secs(2),
+            shutdown_grace: Duration::from_secs(5),
             ..QueueConfig::default()
         },
     )
@@ -302,11 +302,12 @@ async fn caller_deadline_is_not_restarted_by_queue_cleanup(pool: PgPool) {
         .await
         .unwrap()
         .unwrap();
-    // Much shorter than the configured two seconds: cleanup must retain this
-    // deadline instead of allocating another grace period after cancellation.
-    stop.send(tokio::time::Instant::now() + Duration::from_millis(200))
+    // Allow a release round trip through the test database tunnel, while still
+    // proving cleanup retains the caller's deadline instead of restarting the
+    // configured five-second grace period after cancellation.
+    stop.send(tokio::time::Instant::now() + Duration::from_secs(1))
         .unwrap();
-    tokio::time::timeout(Duration::from_millis(500), worker)
+    tokio::time::timeout(Duration::from_secs(2), worker)
         .await
         .unwrap()
         .unwrap()

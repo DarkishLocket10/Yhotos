@@ -107,7 +107,12 @@ an in-process parent verification barrier; production builds omit both hooks.
 Build the host in release mode, then run
 `cargo bench -p yhotos-bench --bench pipeline`. It reports single-photo and
 eight-photo parallel full ingests, resetting publication outside the measured
-region. It skips explicitly unless a fixture of at least 24 MP exists in
-`fixtures/large/`. The architecture's default sizes, 2x variants and encoder
+region. The 24 MP budget is skipped unless a fixture of at least 24 MP exists in
+`fixtures/large/`; a small metadata-fixture measurement is reported instead.
+Set `YHOTOS_BENCH_PIPELINE_FIXTURE=fixtures/images/photo-large.jpg` to measure
+the committed 3400x2627 photograph explicitly. This smaller source does not
+establish the 24/30 MP tower budget. Criterion reports the whole eight-photo
+batch; divide its time by eight for per-photo throughput.
+The architecture's default sizes, 2x variants and encoder
 rules expand to 23 files; the performance document's older 13-file count does
 not match that plan.

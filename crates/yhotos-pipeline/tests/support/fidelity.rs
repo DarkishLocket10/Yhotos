@@ -15,7 +15,7 @@ use yhotos_storage::{ContentHash, DerivativeKey};
 #[sqlx::test(migrations = "../yhotos-db/migrations")]
 async fn production_plan_meets_photograph_and_p3_fidelity_gates(pool: PgPool) {
     let mut failures = Vec::new();
-    for name in ["photo.jpg", "chart-p3.png"] {
+    for name in ["photo.jpg", "photo-large.jpg", "chart-p3.png"] {
         let (root, ingest, id) = setup(&pool, name).await;
         let start = std::time::Instant::now();
         ingest.ingest(id).await.unwrap();
@@ -33,6 +33,11 @@ async fn production_plan_meets_photograph_and_p3_fidelity_gates(pool: PgPool) {
                 .find(|v| row.variant == v.name || row.variant == format!("{}2x", v.name))
                 .unwrap();
             let edge = variant.long_edge * if row.variant.ends_with("2x") { 2 } else { 1 };
+            // Keep the existing photograph for smaller variants, but exercise
+            // medium2x/large/xlarge at their requested sizes, without upscaling.
+            if (name == "photo.jpg" && edge > 1600) || (name == "photo-large.jpg" && edge <= 1600) {
+                continue;
+            }
             let hash: ContentHash = row.hash.parse().unwrap();
             let output = ingest
                 .store
@@ -43,9 +48,17 @@ async fn production_plan_meets_photograph_and_p3_fidelity_gates(pool: PgPool) {
                     hdr: false,
                 })
                 .unwrap();
-            // Re-identify and decode every stored file, including identical-size
-            // 2x outputs and variants that cannot upscale the small fixtures.
+            // Re-identify and decode each measured file at full resolution.
             let output_id = identify(&output, &Limits::default()).unwrap();
+            if name != "chart-p3.png" {
+                assert_eq!(
+                    output_id.width.max(output_id.height),
+                    edge,
+                    "{name} {} {} was not measured at its true size",
+                    row.variant,
+                    row.format
+                );
+            }
             assert_eq!(
                 (output_id.width, output_id.height),
                 (
@@ -60,7 +73,16 @@ async fn production_plan_meets_photograph_and_p3_fidelity_gates(pool: PgPool) {
                     row.variant, row.format
                 );
                 if source_id.has_icc {
-                    assert_eq!(output_id.icc_desc, source_id.icc_desc);
+                    // JXL can canonicalize "Display P3" to "DisplayP3".
+                    // Require the same profile name apart from whitespace;
+                    // the independent Lab checks below still verify its gamut.
+                    let name = |description: Option<&str>| {
+                        description.map(|text| text.split_whitespace().collect::<String>())
+                    };
+                    assert_eq!(
+                        name(output_id.icc_desc.as_deref()),
+                        name(source_id.icc_desc.as_deref())
+                    );
                 }
             }
             let oracle = Oracle::new(&source, edge, variant.square);
@@ -71,8 +93,8 @@ async fn production_plan_meets_photograph_and_p3_fidelity_gates(pool: PgPool) {
                 (0.0, 0.0)
             };
             eprintln!(
-                "fidelity | {name} | {} | {} | {} | {score:.6} | {mean:.4} | {max:.4} |",
-                row.variant, row.format, row.bytes
+                "fidelity | {name} | {} | {} | {}x{} | {} | {score:.6} | {mean:.4} | {max:.4} |",
+                row.variant, row.format, row.width, row.height, row.bytes
             );
             if !(score.is_finite()
                 && score >= threshold(edge)

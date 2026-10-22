@@ -48,7 +48,7 @@ impl Ingest {
     ) -> Result<Report, JobError> {
         let request = serde_json::json!({
             "input":input, "out_dir":out, "limits":self.limits,
-            "outputs":outputs.iter().map(|o| serde_json::json!({"name":o.name,"resize":{"long_edge":o.long_edge,"square":o.square},"encode":o.format.encode(),"keep_icc":o.keep_icc})).collect::<Vec<_>>(),
+            "outputs":outputs.iter().map(|o| serde_json::json!({"name":o.name,"resize":{"long_edge":o.long_edge,"square":o.square},"encode":o.format.encode(o.long_edge),"keep_icc":o.keep_icc})).collect::<Vec<_>>(),
             "want":["identity","metadata","thumbhash","dominant_colors"]
         });
         let data = serde_json::to_vec(&request)

@@ -79,7 +79,13 @@ fn ready(server: &mut Server, address: SocketAddr) {
 fn actual_listeners_are_separate_and_environment_nesting_works() {
     let dir = tempfile::tempdir().unwrap();
     let public = address("127.0.0.1");
-    let admin = address("127.0.0.2");
+    // macOS does not configure the rest of 127/8 as loopback aliases. IPv6
+    // loopback still provides a distinct address without changing host setup.
+    let admin = address(if cfg!(target_os = "macos") {
+        "::1"
+    } else {
+        "127.0.0.2"
+    });
     let mut server = Server {
         child: command(dir.path(), public, admin).spawn().unwrap(),
     };

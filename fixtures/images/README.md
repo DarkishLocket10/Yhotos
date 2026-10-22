@@ -40,6 +40,11 @@ It exercises resampling without a third-party image or download.
 SSIM fixture (threshold 0.98 against linear `vips thumbnail` at 800px). The
 generator preserves this photograph; it cannot regenerate an owner's original.
 
+`photo-large.jpg` is the same maintainer-supplied photograph at 3400x2627,
+sRGB with stripped metadata (about 1 MB). The default-plan pipeline fidelity
+test uses it for long edges above 1600px, so medium2x, large and xlarge are
+measured at their requested sizes. Smaller variants still use `photo.jpg`.
+
 Two complete runs on libvips 8.18.7 produced identical SHA-256 manifests.
 Bitwise equivalence across *different* libvips/lcms/encoder versions is not
 claimed. Regeneration prints a manifest for comparison. Each generated image
