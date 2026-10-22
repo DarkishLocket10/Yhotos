@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT jsonb_build_object('id',id,'kind',kind,'attempts',attempts,'finished_at',finished_at,'error',error) AS \"job!\" FROM jobs WHERE id=$1 AND locked_at IS NULL FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "job!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "f6fac5b5e3e69eab9dbcdd0ae0f6b1684eeea6c338cdb428d129fc45f50c0665"
+}

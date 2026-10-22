@@ -466,6 +466,8 @@ async fn csrf_tokens_are_generated_validated_and_body_is_replayed() {
 async fn auth_posts_share_a_bucket_and_get_forms_use_the_cheap_bucket() {
     let state = state(false, 600);
     let config = Box::leak(Box::new(Config {
+        cloudflare_zone: None,
+        cloudflare_api_token: None,
         rate_limits: yhotos_config::RateLimits {
             auth_per_min: 1,
             ..state.config.rate_limits

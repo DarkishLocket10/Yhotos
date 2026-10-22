@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE jobs SET error='Image could not be processed. Retry after replacing the original.',finished_at=now(),attempts=max_attempts WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8cb7ab73fe33611f6e3922aaea70988aaf2d17d46278b50de1174988a7111dc2"
+}

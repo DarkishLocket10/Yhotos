@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT jsonb_build_object('photos',(SELECT coalesce(jsonb_agg(to_jsonb(x)),'[]') FROM (SELECT p.id,p.short_id,p.title,count(*) AS likes,jsonb_agg(jsonb_build_object('user',u.username,'link',l.share_link_id,'at',l.created_at)) AS likers FROM likes l JOIN photos p ON p.id=l.photo_id LEFT JOIN users u ON u.id=l.user_id GROUP BY p.id ORDER BY count(*) DESC LIMIT 200) x),'users',(SELECT coalesce(jsonb_agg(to_jsonb(x)),'[]') FROM (SELECT u.username,count(*) AS likes FROM likes l JOIN users u ON u.id=l.user_id GROUP BY u.id ORDER BY count(*) DESC) x)) AS \"page!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "page!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "86323b8824fda6256e5830dcc6d1c843cddbe97754157e96444727bea3716ae7"
+}

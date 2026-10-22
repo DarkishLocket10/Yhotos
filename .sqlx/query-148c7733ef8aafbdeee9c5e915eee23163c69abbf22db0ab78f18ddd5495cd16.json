@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO photo_tags(id,photo_id,tag_id,source) SELECT yhotos_uuid_v7(),id,$2,'manual' FROM unnest($1::uuid[]) p(id) ON CONFLICT(photo_id,tag_id) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "148c7733ef8aafbdeee9c5e915eee23163c69abbf22db0ab78f18ddd5495cd16"
+}

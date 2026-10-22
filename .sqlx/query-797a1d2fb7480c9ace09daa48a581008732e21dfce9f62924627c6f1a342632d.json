@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT jsonb_build_object('id',id,'target_kind',target_kind,'target_id',target_id,'allow_view',allow_view,'allow_download',allow_download,'allow_like',allow_like,'allow_flag',allow_flag,'expires_at',expires_at,'has_passphrase',passphrase_hash IS NOT NULL,'revoked_at',revoked_at) AS \"state!\" FROM share_links WHERE id=$1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "state!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "797a1d2fb7480c9ace09daa48a581008732e21dfce9f62924627c6f1a342632d"
+}

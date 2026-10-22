@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT coalesce(jsonb_agg(to_jsonb(p)||jsonb_build_object('flags',(SELECT jsonb_agg(jsonb_build_object('id',f.id,'flagger',coalesce(u.username::text,'Share link '||f.share_link_id::text),'at',f.created_at) ORDER BY f.created_at) FROM flags f LEFT JOIN users u ON u.id=f.user_id WHERE f.photo_id=p.id AND f.resolved_at IS NULL))),'[]') AS \"page!\" FROM photos p WHERE EXISTS(SELECT 1 FROM flags f WHERE f.photo_id=p.id AND f.resolved_at IS NULL)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "page!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "eaea63fbb8e68686a5904764cee11bcced36f164a26c62e767f45379bd53c0af"
+}

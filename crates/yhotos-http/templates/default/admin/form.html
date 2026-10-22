@@ -1,0 +1,20 @@
+<form method="post" action="{{ form.endpoint }}" class="admin-form" data-endpoint="{{ form.endpoint }}" data-method="{{ form.method }}">
+<fieldset><legend>{{ form.title }}</legend>
+{% if !form.op.is_empty() %}<input type="hidden" name="op" value="{{ form.op }}">{% endif %}
+{% for field in form.fields %}
+{% if field.kind == "hidden" || field.kind == "selection" %}
+<input type="hidden" name="{{ field.name }}" data-type="{{ field.kind }}" value="{{ field.value }}">
+{% else if field.label.is_empty() %}
+<input type="hidden" name="{{ field.name }}" data-type="optional" value="{{ field.value }}">
+{% else %}
+<label>{{ field.label }}
+{% if field.kind == "textarea" %}<textarea name="{{ field.name }}" data-type="text" maxlength="32768">{{ field.value }}</textarea>
+{% else if field.kind == "grants" || field.kind == "ids-select" || field.kind == "select" || field.kind == "optional-select" %}
+<select name="{{ field.name }}" data-type="{{ field.kind }}" {% if field.kind == "grants" || field.kind == "ids-select" %}multiple{% endif %}>
+{% for option in field.choices %}<option value="{{ option.value }}" {% if option.selected %}selected{% endif %}>{{ option.label }}</option>{% endfor %}
+</select>
+{% else if field.kind == "boolean" %}<input type="checkbox" name="{{ field.name }}" data-type="boolean" {% if field.checked %}checked{% endif %}>
+{% else %}<input type="{% if field.kind == "password" %}password{% else %}text{% endif %}" name="{{ field.name }}" data-type="{{ field.kind }}" value="{{ field.value }}" maxlength="32768" autocomplete="off">
+{% endif %}</label>
+{% endif %}{% endfor %}
+<button type="submit">{{ form.title }}</button></fieldset></form>

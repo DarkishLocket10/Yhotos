@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH expired AS (DELETE FROM original_trash WHERE expires_at<=now() RETURNING original_hash) INSERT INTO original_gc SELECT DISTINCT original_hash FROM expired ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "d7506d6e23149367ed42b83e5d3f9de8e2bb615d12d46357e774809dde8e8234"
+}

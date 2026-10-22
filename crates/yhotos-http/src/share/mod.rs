@@ -692,3 +692,11 @@ pub(crate) fn admin_routes() -> Router<AppState> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(feature = "admin")]
+pub(crate) fn admin_paths() -> Vec<&'static str> {
+    admin::route_table()
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect()
+}

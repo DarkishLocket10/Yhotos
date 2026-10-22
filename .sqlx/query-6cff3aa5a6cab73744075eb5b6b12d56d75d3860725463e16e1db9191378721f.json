@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT coalesce(jsonb_agg(to_jsonb(g)||jsonb_build_object('members',(SELECT coalesce(jsonb_agg(user_id),'[]') FROM user_groups WHERE group_id=g.id)) ORDER BY g.name),'[]') AS \"page!\" FROM groups g",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "page!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "6cff3aa5a6cab73744075eb5b6b12d56d75d3860725463e16e1db9191378721f"
+}

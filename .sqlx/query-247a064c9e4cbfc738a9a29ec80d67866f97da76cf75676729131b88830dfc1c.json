@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT (SELECT count(*) FROM users WHERE id=ANY($1) AND deleted_at IS NULL)+(SELECT count(*) FROM groups WHERE id=ANY($2)) AS \"count!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "247a064c9e4cbfc738a9a29ec80d67866f97da76cf75676729131b88830dfc1c"
+}

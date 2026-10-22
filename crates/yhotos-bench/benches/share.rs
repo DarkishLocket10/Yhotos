@@ -52,6 +52,8 @@ fn config(dir: &std::path::Path, url: SecretString) -> BenchResult<&'static Conf
     let peer = "127.0.0.1:1".parse()?;
     let key = Token::generate().hash(TokenKind::Session);
     Ok(Box::leak(Box::new(Config {
+        cloudflare_zone: None,
+        cloudflare_api_token: None,
         public_listen: peer,
         admin_listen: None,
         database_url_public: url,

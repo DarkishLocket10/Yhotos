@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO original_gc SELECT DISTINCT original_hash FROM photos WHERE id=ANY($1) ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8bf0989f7e6c86bd9a77ae644be1b5fa24dd2869d476441af7e01869cb7e96f5"
+}

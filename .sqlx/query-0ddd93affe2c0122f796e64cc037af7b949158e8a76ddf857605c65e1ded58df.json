@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT jsonb_build_object('users',(SELECT coalesce(jsonb_agg(jsonb_build_object('id',id,'username',username)),'[]') FROM users WHERE deleted_at IS NULL),'groups',(SELECT coalesce(jsonb_agg(jsonb_build_object('id',id,'name',name)),'[]') FROM groups),'photos',(SELECT coalesce(jsonb_agg(jsonb_build_object('id',id,'album_id',album_id,'title',title)),'[]') FROM photos WHERE deleted_at IS NULL),'places',(SELECT coalesce(jsonb_agg(jsonb_build_object('id',id,'name',name)),'[]') FROM places)) AS \"choices!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "choices!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "0ddd93affe2c0122f796e64cc037af7b949158e8a76ddf857605c65e1ded58df"
+}

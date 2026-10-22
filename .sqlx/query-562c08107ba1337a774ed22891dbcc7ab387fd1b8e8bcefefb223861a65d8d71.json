@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT jsonb_build_object('depth',(SELECT coalesce(jsonb_agg(to_jsonb(x)),'[]') FROM (SELECT kind,count(*) FROM jobs WHERE finished_at IS NULL GROUP BY kind) x),'jobs',(SELECT coalesce(jsonb_agg(to_jsonb(x)),'[]') FROM (SELECT id,kind,attempts,max_attempts,locked_at,locked_by,finished_at,error,run_after FROM jobs ORDER BY created_at DESC LIMIT 200) x)) AS \"page!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "page!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "562c08107ba1337a774ed22891dbcc7ab387fd1b8e8bcefefb223861a65d8d71"
+}

@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT original_hash FROM original_gc ORDER BY original_hash",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "original_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "original_gc",
+            "name": "original_hash"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "73c43e631d6e9083c3d624255e3ed8ec22f20cd96c8d209f895656825d0d5f89"
+}

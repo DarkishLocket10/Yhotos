@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT jsonb_build_object('album',to_jsonb(a),'photos',(SELECT coalesce(jsonb_agg(jsonb_build_object('id',p.id,'short_id',p.short_id,'title',p.title,'visibility',p.visibility,'kind',p.kind,'is_hdr',p.is_hdr,'status',p.status,'deleted_at',p.deleted_at,'preview',(SELECT '/i/'||d.hash||'/'||d.variant||'.'||d.format FROM derivatives d WHERE d.photo_id=p.id AND NOT hdr ORDER BY (variant='thumb') DESC LIMIT 1)) ORDER BY p.sort_order,p.id),'[]') FROM photos p WHERE p.album_id=a.id)) AS \"page!\" FROM albums a WHERE id=$1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "page!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "d4d9889a66bf3510aa22632124ee88ae78138bc84a2bf0d3a18d048819fc124a"
+}

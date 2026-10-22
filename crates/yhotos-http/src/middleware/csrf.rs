@@ -91,6 +91,14 @@ pub(crate) async fn protect(
     request: Request,
     next: Next,
 ) -> Response {
+    if !request
+        .extensions()
+        .get::<crate::auth::Audience>()
+        .is_some_and(|a| a.0)
+        && (request.uri().path() == "/admin" || request.uri().path().starts_with("/admin/"))
+    {
+        return HttpError::NotFound.into_response();
+    }
     let state_changing = matches!(
         *request.method(),
         Method::POST | Method::PUT | Method::PATCH | Method::DELETE

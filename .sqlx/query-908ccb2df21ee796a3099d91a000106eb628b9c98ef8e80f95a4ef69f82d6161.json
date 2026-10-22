@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE photos SET deleted_at=CASE WHEN $2 THEN NULL ELSE coalesce(deleted_at,now()) END WHERE id=ANY($1) AND (NOT $2 OR deleted_at=$3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Bool",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "908ccb2df21ee796a3099d91a000106eb628b9c98ef8e80f95a4ef69f82d6161"
+}

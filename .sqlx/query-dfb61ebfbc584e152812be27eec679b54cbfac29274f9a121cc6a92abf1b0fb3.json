@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT coalesce(jsonb_agg(to_jsonb(p)||jsonb_build_object('grants',(SELECT coalesce(jsonb_agg(jsonb_build_object('kind',g.principal_kind,'id',g.principal_id)),'[]') FROM photo_grants g WHERE g.photo_id=p.id),'tags',(SELECT coalesce(jsonb_agg(t.name),'[]') FROM photo_tags pt JOIN tags t ON t.id=pt.tag_id WHERE pt.photo_id=p.id)) ORDER BY p.id),'[]') AS \"state!\" FROM photos p WHERE p.id=ANY($1)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "state!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "dfb61ebfbc584e152812be27eec679b54cbfac29274f9a121cc6a92abf1b0fb3"
+}

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO tags(id,slug,name,source) VALUES($1,'cafe','Café','manual')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "63afe5631cfbfa8b7e1e673958d385c38e5b7a25c64285c7e7e042bf66101890"
+}

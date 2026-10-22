@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT jsonb_build_object('albums',(SELECT coalesce(jsonb_agg(to_jsonb(a)),'[]') FROM albums a WHERE deleted_at IS NOT NULL),'photos',(SELECT coalesce(jsonb_agg(to_jsonb(p)),'[]') FROM photos p WHERE deleted_at IS NOT NULL),'originals',(SELECT coalesce(jsonb_agg(to_jsonb(t)),'[]') FROM original_trash t)) AS \"page!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "page!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "90029ba425b571d144b62f8230641e1da6107a1316fa4b4ea3527a9ebcfca938"
+}

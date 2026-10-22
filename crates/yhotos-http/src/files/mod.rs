@@ -1,6 +1,6 @@
 //! Authorized immutable file serving. Metadata (including misses) expires after
-//! 60 seconds; admin visibility/grant changes take effect at origin within that
-//! TTL. Edge-cached public files additionally need the architecture's edge purge.
+//! 60 seconds. Administrative mutations advance cache generations locally and
+//! through committed database notifications; edge copies use cache-tag purges.
 //! Axum/Hyper expose no safe file/sendfile body; reads use bounded 256 KiB chunks.
 
 pub mod range;
@@ -35,7 +35,8 @@ const BUFFER: usize = 256 * 1024;
 /// Bounded metadata caching by validated lookup, with no principal-specific responses.
 #[derive(Clone)]
 pub struct FileCache {
-    rows: Cache<LookupKey, Arc<Vec<OwnerRow>>>,
+    rows: Cache<(u64, u64, LookupKey), Arc<Vec<OwnerRow>>>,
+    revision: Arc<std::sync::atomic::AtomicU64>,
     streams: Arc<streams::Streams>,
 }
 impl Default for FileCache {
@@ -52,12 +53,15 @@ impl FileCache {
                 .max_capacity(50_000)
                 .time_to_live(Duration::from_secs(60))
                 .build(),
+            revision: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             streams: streams::Streams::new(per_ip_stream_cap, global_stream_cap),
         }
     }
     /// Invalidates origin metadata after an admin mutation, or for cold-path measurement.
-    /// In-flight lookups and already edge-cached responses are not revoked by this call.
+    /// In-flight results cannot repopulate the current revision. Edge purges are separate.
     pub fn invalidate_all(&self) {
+        self.revision
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.rows.invalidate_all();
     }
 }
@@ -286,6 +290,17 @@ async fn serve(
         })?;
     let etag = format!("\"{}\"", selector.hash);
     let mut response = file_response(owner, &selector, public, &request, &etag)?;
+    // Every access-changing action purges visibility, including shared-hash owners.
+    // Keep the header bounded even when thousands of copies reference these bytes.
+    let mut tags = format!("visibility,photo:{}", owner.photo_id);
+    if let Some(album) = owner.albums.first() {
+        use std::fmt::Write;
+        let _ = write!(tags, ",album:{}", album.id);
+    }
+    response.headers_mut().insert(
+        "cache-tag",
+        HeaderValue::from_str(&tags).map_err(|_| HttpError::NotFound)?,
+    );
     if not_modified(request.headers(), &etag) {
         *response.status_mut() = StatusCode::NOT_MODIFIED;
         return Ok(response);
@@ -323,10 +338,13 @@ async fn serve(
     Ok(response)
 }
 async fn lookup(state: &AppState, selector: &Selector) -> Result<Arc<Vec<OwnerRow>>, HttpError> {
-    state
-        .files
-        .rows
-        .try_get_with(selector.lookup_key(), async {
+    loop {
+        let local = state
+            .files
+            .revision
+            .load(std::sync::atomic::Ordering::SeqCst);
+        let epoch = state.auth.as_ref().map_or(0, |auth| auth.shares.epoch());
+        let load = async {
             let mut conn = state
                 .pool
                 .acquire()
@@ -348,10 +366,29 @@ async fn lookup(state: &AppState, selector: &Selector) -> Result<Arc<Vec<OwnerRo
                 Area::Video => derivatives::lookup_video(&mut conn, &hash).await?,
             };
             Ok::<_, yhotos_db::DbError>(Arc::new(rows))
-        })
-        .await
-        .map_err(|error| HttpError::Internal(anyhow::anyhow!("file lookup failed: {error}")))
+        };
+        let rows = if state.auth.as_ref().is_some_and(|a| !a.caching()) {
+            load.await.map_err(|_| HttpError::NotFound)?
+        } else {
+            state
+                .files
+                .rows
+                .try_get_with((local, epoch, selector.lookup_key()), load)
+                .await
+                .map_err(|_| HttpError::Internal(anyhow::anyhow!("file lookup failed")))?
+        };
+        if local
+            == state
+                .files
+                .revision
+                .load(std::sync::atomic::Ordering::SeqCst)
+            && epoch == state.auth.as_ref().map_or(0, |auth| auth.shares.epoch())
+        {
+            return Ok(rows);
+        }
+    }
 }
+
 fn file_response(
     owner: &OwnerRow,
     selector: &Selector,

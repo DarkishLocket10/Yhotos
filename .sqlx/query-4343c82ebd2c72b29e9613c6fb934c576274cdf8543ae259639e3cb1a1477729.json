@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT to_jsonb(p)||jsonb_build_object('derivatives',(SELECT coalesce(jsonb_agg(to_jsonb(d)),'[]') FROM derivatives d WHERE photo_id=p.id),'tags',(SELECT coalesce(jsonb_agg(t.name),'[]') FROM photo_tags pt JOIN tags t ON t.id=pt.tag_id WHERE pt.photo_id=p.id),'grants',(SELECT coalesce(jsonb_agg(jsonb_build_object('kind',g.principal_kind,'id',g.principal_id)),'[]') FROM photo_grants g WHERE photo_id=p.id)) AS \"page!\" FROM photos p WHERE id=$1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "page!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "4343c82ebd2c72b29e9613c6fb934c576274cdf8543ae259639e3cb1a1477729"
+}

@@ -20,7 +20,7 @@ expression: html
 <meta property="og:image:height" content="480">
 <meta property="og:type" content="website">
 </head>
-<body><header class="site-header"><a href="/">Yhotos</a><span>Photo gallery</span></header><main><nav aria-label="Breadcrumb"><ol class="breadcrumbs"><li><a href="/">Home</a></li><li><a href="/a/shared">Shared &#60;album&#62;</a></li></ol></nav><h1>Shared &#60;album&#62;</h1><p></p>
+<body><header class="site-header"><a href="/">Yhotos</a><span>Photo gallery</span></header><main><nav aria-label="Breadcrumb"><ol class="breadcrumbs"><li><a href="/">Home</a></li><li><a href="/a/shared">Shared &#60;album&#62;</a></li></ol></nav><h1>Shared &#60;album&#62;</h1><div class="description"></div>
 
 <form method="get" class="sort-form"><label for="sort">Sort photos</label><select name="sort" id="sort">
 <option value="taken">Date taken</option><option value="posted">Date posted</option><option value="name">Name</option><option value="manual" selected>Manual order</option></select><button type="submit">Apply sorting</button></form>

@@ -42,7 +42,7 @@ jobs:
           npm ci
           npm run build
       - name: Test bundled islands
-        run: node --test crates/yhotos-http/tests/passkey_redirect.mjs crates/yhotos-http/tests/upload.mjs
+        run: node --test crates/yhotos-http/tests/passkey_redirect.mjs crates/yhotos-http/tests/upload.mjs crates/yhotos-http/tests/admin_library/islands.mjs
 
   test:
     runs-on: ubuntu-24.04

@@ -168,8 +168,25 @@ pub(crate) async fn album(
         options.sort(),
     )
     .await
-    .map_err(db_error)?
-    .ok_or(HttpError::NotFound)?;
+    .map_err(db_error)?;
+    let Some(row) = row else {
+        let old_path = format!(
+            "/a/{}",
+            path.iter().map(Slug::as_str).collect::<Vec<_>>().join("/")
+        );
+        let destination = redirects::destination(&mut conn, &identity.principal(), &[old_path])
+            .await
+            .map_err(db_error)?
+            .ok_or(HttpError::NotFound)?;
+        return Ok((
+            StatusCode::MOVED_PERMANENTLY,
+            [
+                (header::LOCATION, destination),
+                (header::CACHE_CONTROL, "public, max-age=60".to_owned()),
+            ],
+        )
+            .into_response());
+    };
     let nonce = nonce.to_string();
     let html = render_album(&row, number, options.sort(), &context(&nonce, &state)?)?;
     cached(

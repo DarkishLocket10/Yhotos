@@ -271,6 +271,13 @@ pub async fn get_by_short_id(
     Ok(sqlx::query_as!(PhotoRow,r#"SELECT id as "id: _", created_at, updated_at, short_id as "short_id: _", album_id as "album_id: _", title, description, taken_at, posted_at, sort_order, visibility as "visibility: _", original_hash, original_name, original_bytes, mime, kind as "kind: _", width, height, orientation, is_hdr, has_gain_map, icc_name, camera_make, camera_model, lens, focal_mm, aperture, shutter, iso, gps_lat, gps_lon, place_id, dominant_colors, placeholder, deleted_at FROM photos WHERE short_id=$1"#, short as _).fetch_optional(conn).await?)
 }
 
+/// Fetches a photo by typed identity, including trash, for administrative operations.
+/// # Errors
+/// Returns database or invalid stored metadata errors.
+pub async fn get_by_id(conn: &mut PgConnection, id: PhotoId) -> Result<Option<PhotoRow>, DbError> {
+    Ok(sqlx::query_as!(PhotoRow,r#"SELECT id as "id: _", created_at, updated_at, short_id as "short_id: _", album_id as "album_id: _", title, description, taken_at, posted_at, sort_order, visibility as "visibility: _", original_hash, original_name, original_bytes, mime, kind as "kind: _", width, height, orientation, is_hdr, has_gain_map, icc_name, camera_make, camera_model, lens, focal_mm, aperture, shutter, iso, gps_lat, gps_lon, place_id, dominant_colors, placeholder, deleted_at FROM photos WHERE id=$1"#, id as _).fetch_optional(conn).await?)
+}
+
 /// Returns every owner of a content hash; the caller must authorize each photo.
 ///
 /// # Errors
@@ -319,7 +326,7 @@ pub async fn update_metadata(
     id: PhotoId,
     metadata: &PhotoMetadata,
 ) -> Result<u64, DbError> {
-    Ok(sqlx::query!(r#"UPDATE photos SET title=$2,description=$3,taken_at=$4,width=$5,height=$6,orientation=$7,is_hdr=$8,has_gain_map=$9,icc_name=$10,camera_make=$11,camera_model=$12,lens=$13,focal_mm=$14,aperture=$15,shutter=$16,iso=$17,gps_lat=$18,gps_lon=$19,place_id=$20,dominant_colors=$21,placeholder=$22 WHERE id=$1"#, id as _, metadata.title, metadata.description, metadata.taken_at, metadata.width, metadata.height, metadata.orientation, metadata.is_hdr, metadata.has_gain_map, metadata.icc_name, metadata.camera_make, metadata.camera_model, metadata.lens, metadata.focal_mm, metadata.aperture, metadata.shutter, metadata.iso, metadata.gps_lat, metadata.gps_lon, metadata.place_id, &metadata.dominant_colors, metadata.placeholder).execute(conn).await?.rows_affected())
+    Ok(sqlx::query!(r#"UPDATE photos SET title=$2,description=$3,taken_at=coalesce(taken_at_override,$4),width=$5,height=$6,orientation=$7,is_hdr=$8,has_gain_map=$9,icc_name=$10,camera_make=$11,camera_model=$12,lens=$13,focal_mm=$14,aperture=$15,shutter=$16,iso=$17,gps_lat=CASE WHEN gps_overridden THEN gps_lat ELSE $18 END,gps_lon=CASE WHEN gps_overridden THEN gps_lon ELSE $19 END,place_id=$20,dominant_colors=$21,placeholder=$22 WHERE id=$1"#, id as _, metadata.title, metadata.description, metadata.taken_at, metadata.width, metadata.height, metadata.orientation, metadata.is_hdr, metadata.has_gain_map, metadata.icc_name, metadata.camera_make, metadata.camera_model, metadata.lens, metadata.focal_mm, metadata.aperture, metadata.shutter, metadata.iso, metadata.gps_lat, metadata.gps_lon, metadata.place_id, &metadata.dominant_colors, metadata.placeholder).execute(conn).await?.rows_affected())
 }
 
 /// Moves the supplied photos together in one statement, preserving their URLs.

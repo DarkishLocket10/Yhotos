@@ -166,6 +166,74 @@ impl Ingest {
                     .map_err(|_| retry("upload cleanup failed"))?;
             }
         }
+        self.collect_library_trash().await?;
+        Ok(())
+    }
+    async fn collect_library_trash(&self) -> Result<(), JobError> {
+        // Storage performs the final age and reference check under the publication lock.
+        // A day exceeds every upload deadline, so a fresh publication always has time to commit.
+        let runtime = tokio::runtime::Handle::current();
+        let pool = self.db.clone();
+        self.store
+            .gc(
+                move |hash, _| {
+                    runtime.block_on(async {
+                        match pool.acquire().await {
+                            Ok(mut c) => {
+                                yhotos_db::library::derivative_referenced(&mut c, &hash.to_string())
+                                    .await
+                                    .unwrap_or(true)
+                            }
+                            Err(_) => true,
+                        }
+                    })
+                },
+                Duration::from_hours(24),
+                Duration::from_hours(720),
+            )
+            .await
+            .map_err(|_| retry("storage cleanup failed"))?;
+        let mut conn = self
+            .db
+            .acquire()
+            .await
+            .map_err(|_| retry("original cleanup failed"))?;
+        let candidates = yhotos_db::library::gc_candidates(&mut conn)
+            .await
+            .map_err(|_| retry("original cleanup failed"))?;
+        drop(conn);
+        for candidate in candidates {
+            let hash = candidate
+                .parse()
+                .map_err(|_| retry("invalid original identity"))?;
+            let pool = self.db.clone();
+            let runtime = tokio::runtime::Handle::current();
+            let checked = candidate.clone();
+            if self
+                .store
+                .collect_original(hash, Duration::from_hours(24), move || {
+                    runtime.block_on(async {
+                        match pool.acquire().await {
+                            Ok(mut c) => yhotos_db::library::original_referenced(&mut c, &checked)
+                                .await
+                                .unwrap_or(true),
+                            Err(_) => true,
+                        }
+                    })
+                })
+                .await
+                .map_err(|_| retry("original cleanup failed"))?
+            {
+                let mut conn = self
+                    .db
+                    .acquire()
+                    .await
+                    .map_err(|_| retry("original cleanup failed"))?;
+                yhotos_db::library::gc_done(&mut conn, &candidate)
+                    .await
+                    .map_err(|_| retry("original cleanup failed"))?;
+            }
+        }
         Ok(())
     }
 }

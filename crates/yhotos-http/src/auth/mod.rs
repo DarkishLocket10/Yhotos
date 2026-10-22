@@ -143,6 +143,11 @@ impl Auth {
     pub fn invalidate(&self, id: uuid::Uuid) {
         self.evict(Some(&sessions::Invalidation::Session(id)));
     }
+    #[cfg(feature = "admin")]
+    /// Drops local session and share snapshots after administrative access changes.
+    pub(crate) fn invalidate_all(&self) {
+        self.evict(None);
+    }
     pub(crate) fn invalidate_user(&self, id: yhotos_core::UserId) {
         self.evict(Some(&sessions::Invalidation::User(id)));
     }
@@ -161,7 +166,7 @@ impl Auth {
                 Some(sessions::Invalidation::Session(id)) => s.session.id == *id,
                 Some(sessions::Invalidation::User(id)) => s.session.user_id == *id,
                 Some(sessions::Invalidation::Link(_)) => false,
-                None => true,
+                Some(sessions::Invalidation::Library) | None => true,
             });
             if matches {
                 entry.version = entry.version.wrapping_add(1);
@@ -344,55 +349,63 @@ impl Audience {
         .map_err(|e| HttpError::Internal(e.into()))
     }
 }
-pub(crate) fn routes(a: Audience) -> Router<AppState> {
+pub(crate) fn route_table(a: Audience) -> Vec<(String, axum::routing::MethodRouter<AppState>)> {
     let prefix = if a.0 { "/admin" } else { "" };
-    Router::new()
-        .route(
-            &format!("{prefix}/login"),
+    vec![
+        (
+            format!("{prefix}/login"),
             get(login::form).post(login::password),
-        )
-        .route(
-            &format!("{prefix}/login/mfa"),
+        ),
+        (
+            format!("{prefix}/login/mfa"),
             get(login::mfa_form).post(login::mfa_finish),
-        )
-        .route(
-            &format!("{prefix}/login/mfa/passkey/start"),
+        ),
+        (
+            format!("{prefix}/login/mfa/passkey/start"),
             post(login::passkey_start),
-        )
-        .route(
-            &format!("{prefix}/login/mfa/passkey/finish"),
+        ),
+        (
+            format!("{prefix}/login/mfa/passkey/finish"),
             post(login::passkey_finish),
-        )
-        .route(&format!("{prefix}/logout"), post(security::logout))
-        .route(
-            &format!("{prefix}/u/password"),
+        ),
+        (format!("{prefix}/logout"), post(security::logout)),
+        (
+            format!("{prefix}/u/password"),
             get(security::password_form).post(security::password),
-        )
-        .route(&format!("{prefix}/u/security"), get(security::index))
-        .route(
-            &format!("{prefix}/u/security/reauth"),
+        ),
+        (format!("{prefix}/u/security"), get(security::index)),
+        (
+            format!("{prefix}/u/security/reauth"),
             post(security::reauth),
-        )
-        .route(
-            &format!("{prefix}/u/security/sessions/{{id}}/revoke"),
+        ),
+        (
+            format!("{prefix}/u/security/sessions/{{id}}/revoke"),
             post(security::revoke),
-        )
-        .route(
-            &format!("{prefix}/u/security/totp"),
+        ),
+        (
+            format!("{prefix}/u/security/totp"),
             get(security::totp_form).post(security::totp_finish),
-        )
-        .route(
-            &format!("{prefix}/u/security/passkey/start"),
+        ),
+        (
+            format!("{prefix}/u/security/passkey/start"),
             post(security::passkey_start),
-        )
-        .route(
-            &format!("{prefix}/u/security/passkey/finish"),
+        ),
+        (
+            format!("{prefix}/u/security/passkey/finish"),
             post(security::passkey_finish),
-        )
-        .route(
-            &format!("{prefix}/u/security/mfa/{{id}}/remove"),
+        ),
+        (
+            format!("{prefix}/u/security/mfa/{{id}}/remove"),
             post(security::remove),
-        )
+        ),
+    ]
+}
+pub(crate) fn routes(a: Audience) -> Router<AppState> {
+    route_table(a)
+        .into_iter()
+        .fold(Router::new(), |router, (path, methods)| {
+            router.route(&path, methods)
+        })
 }
 pub(crate) fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     let mut found = None;

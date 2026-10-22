@@ -20,7 +20,8 @@ expression: "render_album(&anonymous, 1, PageSort::Taken, &context()).unwrap()"
 <meta property="og:image:height" content="1365">
 <meta property="og:type" content="website">
 </head>
-<body><header class="site-header"><a href="/">Yhotos</a><span>Photo gallery</span></header><main><nav aria-label="Breadcrumb"><ol class="breadcrumbs"><li><a href="/">Home</a></li><li><a href="/a/gallery">Fixture gallery</a></li></ol></nav><h1>Fixture gallery</h1><p>Photos from the garden</p>
+<body><header class="site-header"><a href="/">Yhotos</a><span>Photo gallery</span></header><main><nav aria-label="Breadcrumb"><ol class="breadcrumbs"><li><a href="/">Home</a></li><li><a href="/a/gallery">Fixture gallery</a></li></ol></nav><h1>Fixture gallery</h1><div class="description"><p>Photos from the garden</p>
+</div>
 
 <form method="get" class="sort-form"><label for="sort">Sort photos</label><select name="sort" id="sort">
 <option value="taken" selected>Date taken</option><option value="posted">Date posted</option><option value="name">Name</option><option value="manual">Manual order</option></select><button type="submit">Apply sorting</button></form>

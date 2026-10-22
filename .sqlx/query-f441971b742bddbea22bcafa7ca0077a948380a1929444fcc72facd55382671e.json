@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT jsonb_build_object(\n          'photos',(SELECT count(*) FROM photos WHERE deleted_at IS NULL),'albums',(SELECT count(*) FROM albums WHERE deleted_at IS NULL),\n          'pending ingests',(SELECT count(*) FROM photos WHERE status='pending'),'failed ingests',(SELECT count(*) FROM photos WHERE status='failed'),\n          'open flags',(SELECT count(*) FROM flags WHERE resolved_at IS NULL),'links expiring soon',(SELECT count(*) FROM share_links WHERE revoked_at IS NULL AND expires_at BETWEEN now() AND now()+interval '7 days'),\n          'activity',(SELECT coalesce(jsonb_agg(to_jsonb(a)),'[]') FROM (SELECT at,action,target_kind,target_id FROM audit_log ORDER BY at DESC LIMIT 20) a)) AS \"page!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "page!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "f441971b742bddbea22bcafa7ca0077a948380a1929444fcc72facd55382671e"
+}

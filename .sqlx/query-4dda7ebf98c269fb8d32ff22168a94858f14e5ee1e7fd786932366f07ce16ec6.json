@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO photo_grants(id,photo_id,principal_kind,principal_id) SELECT yhotos_uuid_v7(),m.target,g.principal_kind,g.principal_id FROM photo_grants g JOIN unnest($1::uuid[],$2::uuid[]) m(source,target) ON g.photo_id=m.source",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4dda7ebf98c269fb8d32ff22168a94858f14e5ee1e7fd786932366f07ce16ec6"
+}

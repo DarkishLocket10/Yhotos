@@ -25,6 +25,8 @@ todo = "deny"
 unimplemented = "deny"
 
 [workspace.dependencies]
+pulldown-cmark = { version = "=0.13.5", default-features = false, features = ["html"] }
+ammonia = "=4.2.4"
 tokio = { version = "=1.54.1", features = ["macros", "rt-multi-thread"] }
 axum = "=0.8.9"
 tower = "=0.5.3"
@@ -58,7 +60,7 @@ chacha20poly1305 = { version = "=0.11.0", features = ["zeroize"] }
 figment = { version = "=0.10.19", features = ["env"] }
 url = { version = "=2.5.8", features = ["serde"] }
 rust-embed = { version = "=8.13.0", features = ["debug-embed"] }
-askama = { version = "=0.16.1", default-features = false, features = ["derive", "std"] }
+askama = { version = "=0.16.1", default-features = false, features = ["derive", "std", "urlencode"] }
 dashmap = "=6.1.0"
 mimalloc = "=0.1.52"
 deunicode = "=1.6.2"

@@ -2617,3 +2617,7 @@ async fn overlapping_passkey_ceremonies_cannot_roll_back_the_counter(pool: PgPoo
         );
     }
 }
+
+#[cfg(feature = "admin")]
+#[path = "admin_library/mod.rs"]
+mod admin_library;

@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT jsonb_build_object('id',id,'username',username,'disabled_at',disabled_at,'deleted_at',deleted_at,'must_change_password',must_change_password,'groups',(SELECT coalesce(jsonb_agg(group_id),'[]') FROM user_groups WHERE user_id=u.id)) AS \"state!\" FROM users u WHERE id=$1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "state!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "c67bac657e3f1603529484ac5fa95aa4ee8113a0468510d7c9f97182770da9ed"
+}

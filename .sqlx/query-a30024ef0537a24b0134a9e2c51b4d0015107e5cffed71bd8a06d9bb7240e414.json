@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE photos p SET sort_order=(o.n-1)::int FROM unnest($1::uuid[]) WITH ORDINALITY o(id,n) WHERE p.id=o.id AND p.album_id=$2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a30024ef0537a24b0134a9e2c51b4d0015107e5cffed71bd8a06d9bb7240e414"
+}
