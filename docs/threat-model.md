@@ -103,6 +103,7 @@ Each entry: threat, then the control, then where it lives in code so reviewers c
 - Cloudflare sees traffic in the clear and could be compromised or compelled; accepted for the bandwidth and DDoS benefits.
 - A full admin device compromise (with Tailscale and passkeys) defeats admin protections; mitigated by audit log and session revocation, not prevented.
 - Zero-days in libvips/libheif/libraw/ffmpeg; mitigated by the sandbox so the blast radius is one job.
+- RAW decoding through `rawler`. RAW files reach the decoder only through the admin upload path, which is reachable only over Tailscale, so a hostile RAW requires an admin to upload it. `yhotos-codec` validates the container structures it can check cheaply (TIFF IFD entries, MakerNote layouts, embedded TIFF blobs, JPEG SOF dimensions, preview extents) before calling `rawler`. Allocation behaviour inside `rawler`'s own parsers beyond those structures is not chased further: it is contained by the codec host sandbox (`RLIMIT_AS`, CPU limit, seccomp, separate process), and the worker records a child abort as a failed photo. Reviews should flag a RAW parsing gap only when it escapes the sandbox, affects the server or worker process, or is reachable without admin upload.
 - Legitimate share-link holders can screenshot or re-share; no DRM is attempted.
 
 ## 6. Verification
