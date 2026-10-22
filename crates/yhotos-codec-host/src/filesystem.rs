@@ -8,6 +8,11 @@ use std::path::Path;
 
 pub(super) fn restrict(input: &Path, out: &Path) -> Result<(), Failure> {
     let unavailable = || Failure(3, "filesystem sandbox unavailable");
+    // An input inside the writable output directory is an invalid request, not a
+    // missing sandbox facility, so it is rejected (2) rather than retryable (3).
+    if input.starts_with(out) {
+        return Err(Failure(2, "input inside output directory"));
+    }
     // Landlock applies to this thread and future children. No pre-existing native
     // thread may retain ambient access after trusted plugin initialization.
     if std::fs::read_dir("/proc/self/task")
@@ -17,7 +22,6 @@ pub(super) fn restrict(input: &Path, out: &Path) -> Result<(), Failure> {
         })
         .map_err(|_| unavailable())?
         != 1
-        || input.starts_with(out)
     {
         return Err(unavailable());
     }
