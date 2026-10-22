@@ -117,8 +117,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             let mut total=Duration::ZERO;
             for _ in 0..iterations {
                 let result=runtime.block_on(async {
-                    // Reset publication outside timing so the benchmark never measures a no-op.
-                    for id in ids.iter().take(parallelism) {sqlx::query!("UPDATE photos SET status='pending',derivative_plan=NULL WHERE id=$1",id.0).execute(db.pool()).await?;}
+                    // Advance the same-hash generation outside timing so publication
+                    // exercises replacement fencing and never measures a no-op.
+                    for id in ids.iter().take(parallelism) {sqlx::query!("UPDATE photos SET status='pending',derivative_plan=NULL,generation=generation+1 WHERE id=$1",id.0).execute(db.pool()).await?;}
                     let start=Instant::now();
                     let mut tasks=tokio::task::JoinSet::new();
                     for id in ids.iter().take(parallelism).copied() {let ingest=ingest.clone();tasks.spawn(async move{ingest.ingest(id).await});}

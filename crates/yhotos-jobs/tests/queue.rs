@@ -16,6 +16,7 @@ fn ingest() -> Job {
     Job::Ingest {
         photo_id: PhotoId::new(),
         original_hash: "a".repeat(64).parse().unwrap(),
+        generation: 0,
     }
 }
 fn queue(pool: PgPool) -> Queue {

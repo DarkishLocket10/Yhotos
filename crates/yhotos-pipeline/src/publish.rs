@@ -163,6 +163,7 @@ impl Ingest {
         &self,
         photo: PhotoId,
         original: &str,
+        generation: i64,
         marker: &str,
         report: &Report,
         plans: &[Planned],
@@ -240,7 +241,7 @@ impl Ingest {
             .begin()
             .await
             .map_err(|_| retry("ingest transaction failed"))?;
-        let changed=sqlx::query!("UPDATE photos SET width=$3,height=$4,orientation=$5,is_hdr=$6,has_gain_map=$6,icc_name=$7,camera_make=$8,camera_model=$9,lens=$10,focal_mm=$11,aperture=$12,shutter=$13,iso=$14,gps_lat=$15,gps_lon=$16,taken_at=coalesce($17,taken_at),dominant_colors=$18,placeholder=$19,kind=CASE WHEN $20 THEN 'raw'::media_kind ELSE kind END,status='ready',failure_reason=NULL,derivative_plan=$21,taken_at_local=coalesce($22,taken_at_local) WHERE id=$1 AND original_hash=$2 AND deleted_at IS NULL", photo.0,original,width,height,i32::from(id.orientation),id.has_gain_map,id.icc_desc,m.make,m.model,m.lens,m.focal_mm,m.aperture,shutter,iso,lat,lon,taken,&colors,placeholder,raw,marker,taken_local).execute(&mut *tx).await.map_err(|_|retry("photo publication failed"))?.rows_affected();
+        let changed=sqlx::query!("UPDATE photos SET width=$3,height=$4,orientation=1,original_orientation=$5,is_hdr=$6,has_gain_map=$6,icc_name=$7,camera_make=$8,camera_model=$9,lens=$10,focal_mm=$11,aperture=$12,shutter=$13,iso=$14,gps_lat=$15,gps_lon=$16,taken_at=$17,dominant_colors=$18,placeholder=$19,kind=CASE WHEN $20 THEN 'raw'::media_kind ELSE kind END,status='ready',failure_reason=NULL,derivative_plan=$21,taken_at_local=$22 WHERE id=$1 AND original_hash=$2 AND generation=$23 AND deleted_at IS NULL", photo.0,original,width,height,i32::from(id.orientation),id.has_gain_map,id.icc_desc,m.make,m.model,m.lens,m.focal_mm,m.aperture,shutter,iso,lat,lon,taken,&colors,placeholder,raw,marker,taken_local,generation).execute(&mut *tx).await.map_err(|_|retry("photo publication failed"))?.rows_affected();
         if changed != 1 {
             // Replacement superseded this original. Its independently queued
             // ingest owns the current photo; the obsolete job is complete.

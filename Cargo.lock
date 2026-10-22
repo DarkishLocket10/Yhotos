@@ -4844,6 +4844,7 @@ dependencies = [
  "yhotos-codec",
  "yhotos-core",
  "yhotos-db",
+ "yhotos-http",
  "yhotos-jobs",
  "yhotos-pipeline",
  "yhotos-storage",

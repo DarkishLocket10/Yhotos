@@ -6,6 +6,7 @@
     clippy::manual_midpoint
 )]
 use super::{assert_ready, empty_tmp, fixture, setup};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use sqlx::PgPool;
 use std::{ffi::OsStr, path::Path, process::Command};
 use yhotos_codec::{Limits, identify};
@@ -25,6 +26,7 @@ async fn production_plan_meets_photograph_and_p3_fidelity_gates(pool: PgPool) {
             .fetch_all(&pool).await.unwrap();
         let source = fixture(name);
         let source_id = identify(&source, &Limits::default()).unwrap();
+        let source_colorimetry = source_id.has_icc.then(|| profile_colorimetry(&source));
         for row in rows {
             let plan = VariantPlan::default();
             let variant = plan
@@ -72,17 +74,22 @@ async fn production_plan_meets_photograph_and_p3_fidelity_gates(pool: PgPool) {
                     "{name} {} {} lost ICC",
                     row.variant, row.format
                 );
-                if source_id.has_icc {
-                    // JXL can canonicalize "Display P3" to "DisplayP3".
-                    // Require the same profile name apart from whitespace;
-                    // the independent Lab checks below still verify its gamut.
-                    let name = |description: Option<&str>| {
-                        description.map(|text| text.split_whitespace().collect::<String>())
-                    };
-                    assert_eq!(
-                        name(output_id.icc_desc.as_deref()),
-                        name(source_id.icc_desc.as_deref())
-                    );
+                if let Some(expected) = source_colorimetry {
+                    // JXL synthesizes equivalent ICC profiles with platform-dependent
+                    // descriptions. Compare D50 PCS primaries and white point instead.
+                    let actual = profile_colorimetry(&output);
+                    for (actual, expected) in actual
+                        .into_iter()
+                        .flatten()
+                        .zip(expected.into_iter().flatten())
+                    {
+                        assert!(
+                            (actual - expected).abs() < 0.001,
+                            "{name} {} {} changed ICC colorimetry: {actual} vs {expected}",
+                            row.variant,
+                            row.format
+                        );
+                    }
                 }
             }
             let oracle = Oracle::new(&source, edge, variant.square);
@@ -118,6 +125,57 @@ async fn production_plan_meets_photograph_and_p3_fidelity_gates(pool: PgPool) {
         empty_tmp(root.path()).await;
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+fn profile_colorimetry(image: &Path) -> [[f64; 3]; 4] {
+    let output = Command::new("vipsheader")
+        .args(["-f", "icc-profile-data"])
+        .arg(image)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "ICC extraction failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let profile = STANDARD
+        .decode(String::from_utf8(output.stdout).unwrap().trim())
+        .unwrap();
+    icc_colorimetry(&profile)
+}
+
+fn icc_colorimetry(profile: &[u8]) -> [[f64; 3]; 4] {
+    let u32_at = |bytes: &[u8], at| u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap());
+    let count = usize::try_from(u32_at(profile, 128)).unwrap();
+    [b"rXYZ", b"gXYZ", b"bXYZ", b"wtpt"].map(|signature| {
+        let tag = profile[132..132 + count * 12]
+            .as_chunks::<12>()
+            .0
+            .iter()
+            .find(|tag| tag[..4] == *signature)
+            .unwrap();
+        let offset = usize::try_from(u32_at(tag, 4)).unwrap();
+        assert!(u32_at(tag, 8) >= 20);
+        let xyz = &profile[offset..offset + 20];
+        assert_eq!(&xyz[..4], b"XYZ ");
+        std::array::from_fn(|i| {
+            f64::from(i32::from_be_bytes(
+                xyz[8 + i * 4..12 + i * 4].try_into().unwrap(),
+            )) / 65536.0
+        })
+    })
+}
+
+#[test]
+fn colorimetry_comparison_detects_a_p3_to_srgb_profile_change() {
+    let p3 = icc_colorimetry(&std::fs::read(fixture("icc/p3.icc")).unwrap());
+    let srgb = icc_colorimetry(&std::fs::read(fixture("icc/srgb.icc")).unwrap());
+    assert!(
+        p3.into_iter()
+            .flatten()
+            .zip(srgb.into_iter().flatten())
+            .any(|(a, b)| (a - b).abs() > 0.001)
+    );
 }
 
 fn threshold(edge: u32) -> f64 {

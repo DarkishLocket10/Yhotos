@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE photos SET status='processing',failure_reason=NULL WHERE id=$1 AND original_hash=$2 AND generation=$3 AND deleted_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "affe86da85eaeeadd82ef298022a1edc17264db3999d368fa40dc662d310f41e"
+}

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT original_hash FROM photos WHERE id=$1",
+  "query": "SELECT original_hash,generation FROM photos WHERE id=$1",
   "describe": {
     "columns": [
       {
@@ -13,6 +13,17 @@
             "name": "original_hash"
           }
         }
+      },
+      {
+        "ordinal": 1,
+        "name": "generation",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "generation"
+          }
+        }
       }
     ],
     "parameters": {
@@ -21,8 +32,9 @@
       ]
     },
     "nullable": [
+      false,
       false
     ]
   },
-  "hash": "863e60ba8d69637501b3ee07e1b7968794bf68d3a5650ec8fc8ed0b3ed76b929"
+  "hash": "542b652f110c2d5a9d7b46b83d1487b208f8581375dc82fb31d0a717007d7a3b"
 }

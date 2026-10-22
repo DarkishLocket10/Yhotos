@@ -7,6 +7,7 @@ use std::{
 use tokio_util::sync::CancellationToken;
 use yhotos_core::{PhotoId, Slug, access::Visibility};
 use yhotos_db::{albums, photos};
+use yhotos_http::pages::{PageContext, render_album, render_photo};
 use yhotos_jobs::{Job, JobCtx, JobHandler, JobKind, JobRow, Queue, QueueConfig};
 use yhotos_pipeline::{Ingest, JobError, TestPause, VariantPlan};
 use yhotos_storage::{ContentHash, DerivativeKey, Store};
@@ -135,6 +136,9 @@ async fn real_host_chart_and_orientations_publish_and_rerun_without_changes(pool
         ingest.default_timezone = jiff::tz::TimeZone::get("America/Toronto").unwrap();
         ingest.ingest(id).await.unwrap();
         assert_ready(&pool, &ingest, id).await;
+        if name.starts_with("orientation-") {
+            assert_oriented_pages(&pool, id, &name).await;
+        }
         if name == "exif-heavy.jpg" {
             let row=sqlx::query!("SELECT camera_make,camera_model,lens,focal_mm,aperture,shutter,iso,gps_lat,gps_lon,taken_at,taken_at_local FROM photos WHERE id=$1",id.0).fetch_one(&pool).await.unwrap();
             assert_eq!(
@@ -175,6 +179,95 @@ async fn real_host_chart_and_orientations_publish_and_rerun_without_changes(pool
         assert_eq!(first.derivative_plan, second.derivative_plan);
         assert_eq!(before, count_files(root.path()));
         assert_ready(&pool, &ingest, id).await;
+    }
+}
+
+async fn assert_oriented_pages(pool: &PgPool, id: PhotoId, name: &str) {
+    let source = yhotos_codec::identify(&fixture(name), &yhotos_codec::Limits::default()).unwrap();
+    let expected = if source.orientation >= 5 {
+        (source.height, source.width)
+    } else {
+        (source.width, source.height)
+    };
+    assert_ne!(
+        expected.0, expected.1,
+        "orientation fixture must be non-square"
+    );
+    let row = sqlx::query!(
+        "SELECT short_id,width,height,orientation,original_orientation FROM photos WHERE id=$1",
+        id.0
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (row.width, row.height),
+        (
+            Some(i32::try_from(expected.0).unwrap()),
+            Some(i32::try_from(expected.1).unwrap())
+        )
+    );
+    assert_eq!(row.orientation, Some(1));
+    assert_eq!(
+        row.original_orientation,
+        Some(i32::from(source.orientation))
+    );
+    let mut conn = pool.acquire().await.unwrap();
+    let principal = yhotos_core::access::Principal::Anonymous;
+    let sort = photos::PageSort::Taken;
+    let page = photos::page(&mut conn, &principal, &row.short_id.parse().unwrap(), sort)
+        .await
+        .unwrap()
+        .unwrap();
+    let path = page
+        .chain
+        .last()
+        .unwrap()
+        .path
+        .split('/')
+        .map(|s| Slug::new(s).unwrap())
+        .collect::<Vec<_>>();
+    let album = albums::page(&mut conn, &principal, &path, 1, sort)
+        .await
+        .unwrap()
+        .unwrap();
+    let context = PageContext {
+        nonce: "test-nonce",
+        stylesheet: "/static/test.css",
+        script: "/static/test.js",
+        public_base_url: "https://gallery.example",
+    };
+    for html in [
+        render_photo(&page, sort, &context).unwrap(),
+        render_album(&album, 1, sort, &context).unwrap(),
+    ] {
+        let picture = html
+            .split("<picture>")
+            .nth(1)
+            .unwrap()
+            .split("</picture>")
+            .next()
+            .unwrap();
+        let img = picture
+            .split("<img ")
+            .nth(1)
+            .unwrap()
+            .split('>')
+            .next()
+            .unwrap();
+        assert!(
+            img.contains(&format!("width=\"{}\"", expected.0)),
+            "{name}: {img}"
+        );
+        assert!(
+            img.contains(&format!("height=\"{}\"", expected.1)),
+            "{name}: {img}"
+        );
+        assert!(img.contains("src=\"/i/"), "{name}: {img}");
+        assert!(
+            picture.contains("<source ") && picture.contains("srcset=\"/i/"),
+            "{name}: {picture}"
+        );
     }
 }
 #[sqlx::test(migrations = "../yhotos-db/migrations")]
@@ -265,20 +358,22 @@ async fn output_replaced_after_host_exit_is_never_trusted(pool: PgPool) {
 }
 
 async fn ingest_job(pool: &PgPool, photo_id: PhotoId) -> Job {
-    let row = sqlx::query!("SELECT original_hash FROM photos WHERE id=$1", photo_id.0)
-        .fetch_one(pool)
-        .await
-        .unwrap();
+    let row = sqlx::query!(
+        "SELECT original_hash,generation FROM photos WHERE id=$1",
+        photo_id.0
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
     Job::Ingest {
         photo_id,
         original_hash: row.original_hash.parse().unwrap(),
+        generation: row.generation,
     }
 }
 
-async fn replace(pool: &PgPool, ingest: &Ingest, id: PhotoId) -> Job {
-    let input = tokio::fs::File::open(fixture("orientation-6.jpg"))
-        .await
-        .unwrap();
+async fn replace(pool: &PgPool, ingest: &Ingest, id: PhotoId, name: &str) -> Job {
+    let input = tokio::fs::File::open(fixture(name)).await.unwrap();
     let original = ingest.store.put_original(input, 2 << 30).await.unwrap();
     let album = sqlx::query!("SELECT album_id FROM photos WHERE id=$1", id.0)
         .fetch_one(pool)
@@ -303,10 +398,7 @@ async fn replace(pool: &PgPool, ingest: &Ingest, id: PhotoId) -> Job {
     )
     .await
     .unwrap();
-    Job::Ingest {
-        photo_id: id,
-        original_hash: original.hash,
-    }
+    ingest_job(pool, id).await
 }
 
 async fn assert_replacement_pending(pool: &PgPool, id: PhotoId, job: &Job) {
@@ -351,7 +443,10 @@ impl JobHandler for AfterPublication {
 async fn replacement_between_publication_and_completion_survives_old_success_and_failure(
     pool: PgPool,
 ) {
-    for fail in [false, true] {
+    for (fail, name) in [false, true]
+        .into_iter()
+        .flat_map(|fail| ["chart-srgb.png", "orientation-6.jpg"].map(|name| (fail, name)))
+    {
         let (root, ingest, id) = setup(&pool, "chart-srgb.png").await;
         let queue = Queue::with_config(
             pool.clone(),
@@ -383,7 +478,7 @@ async fn replacement_between_publication_and_completion_survives_old_success_and
             .unwrap()
             .unwrap();
         assert_ready(&pool, &ingest, id).await;
-        let new_job = replace(&pool, &ingest, id).await;
+        let new_job = replace(&pool, &ingest, id, name).await;
         let new = Queue::new(pool.clone())
             .enqueue(new_job.clone(), 0, None)
             .await
@@ -454,10 +549,56 @@ async fn assert_replacement_status_pending(pool: &PgPool, id: PhotoId) {
 }
 
 #[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn dated_to_undated_replacement_clears_capture_metadata_and_increments_every_generation(
+    pool: PgPool,
+) {
+    let (root, ingest, id) = setup(&pool, "exif-heavy.jpg").await;
+    ingest.ingest(id).await.unwrap();
+    let before = sqlx::query!(
+        "SELECT taken_at,taken_at_local FROM photos WHERE id=$1",
+        id.0
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(before.taken_at.is_some() && before.taken_at_local.is_some());
+    for generation in 1..=2 {
+        let job = replace(&pool, &ingest, id, "orientation-6.jpg").await;
+        assert!(matches!(job, Job::Ingest { generation: actual, .. } if actual == generation));
+        assert_replacement_pending(&pool, id, &job).await;
+        let row = sqlx::query!("SELECT taken_at,taken_at_local,original_orientation,camera_make,camera_model,lens,focal_mm,aperture,shutter,iso,gps_lat,gps_lon,place_id FROM photos WHERE id=$1", id.0).fetch_one(&pool).await.unwrap();
+        assert!(row.taken_at.is_none() && row.taken_at_local.is_none());
+        assert!(row.original_orientation.is_none());
+        assert!(row.camera_make.is_none() && row.camera_model.is_none() && row.lens.is_none());
+        assert!(
+            row.focal_mm.is_none()
+                && row.aperture.is_none()
+                && row.shutter.is_none()
+                && row.iso.is_none()
+        );
+        assert!(row.gps_lat.is_none() && row.gps_lon.is_none() && row.place_id.is_none());
+        ingest.ingest(id).await.unwrap();
+        let after = sqlx::query!(
+            "SELECT status::text AS \"status!\",taken_at,taken_at_local FROM photos WHERE id=$1",
+            id.0
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(after.status, "ready");
+        assert!(after.taken_at.is_none() && after.taken_at_local.is_none());
+    }
+    empty_tmp(root.path()).await;
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
 async fn replacement_before_publication_survives_old_publication_and_verification_failure(
     pool: PgPool,
 ) {
-    for corrupt in [false, true] {
+    for (corrupt, name) in [false, true]
+        .into_iter()
+        .flat_map(|corrupt| ["chart-srgb.png", "orientation-6.jpg"].map(|name| (corrupt, name)))
+    {
         let (root, mut ingest, id) = setup(&pool, "chart-srgb.png").await;
         let (exited, mut rx) = tokio::sync::mpsc::channel(1);
         let pause = Arc::new(TestPause {
@@ -487,7 +628,7 @@ async fn replacement_before_publication_survives_old_publication_and_verificatio
             .await
             .unwrap()
             .unwrap();
-        let new_job = replace(&pool, &ingest, id).await;
+        let new_job = replace(&pool, &ingest, id, name).await;
         if corrupt {
             let path = dir.join("thumb.avif");
             let mut bytes = tokio::fs::read(&path).await.unwrap();

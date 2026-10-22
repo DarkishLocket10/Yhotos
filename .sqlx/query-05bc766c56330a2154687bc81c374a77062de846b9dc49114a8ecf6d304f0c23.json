@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id FROM photos WHERE id=$1 AND original_hash=$2 AND deleted_at IS NULL FOR UPDATE",
+  "query": "SELECT id FROM photos WHERE id=$1 AND original_hash=$2 AND generation=$3 AND deleted_at IS NULL FOR UPDATE",
   "describe": {
     "columns": [
       {
@@ -18,12 +18,13 @@
     "parameters": {
       "Left": [
         "Uuid",
-        "Text"
+        "Text",
+        "Int8"
       ]
     },
     "nullable": [
       false
     ]
   },
-  "hash": "7e8f6b8b3bfcc6f97a0b54bd5569805f49fbc5e982843113825f4091f1727ab9"
+  "hash": "05bc766c56330a2154687bc81c374a77062de846b9dc49114a8ecf6d304f0c23"
 }

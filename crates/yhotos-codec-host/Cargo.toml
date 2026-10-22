@@ -25,6 +25,7 @@ tempfile.workspace = true
 async-trait.workspace = true
 tokio-util = { workspace = true, features = ["rt"] }
 yhotos-jobs = { path = "../yhotos-jobs" }
+yhotos-http = { path = "../yhotos-http" }
 jiff.workspace = true
 time = { workspace = true, features = ["macros"] }
 

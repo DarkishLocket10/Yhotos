@@ -50,6 +50,9 @@ pub enum Job {
         /// Immutable original this job may process; also part of the dedupe key.
         #[serde(with = "original_hash")]
         original_hash: ContentHash,
+        /// Nonnegative replacement generation; identical bytes still get a distinct job.
+        #[serde(deserialize_with = "deserialize_generation")]
+        generation: i64,
     },
     /// Generate semantic embedding.
     #[serde(rename = "ml.embed")]
@@ -236,7 +239,9 @@ impl Queue {
         priority: i32,
         run_after: Option<OffsetDateTime>,
     ) -> Result<JobId, JobsError> {
-        if job.kind() == JobKind::Ingest && i16::try_from(priority).is_err() {
+        if job.kind() == JobKind::Ingest && i16::try_from(priority).is_err()
+            || matches!(job, Job::Ingest { generation, .. } if *generation < 0)
+        {
             return Err(JobsError::InvalidJob);
         }
         let value = serde_json::to_value(job).map_err(|_| JobsError::InvalidJob)?;
@@ -255,6 +260,17 @@ impl Queue {
         )
         .await?)
     }
+}
+
+fn deserialize_generation<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<i64, D::Error> {
+    use serde::de::Error;
+    let generation = i64::deserialize(deserializer)?;
+    if generation < 0 {
+        return Err(D::Error::custom("invalid ingest generation"));
+    }
+    Ok(generation)
 }
 
 // Keep the wire digest a canonical string while validating database bytes into
@@ -290,6 +306,7 @@ mod tests {
             Job::Ingest {
                 photo_id,
                 original_hash: "a".repeat(64).parse().unwrap(),
+                generation: 0,
             },
             Job::MlEmbed { photo_id },
             Job::MlFaces { photo_id },
@@ -325,10 +342,20 @@ mod tests {
         for hash in ["../private".into(), "A".repeat(64), "a".repeat(63)] {
             assert!(
                 serde_json::from_value::<Job>(serde_json::json!({
-                    "kind":"ingest", "payload":{"photo_id": photo_id, "original_hash": hash}
+                    "kind":"ingest", "payload":{"photo_id": photo_id, "original_hash": hash, "generation": 0}
                 }))
                 .is_err()
             );
+        }
+        for generation in [
+            serde_json::json!(-1),
+            serde_json::json!(0.5),
+            serde_json::json!(u64::MAX),
+            serde_json::Value::Null,
+        ] {
+            assert!(serde_json::from_value::<Job>(serde_json::json!({
+                "kind":"ingest", "payload":{"photo_id": photo_id, "original_hash": "a".repeat(64), "generation": generation}
+            })).is_err());
         }
         assert_eq!(JobKind::Ingest.timeout(), Duration::from_mins(10));
         assert_eq!(JobKind::Gc.timeout(), Duration::from_hours(1));

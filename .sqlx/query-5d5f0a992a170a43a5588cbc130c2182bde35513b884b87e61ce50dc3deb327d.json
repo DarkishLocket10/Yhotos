@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE photos SET original_hash=$2,generation=generation+1,status='processing' WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5d5f0a992a170a43a5588cbc130c2182bde35513b884b87e61ce50dc3deb327d"
+}

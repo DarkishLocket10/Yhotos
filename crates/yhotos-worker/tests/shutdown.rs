@@ -136,6 +136,7 @@ async fn sigterm_during_ingest(pool: PgPool, block: Block) {
             Job::Ingest {
                 photo_id: photo.id,
                 original_hash: original.hash,
+                generation: 0,
             },
             0,
             None,
