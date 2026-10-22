@@ -45,9 +45,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     };
     let runtime = tokio::runtime::Runtime::new()?;
-    let options = url
-        .parse::<sqlx::postgres::PgConnectOptions>()?
-        .options([("jit", "off"), ("hnsw.ef_search", "200")]);
+    let options = url.parse::<sqlx::postgres::PgConnectOptions>()?.options([
+        ("jit", "off"),
+        ("hnsw.ef_search", "200"),
+        ("hnsw.iterative_scan", "strict_order"),
+        ("hnsw.max_scan_tuples", "20000"),
+    ]);
     let pool = runtime.block_on(
         sqlx::postgres::PgPoolOptions::new()
             .max_connections(8)

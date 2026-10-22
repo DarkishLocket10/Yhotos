@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT f.bbox,d.hash AS source,c.hash AS cached FROM faces f JOIN persons p ON p.id=f.person_id JOIN photos photo ON photo.id=f.photo_id JOIN derivatives d ON d.photo_id=photo.id AND d.variant='medium' AND d.format='jpeg' AND NOT d.hdr LEFT JOIN face_crops c ON c.face_id=f.id AND c.source_hash=d.hash AND c.bbox=f.bbox WHERE f.id=$1 AND NOT p.hidden AND photo.deleted_at IS NULL AND photo.status='ready'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "bbox",
+        "type_info": "Float4Array",
+        "origin": {
+          "Table": {
+            "table": "faces",
+            "name": "bbox"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "source",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "derivatives",
+            "name": "hash"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "cached",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "face_crops",
+            "name": "hash"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "14b065d9441446e62b841ae52993725b39c8f955a7c123f126e413b68613c91c"
+}

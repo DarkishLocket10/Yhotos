@@ -2617,3 +2617,178 @@ async fn overlapping_passkey_ceremonies_cannot_roll_back_the_counter(pool: PgPoo
         );
     }
 }
+
+#[cfg(feature = "admin")]
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn face_previews_require_admin_and_exclude_hidden_cached_faces(pool: PgPool) {
+    use yhotos_storage::{Area, DerivativeKey};
+    let mut client = Client::new(pool.clone(), true).await;
+    let (_, name, password) = client.seed(false, true).await;
+    let album = Uuid::now_v7();
+    let photo = Uuid::now_v7();
+    let short = yhotos_core::ShortId::from_photo_id(yhotos_core::PhotoId(photo)).to_string();
+    let person = Uuid::now_v7();
+    let face = Uuid::now_v7();
+    let source = "a".repeat(64);
+    sqlx::query!(
+        "INSERT INTO albums(id,slug,title) VALUES($1,'previews','Previews')",
+        album
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query!("INSERT INTO photos(id,album_id,short_id,title,original_hash,original_name,original_bytes,mime,kind,status) VALUES($1,$2,$4,'Group photo',$3,'group.jpg',1,'image/jpeg','image','ready')",photo,album,source,short).execute(&pool).await.unwrap();
+    sqlx::query!("INSERT INTO derivatives(id,photo_id,variant,format,hash,width,height,bytes) VALUES($1,$2,'medium','jpeg',$3,640,480,1)",Uuid::now_v7(),photo,source).execute(&pool).await.unwrap();
+    sqlx::query!(
+        "INSERT INTO persons(id,name) VALUES($1,'Test person')",
+        person
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query!("INSERT INTO faces(id,photo_id,bbox,quality,person_id,model) VALUES($1,$2,ARRAY[0.1,0.1,0.5,0.5],0.9,$3,'fixture')",face,photo,person).execute(&pool).await.unwrap();
+    // Seed a real cached JPEG. End-to-end crop generation is exercised by the
+    // codec-host harness, which has Cargo's executable path for the subprocess.
+    let bytes = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/images/photo.jpg"),
+    )
+    .unwrap();
+    let hash = blake3::hash(&bytes).to_hex().as_str().parse().unwrap();
+    let temp = client.state.store.tmp_dir().unwrap();
+    let path = temp.path().join("cached.jpeg");
+    std::fs::write(&path, &bytes).unwrap();
+    client
+        .state
+        .store
+        .put_derivative(
+            &DerivativeKey {
+                hash: &hash,
+                variant: "face",
+                format: "jpeg",
+                hdr: false,
+            },
+            &path,
+        )
+        .await
+        .unwrap();
+    assert!(
+        yhotos_db::faces::cache_crop(
+            &mut pool.acquire().await.unwrap(),
+            face,
+            &[0.1, 0.1, 0.5, 0.5],
+            &source,
+            &hash.to_string(),
+            bytes.len() as u64
+        )
+        .await
+        .unwrap()
+    );
+    let route = format!("/admin/people/faces/{face}.jpeg");
+    assert_eq!(
+        client.listener(false).get(&route).await.status,
+        StatusCode::NOT_FOUND
+    );
+    location(&client.get(&route).await, "/admin/login");
+    client.login(&name, &password, true).await;
+    location(&client.get(&route).await, "/admin/setup-mfa");
+    client.enroll_totp().await;
+    let page = client.get("/admin/people").await;
+    assert_eq!(page.status, StatusCode::OK);
+    assert!(page.body.contains(&format!("src=\"{route}\"")));
+    let mut request = Request::builder()
+        .uri(&route)
+        .header(
+            header::COOKIE,
+            client
+                .jar
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("; "),
+        )
+        .body(Body::empty())
+        .unwrap();
+    request.extensions_mut().insert(ConnectInfo(client.network));
+    let response = client.app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "image/jpeg");
+    assert_eq!(
+        response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .as_ref(),
+        bytes.as_slice()
+    );
+    assert_eq!(
+        client
+            .listener(false)
+            .get(&format!("/i/{hash}/face.jpeg"))
+            .await
+            .status,
+        StatusCode::NOT_FOUND
+    );
+    // A crop generated against a replaced medium input cannot be published or reused.
+    sqlx::query!(
+        "UPDATE derivatives SET hash=$2 WHERE photo_id=$1 AND variant='medium'",
+        photo,
+        "b".repeat(64)
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert!(
+        yhotos_db::faces::preview(&mut pool.acquire().await.unwrap(), face)
+            .await
+            .unwrap()
+            .unwrap()
+            .cached
+            .is_none()
+    );
+    assert!(
+        !yhotos_db::faces::cache_crop(
+            &mut pool.acquire().await.unwrap(),
+            face,
+            &[0.1, 0.1, 0.5, 0.5],
+            &source,
+            &hash.to_string(),
+            bytes.len() as u64
+        )
+        .await
+        .unwrap()
+    );
+    sqlx::query!(
+        "UPDATE derivatives SET hash=$2 WHERE photo_id=$1 AND variant='medium'",
+        photo,
+        source
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query!("UPDATE persons SET hidden=true WHERE id=$1", person)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(client.get(&route).await.status, StatusCode::NOT_FOUND);
+    assert!(!client.get("/admin/people").await.body.contains(&route));
+    // Keeping cached bytes on disk must not bypass the fresh privacy check.
+    assert!(
+        client
+            .state
+            .store
+            .exists(
+                Area::Derivatives,
+                &hash,
+                Some(&DerivativeKey {
+                    hash: &hash,
+                    variant: "face",
+                    format: "jpeg",
+                    hdr: false
+                })
+            )
+            .await
+    );
+}

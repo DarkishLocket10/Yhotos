@@ -7,3 +7,5 @@ rapidocr-onnxruntime==1.4.4
 fastapi==0.159.1
 uvicorn==0.38.0
 starlette==1.9.0
+# RapidOCR requires cv2 for OCR preprocessing, not face inference/alignment.
+opencv-python-headless==5.0.0.93

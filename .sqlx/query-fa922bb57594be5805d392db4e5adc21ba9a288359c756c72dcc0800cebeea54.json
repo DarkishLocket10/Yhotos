@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO photos(id,short_id,album_id,title,original_hash,original_name,original_bytes,mime,kind,status,visibility,camera_model) SELECT id,short_id,$3,'excluded',repeat('b',64),'fixture.jpg',1,'image/jpeg','image','ready',CASE WHEN n<=300 THEN 'restricted'::visibility ELSE 'public'::visibility END,CASE WHEN n<=300 THEN 'Test camera' ELSE 'other' END FROM unnest($1::uuid[],$2::text[]) WITH ORDINALITY AS f(id,short_id,n)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "TextArray",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fa922bb57594be5805d392db4e5adc21ba9a288359c756c72dcc0800cebeea54"
+}

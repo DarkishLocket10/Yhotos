@@ -4,14 +4,35 @@
   "warm_samples": 1000,
   "scope": "Three concurrent database candidate lists and Rust reciprocal rank fusion; query embedding and HTML rendering excluded.",
   "first_implementation_p99_ms": 2288.567417,
-  "final_p99_ms": 27.47875,
+  "final_p99_ms": 36.709458,
   "budget_ms": 50,
-  "parser_ns": "385.75 ns 391.87 ns 393.39 ns",
-  "criterion_fused": "17.605 ms 17.858 ms 17.921 ms",
+  "parser_ns": "401.40 ns 426.45 ns 445.09 ns",
+  "criterion_fused": "20.095 ms 20.769 ms 21.951 ms",
   "postgres_options": {
     "jit": "off",
-    "hnsw.ef_search": 200
+    "hnsw.ef_search": 200,
+    "hnsw.iterative_scan": "strict_order",
+    "hnsw.max_scan_tuples": 20000
   },
-  "fixture_notes": "Synthetic ready photos with UUIDv7 ids, random 768-dimensional vectors, title matches, and no derivative or OCR rows.",
-  "gpu_timing": "Not measured; tower required."
+  "fixture_notes": "Fresh isolated local dev database, 10k ready photos with UUIDv7 ids, random 768-dimensional vectors, title matches, and no derivative or OCR rows. Existing-database run also recorded separately.",
+  "gpu_timing": "Unverified. Combined four-job GPU timing and full offline pipeline validation on tower are task 023 staging checks per the maintainer decision.",
+  "before_review_p99_ms": 27.47875,
+  "criterion_fused_before_review": "17.605 ms 17.858 ms 17.921 ms",
+  "warmed_existing_database_p99_ms": 39.12575,
+  "semantic_exact_limit": 200,
+  "semantic_eligible_sample_limit": 201,
+  "face_embedding_dimensions": 128,
+  "crop_benchmark": {
+    "name": "codec/face_crop_256_jpeg",
+    "before": "Absent",
+    "after_ms": [
+      9.8479,
+      10.169,
+      10.499
+    ],
+    "scope": "Crop, resize and JPEG encode from an already decoded local photo fixture; excludes decode, subprocess startup and storage."
+  },
+  "docker_build": "Unverified; deferred to task 023 per the maintainer decision.",
+  "explain_scope": "Full visibility-aware semantic candidate query with anonymous principal, no filters and a 768-dimensional unit-axis query vector; embeddings_vector HNSW scan returns 200 rows.",
+  "semantic_query_sha256": "f625158dece3e7d96a73adbecd580d66e4e4040dbc5acaf9916e5091407d96c3"
 }

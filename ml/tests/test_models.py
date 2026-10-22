@@ -35,7 +35,7 @@ def test_fixture_outputs(models: Models, fixture: str) -> None:
         for face, other in zip(faces, repeated, strict=True):
             np.testing.assert_allclose(face.embedding, other.embedding, atol=1e-6)
             np.testing.assert_allclose(face.box, other.box, atol=1e-6)
-            assert face.embedding.shape == (512,)
+            assert face.embedding.shape == (128,)
             assert all(0 <= value <= 1 for value in face.box)
             assert 0 <= face.quality <= 1
 
@@ -69,7 +69,7 @@ def test_safe_derivative_only(tmp_path: Path) -> None:
 
 
 def test_clustering_noise_and_similarity() -> None:
-    values = np.eye(512, dtype=np.float32)[:4]
+    values = np.eye(128, dtype=np.float32)[:4]
     values[1] = values[0]
     assert components(values) == [[0, 1]]
 
@@ -103,10 +103,49 @@ def test_production_rejects_silent_cpu_fallback(models: Models, monkeypatch: pyt
     with pytest.raises(ValueError, match="GPU session unavailable"):
         Models(root)
 
-def test_arcface_output_shape_and_determinism(models: Models) -> None:
+def test_sface_output_shape_and_determinism(models: Models) -> None:
     pixels = np.zeros((1, 3, 112, 112), dtype=np.float32)
     name = models.recognizer.get_inputs()[0].name
     first = np.asarray(models.recognizer.run(None, {name: pixels})[0])
     second = np.asarray(models.recognizer.run(None, {name: pixels})[0])
-    assert first.shape == (1, 512) and np.isfinite(first).all()
+    assert first.shape == (1, 128) and np.isfinite(first).all()
     np.testing.assert_allclose(first, second, atol=1e-6)
+
+
+def test_sface_clustering_uses_published_cosine_threshold() -> None:
+    for similarity, expected in [(0.362, []), (0.364, [[0, 1]])]:
+        values = np.zeros((2, 128), dtype=np.float32)
+        values[0, 0] = 1
+        values[1, :2] = [similarity, np.sqrt(1 - similarity**2)]
+        assert components(values) == expected
+
+
+def test_yunet_decoding_alignment_and_sface_embedding(models: Models, monkeypatch: pytest.MonkeyPatch) -> None:
+    # A synthetic detector head makes this test exercise a face even when the
+    # three small local photo fixtures contain no detectable people.
+    output: list[np.ndarray] = []
+    for tensor in models.detector.get_outputs():
+        count = (640 // int(tensor.name.split("_")[1])) ** 2
+        channels = 10 if tensor.name.startswith("kps") else 4 if tensor.name.startswith("bbox") else 1
+        value = np.zeros((1, count, channels), dtype=np.float32)
+        if tensor.name.endswith("_8"):
+            index = 20 * 80 + 20
+            if tensor.name.startswith(("cls", "obj")):
+                value[0, index] = 0.95
+            elif tensor.name.startswith("bbox"):
+                value[0, index] = [0, 0, np.log(8), np.log(8)]
+            else:
+                value[0, index] = [-2, -1, 2, -1, 0, 1, -1.5, 3, 1.5, 3]
+        output.append(value)
+
+    def detector_run(names: object, inputs: dict[str, np.ndarray]) -> list[np.ndarray]:
+        pixels = next(iter(inputs.values()))
+        np.testing.assert_array_equal(pixels[0, :, 100, 100], [0, 0, 255])
+        return output
+
+    monkeypatch.setattr(models.detector, "run", detector_run)
+    faces = models.faces(Image.new("RGB", (640, 640), "red"))
+    assert len(faces) == 1
+    assert faces[0].embedding.shape == (128,)
+    assert np.isclose(np.linalg.norm(faces[0].embedding), 1)
+    np.testing.assert_allclose(faces[0].box, [0.2, 0.2, 0.3, 0.3], atol=1e-6)

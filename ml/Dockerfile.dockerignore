@@ -7,3 +7,6 @@
 !ml/labels.txt
 !ml/yhotos_ml/
 !ml/yhotos_ml/*.py
+!ml/MODELS.md
+!ml/licenses/
+!ml/licenses/*.txt

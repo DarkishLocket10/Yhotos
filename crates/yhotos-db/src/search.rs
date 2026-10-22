@@ -26,6 +26,9 @@ pub struct Candidate {
 // Ranked lists apply access before LIMIT. Their metadata joins use the same
 // statement snapshot, so they need not recompute the access tree. OFFSET 0 keeps
 // semantic membership correlated and preserves the HNSW distance-order scan.
+// Selective semantic sets (<=200 eligible photos) use exact distance ordering;
+// broader sets retain bounded iterative HNSW scans on the public/admin pools.
+// Sampling at most 201 eligible ids decides which branch without a full count.
 macro_rules! candidates {
     ($tail:literal, $p:expr, $f:expr, $text:expr, $vector:expr, $like:expr) => {
         crate::visible_page_query!(@with r#"WITH RECURSIVE identity AS (
@@ -86,11 +89,21 @@ pub async fn candidates(
 ) -> Result<Vec<Candidate>, DbError> {
     let f = serde_json::to_value(filters).map_err(|_| DbError::InvalidInput)?;
     let rows = match list {
-        List::Semantic => candidates!(r#"SELECT e.photo_id AS id,e.vector <=> (SELECT v FROM query_vector) AS rank
-          FROM embeddings e WHERE (SELECT v FROM query_vector) IS NOT NULL
-          AND e.model=(SELECT model FROM query_vector) AND $7::text IS NOT NULL
-          AND EXISTS (SELECT FROM filtered p WHERE p.id=e.photo_id AND ($9::text IS NULL OR p.short_id<>$9) OFFSET 0)
-          ORDER BY e.vector <=> (SELECT v FROM query_vector) LIMIT 200"#, p, f, text, vector, like).fetch_all(pool).await?.into_iter().map(|r| r.payload).collect::<Vec<_>>(),
+        List::Semantic => candidates!(r#"WITH eligible AS MATERIALIZED (
+          SELECT p.id FROM filtered p WHERE $9::text IS NULL OR p.short_id<>$9 ORDER BY p.id LIMIT 201
+        ) SELECT id,rank FROM (
+          (SELECT e.photo_id AS id,e.vector <=> (SELECT v FROM query_vector) AS rank
+           FROM eligible p JOIN embeddings e ON e.photo_id=p.id
+           WHERE (SELECT count(*) FROM eligible)<=200 AND (SELECT v FROM query_vector) IS NOT NULL
+           AND e.model=(SELECT model FROM query_vector) AND $7::text IS NOT NULL
+           ORDER BY (e.vector <=> (SELECT v FROM query_vector))+0,e.photo_id LIMIT 200)
+          UNION ALL
+          (SELECT e.photo_id AS id,e.vector <=> (SELECT v FROM query_vector) AS rank
+           FROM embeddings e WHERE (SELECT count(*) FROM eligible)>200 AND (SELECT v FROM query_vector) IS NOT NULL
+           AND e.model=(SELECT model FROM query_vector) AND $7::text IS NOT NULL
+           AND EXISTS (SELECT FROM filtered p WHERE p.id=e.photo_id AND ($9::text IS NULL OR p.short_id<>$9) OFFSET 0)
+           ORDER BY e.vector <=> (SELECT v FROM query_vector) LIMIT 200)
+        ) neighbors ORDER BY rank,id LIMIT 200"#, p, f, text, vector, like).fetch_all(pool).await?.into_iter().map(|r| r.payload).collect::<Vec<_>>(),
         List::Text => candidates!(r#"SELECT id,-max(score) AS rank FROM (
           (SELECT title_photo.id,similarity(title_photo.title,$7) AS score FROM photos title_photo
            WHERE $7<>'' AND title_photo.title % $7 AND EXISTS (

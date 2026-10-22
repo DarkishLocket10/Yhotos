@@ -100,6 +100,8 @@ struct Job {
     limits: HostLimits,
     outputs: Vec<Output>,
     #[serde(default)]
+    crop: Option<[f32; 4]>,
+    #[serde(default)]
     want: Vec<Want>,
 }
 #[derive(Deserialize)]
@@ -320,6 +322,21 @@ fn run() -> Result<(), Failure> {
     let decode_start = Instant::now();
     let working = yhotos_codec::decode(&input, &id, &job.limits.codec())?;
     let decode_ms = decode_start.elapsed().as_millis();
+    let working = if let Some(bbox) = job.crop {
+        if !matches!(id.kind, yhotos_codec::Kind::Jpeg)
+            || job.outputs.len() != 1
+            || !job.outputs.first().is_some_and(|o| {
+                o.resize.long_edge == 256
+                    && !o.keep_icc
+                    && matches!(o.encode, Encode::Jpeg { hdr: false, .. })
+            })
+        {
+            return Err(Failure(2, "invalid crop request"));
+        }
+        yhotos_codec::crop_face(&working, bbox)?
+    } else {
+        working
+    };
     #[cfg(feature = "test-hooks")]
     if std::env::args_os().any(|a| a == "--self-test-concurrency") {
         // Query libvips after decode too, so lazy native initialization cannot

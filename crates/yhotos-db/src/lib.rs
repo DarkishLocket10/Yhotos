@@ -156,9 +156,16 @@ impl Db {
                 ("statement_timeout", timeout),
                 ("idle_in_transaction_session_timeout", "30000"),
             ]);
-        if role == Role::Public {
+        if matches!(role, Role::Public | Role::Admin) {
+            // Iterative HNSW scans continue past excluded neighbors, bounded to
+            // 20k visited tuples; access/structured filtering still precedes LIMIT.
             // Request budgets cannot absorb per-query JIT compilation.
-            options = options.options([("jit", "off"), ("hnsw.ef_search", "200")]);
+            options = options.options([
+                ("jit", "off"),
+                ("hnsw.ef_search", "200"),
+                ("hnsw.iterative_scan", "strict_order"),
+                ("hnsw.max_scan_tuples", "20000"),
+            ]);
         }
         let pool = PgPoolOptions::new()
             .max_connections(max_conns)

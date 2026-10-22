@@ -4943,6 +4943,7 @@ dependencies = [
  "yhotos-db",
  "yhotos-http",
  "yhotos-jobs",
+ "yhotos-pipeline",
  "yhotos-storage",
  "zeroize",
 ]

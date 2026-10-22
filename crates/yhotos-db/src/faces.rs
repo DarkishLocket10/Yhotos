@@ -12,21 +12,24 @@ pub struct Person {
     pub name: Option<String>,
     /// Face count in non-deleted photos.
     pub count: i64,
+    /// Up to three representative face ids, highest detector quality first.
+    pub samples: Vec<Uuid>,
 }
 /// Lists up to two hundred visible private clusters.
 ///
 /// # Errors
 /// Returns database failures.
 pub async fn people(conn: &mut PgConnection) -> Result<Vec<Person>, DbError> {
-    let rows=sqlx::query!(r#"SELECT p.id,p.name,count(f.id) AS "count!" FROM persons p
+    let rows=sqlx::query!(r#"SELECT p.id,p.name,count(f.id) AS "count!",(array_agg(f.id ORDER BY f.quality DESC,f.id))[1:3] AS "samples!" FROM persons p
         JOIN faces f ON f.person_id=p.id JOIN photos photo ON photo.id=f.photo_id
-        WHERE NOT p.hidden AND photo.deleted_at IS NULL GROUP BY p.id ORDER BY p.name NULLS LAST,p.id LIMIT 200"#).fetch_all(conn).await?;
+        WHERE NOT p.hidden AND photo.deleted_at IS NULL AND photo.status='ready' GROUP BY p.id ORDER BY p.name NULLS LAST,p.id LIMIT 200"#).fetch_all(conn).await?;
     Ok(rows
         .into_iter()
         .map(|r| Person {
             id: r.id,
             name: r.name,
             count: r.count,
+            samples: r.samples,
         })
         .collect())
 }
@@ -123,4 +126,37 @@ async fn find(
     rows.into_iter()
         .map(|r| serde_json::from_value(r.payload).map_err(|_| DbError::InvalidInput))
         .collect()
+}
+
+/// Current non-hidden face, its medium input, and an optional matching private cache.
+pub struct Preview {
+    /// Normalized untrusted box; callers validate before requesting a crop.
+    pub bbox: Vec<f32>,
+    /// Medium SDR JPEG digest, validated through storage by the caller.
+    pub source: String,
+    /// Cache digest only when both input digest and box still match.
+    pub cached: Option<String>,
+}
+/// Resolves a preview only for a non-hidden identity in a ready, non-deleted photo.
+///
+/// # Errors
+/// Returns database failures.
+pub async fn preview(conn: &mut PgConnection, id: Uuid) -> Result<Option<Preview>, DbError> {
+    Ok(sqlx::query!("SELECT f.bbox,d.hash AS source,c.hash AS cached FROM faces f JOIN persons p ON p.id=f.person_id JOIN photos photo ON photo.id=f.photo_id JOIN derivatives d ON d.photo_id=photo.id AND d.variant='medium' AND d.format='jpeg' AND NOT d.hdr LEFT JOIN face_crops c ON c.face_id=f.id AND c.source_hash=d.hash AND c.bbox=f.bbox WHERE f.id=$1 AND NOT p.hidden AND photo.deleted_at IS NULL AND photo.status='ready'",id).fetch_optional(conn).await?.map(|r|Preview {bbox:r.bbox,source:r.source,cached:r.cached}))
+}
+/// Publishes a private cache reference only if source, box and privacy still match.
+/// No face derivative is inserted into the publicly readable derivatives table.
+///
+/// # Errors
+/// Returns invalid sizes or database failures.
+pub async fn cache_crop(
+    conn: &mut PgConnection,
+    id: Uuid,
+    bbox: &[f32],
+    source: &str,
+    hash: &str,
+    bytes: u64,
+) -> Result<bool, DbError> {
+    let bytes = i64::try_from(bytes).map_err(|_| DbError::InvalidInput)?;
+    Ok(sqlx::query!("INSERT INTO face_crops(face_id,bbox,source_hash,hash,bytes) SELECT f.id,f.bbox,d.hash,$4,$5 FROM faces f JOIN persons p ON p.id=f.person_id JOIN photos photo ON photo.id=f.photo_id JOIN derivatives d ON d.photo_id=photo.id AND d.variant='medium' AND d.format='jpeg' AND NOT d.hdr WHERE f.id=$1 AND f.bbox=$2 AND d.hash=$3 AND NOT p.hidden AND photo.deleted_at IS NULL AND photo.status='ready' ON CONFLICT(face_id) DO UPDATE SET bbox=excluded.bbox,source_hash=excluded.source_hash,hash=excluded.hash,bytes=excluded.bytes",id,bbox,source,hash,bytes).execute(conn).await?.rows_affected()==1)
 }

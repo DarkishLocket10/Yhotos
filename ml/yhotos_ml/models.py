@@ -17,13 +17,13 @@ from .safety import text, vector
 from .tokenizer import Tokenizer
 
 EMBED_MODEL = "siglip-base-patch16-224@4649052661e53c7000355844105f8a1792088239"
-FACE_MODEL = "buffalo_l@d09715916a0778919a770c343533641e250b8699"
+FACE_MODEL = "yunet-2023mar+sface-2021dec@f12e12798e8314f7c074a6656816c048dcc95b7a"
 OCR_MODEL = "PP-OCRv4@rapidocr-1.4.4"
 
 
 @dataclass(frozen=True)
 class Face:
-    """Normalized box, unit ArcFace vector, and bounded detector quality."""
+    """Normalized box, unit 128-d SFace vector, and bounded detector quality."""
     box: tuple[float, float, float, float]
     embedding: NDArray[np.float32]
     quality: float
@@ -44,8 +44,8 @@ class Models:
         options.intra_op_num_threads = 2
         self.vision = ort.InferenceSession(str(root / "siglip-vision.onnx"), options, providers=providers)
         self.language = ort.InferenceSession(str(root / "siglip-text.onnx"), options, providers=providers)
-        self.detector = ort.InferenceSession(str(root / "scrfd.onnx"), options, providers=providers)
-        self.recognizer = ort.InferenceSession(str(root / "arcface.onnx"), options, providers=providers)
+        self.detector = ort.InferenceSession(str(root / "face_detection_yunet_2023mar.onnx"), options, providers=providers)
+        self.recognizer = ort.InferenceSession(str(root / "face_recognition_sface_2021dec.onnx"), options, providers=providers)
         if not cpu:
             for session in (self.vision, self.language, self.detector, self.recognizer):
                 if "CUDAExecutionProvider" not in session.get_providers():
@@ -95,24 +95,28 @@ class Models:
 
     def faces(self, image: Image.Image) -> list[Face]:
         width, height = image.size
+        # YuNet's ONNX graph fixes its input to 640x640. It consumes BGR 0..255.
         scale = min(640 / width, 640 / height)
         resized = image.resize((round(width * scale), round(height * scale)), Image.Resampling.BILINEAR)
         canvas = np.zeros((640, 640, 3), dtype=np.float32)
-        canvas[:resized.height, :resized.width] = np.asarray(resized, dtype=np.float32)
-        pixels = np.transpose((canvas - 127.5) / 128, (2, 0, 1))[None]
+        canvas[:resized.height, :resized.width] = np.asarray(resized, dtype=np.float32)[:, :, ::-1]
+        pixels = np.transpose(canvas, (2, 0, 1))[None]
         with self.lock:
-            output = self.detector.run(None, {self.detector.get_inputs()[0].name: pixels})
+            output = dict(zip([o.name for o in self.detector.get_outputs()],
+                              self.detector.run(None, {self.detector.get_inputs()[0].name: pixels}), strict=True))
         boxes: list[tuple[NDArray[np.float32], NDArray[np.float32], float]] = []
-        for level, stride in enumerate((8, 16, 32)):
-            scores = np.asarray(output[level], dtype=np.float32).reshape(-1)
-            distances = np.asarray(output[level + 3], dtype=np.float32).reshape(-1, 4) * stride
-            landmarks = np.asarray(output[level + 6], dtype=np.float32).reshape(-1, 10) * stride
-            grid = np.mgrid[:640 // stride, :640 // stride][::-1].transpose(1, 2, 0).reshape(-1, 2) * stride
-            centers = np.repeat(grid, 2, axis=0)
-            for i in np.flatnonzero(scores >= 0.5):
-                center = centers[i]
-                box = np.concatenate((center - distances[i, :2], center + distances[i, 2:])) / scale
-                points = (landmarks[i].reshape(5, 2) + center) / scale
+        for stride in (8, 16, 32):
+            cls = np.asarray(output[f"cls_{stride}"], dtype=np.float32).reshape(-1)
+            obj = np.asarray(output[f"obj_{stride}"], dtype=np.float32).reshape(-1)
+            scores = np.sqrt(np.clip(cls, 0, 1) * np.clip(obj, 0, 1))
+            distances = np.asarray(output[f"bbox_{stride}"], dtype=np.float32).reshape(-1, 4)
+            landmarks = np.asarray(output[f"kps_{stride}"], dtype=np.float32).reshape(-1, 5, 2)
+            grid = np.mgrid[:640 // stride, :640 // stride][::-1].transpose(1, 2, 0).reshape(-1, 2)
+            for i in np.flatnonzero(scores >= 0.8):
+                center = (grid[i] + distances[i, :2]) * stride
+                size = np.exp(np.clip(distances[i, 2:], -16, 16)) * stride
+                box = np.concatenate((center - size / 2, center + size / 2)) / scale
+                points = (landmarks[i] + grid[i]) * stride / scale
                 if np.isfinite(box).all() and np.isfinite(points).all():
                     boxes.append((np.asarray(box, dtype=np.float32), np.asarray(points, dtype=np.float32), float(scores[i])))
         boxes.sort(key=lambda item: -item[2])
@@ -124,13 +128,14 @@ class Models:
             selected.append(box)
             normalized = np.clip(box / np.asarray([width, height, width, height]), 0, 1)
             x1, y1, x2, y2 = map(float, normalized)
-            if x1 >= x2 or y1 >= y2:
+            if x2 - x1 < 0.01 or y2 - y1 < 0.01:
                 continue
             aligned = align(image, points)
-            pixels = np.transpose((np.asarray(aligned, dtype=np.float32) - 127.5) / 127.5, (2, 0, 1))[None]
+            # SFace embeds RGB 0..255; its ONNX graph includes the normalization.
+            pixels = np.transpose(np.asarray(aligned, dtype=np.float32), (2, 0, 1))[None]
             with self.lock:
                 outputs = self.recognizer.run(None, {self.recognizer.get_inputs()[0].name: pixels})
-            kept.append(Face((x1, y1, x2, y2), vector(np.asarray(outputs[0], dtype=np.float32), 512), min(1, max(0, score))))
+            kept.append(Face((x1, y1, x2, y2), vector(np.asarray(outputs[0], dtype=np.float32), 128), min(1, max(0, score))))
             if len(kept) >= 128:
                 break
         return kept
@@ -143,7 +148,7 @@ def iou(a: NDArray[np.float32], b: NDArray[np.float32]) -> float:
 
 
 def align(image: Image.Image, points: NDArray[np.float32]) -> Image.Image:
-    """Fit a similarity transform to ArcFace's five canonical facial landmarks."""
+    """Fit a similarity transform to SFace's five canonical facial landmarks."""
     target = np.asarray([[38.2946, 51.6963], [73.5318, 51.5014], [56.0252, 71.7366],
                          [41.5493, 92.3655], [70.7299, 92.2041]], dtype=np.float64)
     # Solve target -> source for Pillow's inverse affine sampling map.

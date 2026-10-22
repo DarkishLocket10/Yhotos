@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import psycopg
+import pytest
 from PIL import Image
 
 from yhotos_ml.models import EMBED_MODEL, FACE_MODEL, Models
@@ -72,7 +73,7 @@ def test_named_persons_and_hidden_clusters_never_merge(connection: Connection, t
     people = [identifier() for _ in range(3)]
     for i, person in enumerate(people):
         connection.execute("INSERT INTO persons(id,name,hidden) VALUES(%s,%s,%s)", (person, f"name-{i}", i == 2))
-    embedding = serialize(np.asarray([1] + [0] * 511, dtype=np.float32))
+    embedding = serialize(np.asarray([1] + [0] * 127, dtype=np.float32))
     for person in [*people, None, None]:
         connection.execute("""
             INSERT INTO faces(id,photo_id,bbox,embedding,quality,model,person_id)
@@ -94,3 +95,59 @@ def test_nightly_rebuild_deduplicates_and_stale_locks_recover(connection: Connec
     second = claim(connection, "replacement-worker")
     assert second is not None and second["id"] == first["id"] and second["attempts"] == 2
     assert connection.execute("SELECT count(*) AS count FROM jobs WHERE kind='ml.cluster'").fetchone()["count"] == 1
+
+
+def test_face_replay_preserves_named_and_hidden_people(connection: Connection, tmp_path: Path,
+                                                       models: Models, monkeypatch: pytest.MonkeyPatch) -> None:
+    from psycopg.types.json import Jsonb
+    from yhotos_ml.models import Face
+    photo = seed(connection, tmp_path)
+    embedding = np.eye(128, dtype=np.float32)[0]
+    detections = [Face((0.1, 0.1, 0.4, 0.5), embedding, 0.9),
+                  Face((0.6, 0.1, 0.9, 0.5), embedding, 0.9)]
+    monkeypatch.setattr(models, "faces", lambda image: detections)
+
+    def run() -> None:
+        connection.execute("INSERT INTO jobs(id,kind,payload) VALUES(%s,'ml.faces',%s)",
+                           (identifier(), Jsonb({"photo_id": str(photo)})))
+        job = claim(connection, "face-replay")
+        assert job is not None
+        process(connection, models, tmp_path, "face-replay", job)
+        assert connection.execute("SELECT finished_at FROM jobs WHERE id=%s", (job["id"],)).fetchone()["finished_at"]
+
+    run()
+    rows = connection.execute("SELECT id FROM faces WHERE photo_id=%s ORDER BY bbox", (photo,)).fetchall()
+    assert len(rows) == 2
+    people = [identifier(), identifier()]
+    for i, row in enumerate(rows):
+        connection.execute("INSERT INTO persons(id,name,hidden) VALUES(%s,%s,%s)", (people[i], f"person-{i}", i == 1))
+        connection.execute("UPDATE faces SET person_id=%s WHERE id=%s", (people[i], row["id"]))
+    before = connection.execute("SELECT id,person_id FROM faces WHERE photo_id=%s ORDER BY id", (photo,)).fetchall()
+
+    def forbidden(image: Image.Image) -> list[Face]:
+        raise AssertionError("completed input/model must not rerun face inference")
+    monkeypatch.setattr(models, "faces", forbidden)
+    run()
+    with connection.transaction():
+        cluster(connection)
+    assert connection.execute("SELECT id,person_id FROM faces WHERE photo_id=%s ORDER BY id", (photo,)).fetchall() == before
+    assert connection.execute("SELECT name,hidden FROM persons WHERE id=%s", (people[1],)).fetchone() == {"name": "person-1", "hidden": True}
+    assert connection.execute("SELECT count(*) AS n FROM persons").fetchone()["n"] == 2
+
+
+def test_model_upgrade_keeps_legacy_person_assignment(connection: Connection, tmp_path: Path,
+                                                     models: Models, monkeypatch: pytest.MonkeyPatch) -> None:
+    from psycopg.types.json import Jsonb
+    from yhotos_ml.models import Face
+    photo, person, face_id = seed(connection, tmp_path), identifier(), identifier()
+    connection.execute("INSERT INTO persons(id,name,hidden) VALUES(%s,'private person',true)", (person,))
+    connection.execute("""INSERT INTO faces(id,photo_id,model,bbox,embedding,quality,person_id)
+        VALUES(%s,%s,'legacy',ARRAY[0.1,0.1,0.5,0.5],NULL,0.9,%s)""", (face_id, photo, person))
+    monkeypatch.setattr(models, "faces", lambda image: [Face((0.1, 0.1, 0.5, 0.5), np.eye(128, dtype=np.float32)[0], 0.95)])
+    connection.execute("INSERT INTO jobs(id,kind,payload) VALUES(%s,'ml.faces',%s)",
+                       (identifier(), Jsonb({"photo_id": str(photo)})))
+    job = claim(connection, "upgrade")
+    assert job is not None
+    process(connection, models, tmp_path, "upgrade", job)
+    row = connection.execute("SELECT id,person_id,model,vector_dims(embedding) AS dim FROM faces WHERE photo_id=%s", (photo,)).fetchone()
+    assert row == {"id": face_id, "person_id": person, "model": FACE_MODEL, "dim": 128}

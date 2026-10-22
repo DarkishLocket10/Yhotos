@@ -14,7 +14,7 @@ import psycopg
 from numpy.typing import NDArray
 from psycopg.rows import dict_row
 
-from .models import EMBED_MODEL, FACE_MODEL, OCR_MODEL, Models
+from .models import EMBED_MODEL, FACE_MODEL, OCR_MODEL, Models, iou
 from .safety import derivative, vector
 
 Connection: TypeAlias = psycopg.Connection[dict[str, object]]
@@ -27,6 +27,9 @@ WHERE id=(SELECT id FROM jobs WHERE finished_at IS NULL AND locked_at IS NULL
 RETURNING id,kind,payload,attempts,max_attempts
 """
 STOP = threading.Event()
+# OpenCV SFace LFW cosine similarity >= .363 means same person; cosine distance
+# is 1-similarity. Use its published operating point, rather than ArcFace's eps.
+FACE_EPS = 0.637
 
 
 def identifier() -> uuid.UUID:
@@ -81,12 +84,17 @@ def process(conn: Connection, models: Models, root: Path, worker: str, job: dict
         if row is None:
             raise ValueError("large derivative unavailable")
         digest = str(row["hash"])
-        image = derivative(root, digest)
-        if kind in ("ml.embed", "ml.tags"):
+        completed = kind == "ml.faces" and conn.execute(
+            "SELECT FROM face_runs WHERE photo_id=%s AND model=%s AND source_hash=%s",
+            (photo, FACE_MODEL, digest)).fetchone() is not None
+        image = None if completed else derivative(root, digest)
+        if completed:
+            pass
+        elif kind in ("ml.embed", "ml.tags") and image is not None:
             embedding = models.embed_image(image)
-        elif kind == "ml.faces":
+        elif kind == "ml.faces" and image is not None:
             faces = models.faces(image)
-        elif kind == "ml.ocr":
+        elif kind == "ml.ocr" and image is not None:
             ocr = models.read_text(image)
         else:
             raise ValueError("invalid job kind")
@@ -114,12 +122,39 @@ def process(conn: Connection, models: Models, root: Path, worker: str, job: dict
                 ON CONFLICT(photo_id) DO UPDATE SET model=excluded.model,vector=excluded.vector,updated_at=now()
                 """, (photo, EMBED_MODEL, serialize(embedding)))
         elif kind == "ml.faces":
-            conn.execute("DELETE FROM faces WHERE photo_id=%s AND model=%s", (photo, FACE_MODEL))
-            for face in faces:
+            # The photo lock serializes duplicate jobs. Completion also records zero
+            # detections, and is committed atomically with faces and the queue ack.
+            done = conn.execute(
+                "SELECT FROM face_runs WHERE photo_id=%s AND model=%s AND source_hash=%s",
+                (photo, FACE_MODEL, digest)).fetchone()
+            if done is None:
+                previous = conn.execute(
+                    "SELECT id,bbox,person_id FROM faces WHERE photo_id=%s ORDER BY id FOR UPDATE",
+                    (photo,)).fetchall()
+                for face in faces:
+                    box = np.asarray(face.box, dtype=np.float32)
+                    matches = [(iou(box, np.asarray(r["bbox"], dtype=np.float32)), i) for i, r in enumerate(previous)]
+                    overlap, index = max(matches, default=(0.0, -1))
+                    if overlap >= 0.8:
+                        old = previous.pop(index)
+                        # Keep identity and admin decisions during a model upgrade.
+                        conn.execute("""
+                            UPDATE faces SET model=%s,bbox=%s,embedding=%s::vector,quality=%s WHERE id=%s
+                            """, (FACE_MODEL, list(face.box), serialize(face.embedding), face.quality, old["id"]))
+                    else:
+                        conn.execute("""
+                            INSERT INTO faces(id,photo_id,model,bbox,embedding,quality)
+                            VALUES(%s,%s,%s,%s,%s::vector,%s)
+                            """, (identifier(), photo, FACE_MODEL, list(face.box), serialize(face.embedding), face.quality))
+                # Keep assigned legacy boxes if a new detector misses them. Losing a
+                # detection must never erase a name or revive a hidden identity.
+                for old in previous:
+                    if old["person_id"] is None:
+                        conn.execute("DELETE FROM faces WHERE id=%s", (old["id"],))
                 conn.execute("""
-                    INSERT INTO faces(id,photo_id,model,bbox,embedding,quality)
-                    VALUES(%s,%s,%s,%s,%s::vector,%s)
-                    """, (identifier(), photo, FACE_MODEL, list(face.box), serialize(face.embedding), face.quality))
+                    INSERT INTO face_runs(photo_id,model,source_hash) VALUES(%s,%s,%s)
+                    ON CONFLICT(photo_id,model) DO UPDATE SET source_hash=excluded.source_hash
+                    """, (photo, FACE_MODEL, digest))
         elif kind == "ml.ocr":
             conn.execute("""
                 INSERT INTO ocr_text(id,photo_id,model,text) VALUES(%s,%s,%s,%s)
@@ -150,7 +185,7 @@ def process(conn: Connection, models: Models, root: Path, worker: str, job: dict
 
 
 def components(vectors: NDArray[np.float32]) -> list[list[int]]:
-    """DBSCAN with min_samples=2 (including self), cosine eps=.6, bounded block memory."""
+    """DBSCAN with min_samples=2 (including self), cosine eps=.637, bounded block memory."""
     parents = list(range(len(vectors)))
 
     def find(i: int) -> int:
@@ -163,7 +198,7 @@ def components(vectors: NDArray[np.float32]) -> list[list[int]]:
         scores = vectors[start:start + 128] @ vectors.T
         for offset, row in enumerate(scores):
             i = start + offset
-            for j in np.flatnonzero(row >= 0.4):
+            for j in np.flatnonzero(row >= 1 - FACE_EPS):
                 if int(j) > i:
                     parents[find(int(j))] = find(i)
     groups: dict[int, list[int]] = {}
@@ -179,12 +214,12 @@ def cluster(conn: Connection) -> None:
         SELECT f.id,f.embedding::text AS embedding,f.person_id,p.name
         FROM faces f JOIN photos photo ON photo.id=f.photo_id
         LEFT JOIN persons p ON p.id=f.person_id
-        WHERE f.model=%s AND photo.deleted_at IS NULL AND coalesce(p.hidden,false)=false
+        WHERE f.model=%s AND photo.deleted_at IS NULL AND coalesce(p.hidden,false)=false AND f.embedding IS NOT NULL
         ORDER BY f.id FOR UPDATE OF f
         """, (FACE_MODEL,)).fetchall()
     if not rows:
         return
-    vectors = np.stack([vector(np.asarray(json.loads(str(r["embedding"])), dtype=np.float32), 512) for r in rows])
+    vectors = np.stack([vector(np.asarray(json.loads(str(r["embedding"])), dtype=np.float32), 128) for r in rows])
     for group in components(vectors):
         named = {rows[i]["person_id"] for i in group if rows[i]["name"]}
         existing = {rows[i]["person_id"] for i in group if rows[i]["person_id"] is not None}

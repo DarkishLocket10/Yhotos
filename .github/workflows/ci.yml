@@ -174,7 +174,7 @@ jobs:
       - name: Install hashed CPU and check dependencies with Python 3.12
         run: |
           python3.12 -m venv ml/.venv
-          ml/.venv/bin/pip install --require-hashes -r ml/requirements-cpu.txt -r ml/requirements-dev.txt
+          ml/.venv/bin/pip install --no-deps --require-hashes -r ml/requirements-cpu.txt -r ml/requirements-dev.txt
       - name: Download and verify pinned model artifacts at build time
         working-directory: ml
         run: PATH="$PWD/.venv/bin:$PATH" make models

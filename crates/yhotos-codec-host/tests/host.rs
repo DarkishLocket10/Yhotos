@@ -268,3 +268,39 @@ fn filesystem_rejects_input_inside_writable_output() {
     assert_eq!(result.status.code(), Some(2));
     assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
 }
+
+#[test]
+fn face_crop_round_trip_and_box_validation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut request = job(&fixture("photo.jpg"), tmp.path());
+    request["outputs"] = json!([{"name":"face.jpeg","resize":{"long_edge":256,"square":false},"encode":{"Jpeg":{"quality":90,"progressive":true,"chroma_subsampling":false}},"keep_icc":false}]);
+    for bbox in [
+        json!([-0.1, 0.1, 0.5, 0.5]),
+        json!([0.1, 0.1, 1.1, 0.5]),
+        json!([0.5, 0.1, 0.1, 0.5]),
+        json!([0.1, 0.1, 0.105, 0.5]),
+        json!([0.1, 0.1, 0.5]),
+        json!([0.1, null, 0.5, 0.5]),
+    ] {
+        request["crop"] = bbox;
+        assert_eq!(invoke(&request, &[]).status.code(), Some(2));
+    }
+    request["crop"] = json!([0.1, 0.1, 0.5, 0.6]);
+    let result = invoke(&request, &[]);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let report: Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(report["outputs"][0]["width"], 256);
+    assert_eq!(report["outputs"][0]["height"], 256);
+    let id = yhotos_codec::identify(
+        &tmp.path().join("face.jpeg"),
+        &yhotos_codec::Limits::default(),
+    )
+    .unwrap();
+    assert_eq!((id.width, id.height), (256, 256));
+    let meta = yhotos_codec::metadata(&tmp.path().join("face.jpeg")).unwrap();
+    assert!(meta.gps.is_none());
+}

@@ -51,7 +51,14 @@ impl Ingest {
             "outputs":outputs.iter().map(|o| serde_json::json!({"name":o.name,"resize":{"long_edge":o.long_edge,"square":o.square},"encode":o.format.encode(o.long_edge),"keep_icc":o.keep_icc})).collect::<Vec<_>>(),
             "want":["identity","metadata","thumbhash","dominant_colors"]
         });
-        let data = serde_json::to_vec(&request)
+        self.run_request(&request, attempt).await
+    }
+    pub(crate) async fn run_request<T: serde::de::DeserializeOwned>(
+        &self,
+        request: &serde_json::Value,
+        attempt: i32,
+    ) -> Result<T, JobError> {
+        let data = serde_json::to_vec(request)
             .map_err(|_| JobError::Fatal("invalid codec request".into()))?;
         let mut command = Command::new(&self.codec_host);
         command

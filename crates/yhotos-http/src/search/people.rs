@@ -16,6 +16,7 @@ use axum::{
 };
 use uuid::Uuid;
 use yhotos_db::{audit, faces};
+mod previews;
 
 fn guard(current: &Current) -> Result<(), HttpError> {
     if current.0.is_admin
@@ -32,6 +33,7 @@ pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/admin/people", get(index))
         .route("/admin/people/search", get(search))
+        .route("/admin/people/faces/{face}", get(previews::serve))
         .route("/admin/people/rebuild", post(rebuild))
         .route("/admin/people/{id}", post(update).get(person))
         .route("/admin/people/{id}/merge", post(merge))

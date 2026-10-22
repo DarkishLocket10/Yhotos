@@ -257,7 +257,7 @@ fn analytics_redacts_identifying_text() {
 async fn hidden_people_never_appear_in_admin_search(pool: PgPool) {
     let _state = fixture(&pool).await;
     let id = uuid::Uuid::now_v7();
-    let vector = format!("[1,{}]", vec!["0"; 511].join(","));
+    let vector = format!("[1,{}]", vec!["0"; 127].join(","));
     sqlx::query!(
         "INSERT INTO persons(id,name) VALUES($1,'Fixture person')",
         id
@@ -291,4 +291,83 @@ async fn hidden_people_never_appear_in_admin_search(pool: PgPool) {
             .unwrap()
             .is_empty()
     );
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn semantic_scan_continues_past_excluded_nearest_neighbors(pool: PgPool) {
+    let state = fixture(&pool).await;
+    let album = AlbumId::new();
+    sqlx::query!(
+        "INSERT INTO albums(id,slug,title) VALUES($1,'excluded','Excluded')",
+        album.0
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    // More excluded nearest neighbors than ef_search. Half are restricted and
+    // half visible but fail the camera filter. Eligible neighbors are farther.
+    let ids: Vec<_> = (0..600).map(|_| PhotoId::new()).collect();
+    let short: Vec<_> = ids
+        .iter()
+        .map(|id| ShortId::from_photo_id(*id).to_string())
+        .collect();
+    let ids: Vec<_> = ids.iter().map(|id| id.0).collect();
+    sqlx::query!("INSERT INTO photos(id,short_id,album_id,title,original_hash,original_name,original_bytes,mime,kind,status,visibility,camera_model) SELECT id,short_id,$3,'excluded',repeat('b',64),'fixture.jpg',1,'image/jpeg','image','ready',CASE WHEN n<=300 THEN 'restricted'::visibility ELSE 'public'::visibility END,CASE WHEN n<=300 THEN 'Test camera' ELSE 'other' END FROM unnest($1::uuid[],$2::text[]) WITH ORDINALITY AS f(id,short_id,n)",&ids,&short,album.0).execute(&pool).await.unwrap();
+    let near = format!("[1,{}]", vec!["0"; 767].join(","));
+    sqlx::query!("INSERT INTO embeddings(photo_id,model,vector) SELECT id,$2,$3::text::vector FROM unnest($1::uuid[]) id",&ids,search::EMBED_MODEL,near).execute(&pool).await.unwrap();
+    let eligible = format!("[0.8,0.6,{}]", vec!["0"; 766].join(","));
+    sqlx::query!(
+        "UPDATE embeddings SET vector=$1::text::vector WHERE photo_id=$2",
+        eligible,
+        uuid::Uuid::from_u128(1)
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query!("ANALYZE photos,embeddings")
+        .execute(&pool)
+        .await
+        .unwrap();
+    // Force the HNSW path even for this deliberately small regression fixture.
+    let options = state
+        .pool
+        .connect_options()
+        .as_ref()
+        .clone()
+        .options([("enable_seqscan", "off"), ("enable_bitmapscan", "off")]);
+    let hnsw = sqlx::postgres::PgPoolOptions::new()
+        .connect_with(options)
+        .await
+        .unwrap();
+    let p = access_sql::visible_photos(&Principal::Anonymous);
+    let filters = [search::Filter {
+        key: "camera".into(),
+        value: "test camera".into(),
+    }];
+    for (vector, like) in [
+        (Some(near.as_str()), None),
+        (None, Some(short[599].as_str())),
+    ] {
+        let rows = search::candidates(&hnsw, &p, &filters, "", vector, like, List::Semantic)
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].photo.id.0, uuid::Uuid::from_u128(1));
+    }
+}
+
+#[tokio::test]
+async fn private_face_routes_are_unreachable_on_public_listener() {
+    let app = crate::public_router(crate::tests::state(false, 600));
+    for path in [
+        "/admin/people/faces/00000000-0000-0000-0000-000000000001.jpeg".into(),
+        format!("/i/{}/face.jpeg", "a".repeat(64)),
+        format!("/i/{}/face.avif", "a".repeat(64)),
+        format!("/i/{}/face.jpeg.hdr", "a".repeat(64)),
+    ] {
+        assert_eq!(
+            app.clone().oneshot(request(&path)).await.unwrap().status(),
+            StatusCode::NOT_FOUND
+        );
+    }
 }
