@@ -44,7 +44,8 @@ WT="$REPO_ROOT/.worktrees/$TASK_ID"
 # Memory guard (Linux and macOS).
 free_gb() {
   if [[ "$(uname)" == "Darwin" ]]; then
-    vm_stat | awk '/Pages free|Pages inactive|Pages speculative/ {s+=$NF} END {printf "%d", s*4096/1073741824}'
+    local page; page="$(sysctl -n hw.pagesize)"
+    vm_stat | awk -v p="$page" '/Pages free|Pages inactive|Pages speculative|Pages purgeable/ {s+=$NF} END {printf "%d", s*p/1073741824}'
   else
     awk '/MemAvailable/ {printf "%d", $2/1048576}' /proc/meminfo
   fi
