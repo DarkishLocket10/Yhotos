@@ -89,7 +89,8 @@ trap 'rm -f "$PROMPT_FILE"' EXIT
 {
   echo "You are implementing one task for Yhotos. Read AGENTS.md first, then the brief below in full, then the docs it lists."
   echo "Work only inside this worktree. Do not push, do not open a PR, do not run git commands that touch other branches."
-  echo "Run scripts/check.sh before you finish. Commit your work in small logical commits using the commit style in AGENTS.md."
+  echo "The .git directory is read only in your sandbox: do not try to commit; this script commits your working tree when you finish."
+  echo "Run scripts/check.sh before you finish."
   echo "Your final message must be the PR description, following .github/pull_request_template.md exactly, starting with the '## Task' heading."
   echo
   if [[ -n "$RESUME_MSG" ]]; then
@@ -108,6 +109,7 @@ echo "running codex ($MODEL, effort $EFFORT) in $WT on $BRANCH"
 codex exec \
   -C "$WT" \
   --add-dir "$REPO_ROOT/.git" \
+  --add-dir "$HOME/.cargo" \
   -m "$MODEL" \
   -c "model_reasoning_effort=\"$EFFORT\"" \
   -c 'approval_policy="never"' \

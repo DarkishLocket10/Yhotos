@@ -21,7 +21,7 @@ Security
 - New dependencies need a one-line justification in the PR description and must pass `cargo deny check`. Prefer crates that are widely used, actively maintained, and small. Pin exact versions in `Cargo.toml`.
 - Never log tokens, passwords, session ids, or full request bodies. Log ids and outcomes.
 - Constant-time comparison for any secret (`subtle` crate). Hash tokens before storing them.
-- Any file path derived from input goes through the storage layer's safe-join; never concatenate paths yourself.
+- Any file path derived from untrusted input (request data, uploads, metadata, database text) goes through the storage layer's safe-join; never concatenate such paths yourself. Paths handed to you by another trusted component (a job payload built by the pipeline, a command line argument from the worker) are validated by canonicalizing and prefix-checking, as the brief describes.
 - Error responses to the public never reveal internals: no stack traces, no SQL, no file paths, no dependency names.
 
 Performance
@@ -57,6 +57,7 @@ Scope
   ```
 
 - One PR per task. The PR description follows `.github/pull_request_template.md`.
+- Inside the Codex sandbox the `.git` directory is read only, so you cannot commit. Do not try. The run script commits your working tree and opens the PR when you finish; your final message becomes the PR description.
 - Never force push. Never rewrite history on a shared branch. Never push to `main`.
 
 ## Definition of done

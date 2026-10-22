@@ -28,6 +28,9 @@ crates: [yhotos-codec, yhotos-codec-host]
 
 ## Design
 
+### Path handling (read before anything else)
+This task does not depend on `yhotos-storage` and does not need `safe_join`. The codec crate receives paths from its caller (the pipeline or the host binary) and the host receives `input` and `out_dir` from the worker, which built them. Both are trusted components. The host validates them by canonicalizing and checking that `input` is a regular file and every output lands under the canonical `out_dir` (reject `..`, absolute names, and symlinks in output names, which are the only strings in the job that could come from elsewhere). That is the whole path policy for this task.
+
 ### yhotos-codec
 The only crate allowed `unsafe`. `#![deny(unsafe_op_in_unsafe_fn)]`, and every `unsafe` block has a `// SAFETY:` comment. Use the `libvips` crate if it supports the needed operations with a current libvips (8.15+); otherwise write a minimal `vips-sys` module with `bindgen` at build time (a `build.rs` is allowed in this crate only, and it must only link, never download). Decide in the first hour and record the reason in the PR.
 
