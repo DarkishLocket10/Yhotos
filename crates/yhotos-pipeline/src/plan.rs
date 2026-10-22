@@ -150,7 +150,9 @@ impl VariantPlan {
                         format: *format,
                         long_edge: v.long_edge * scale,
                         square: v.square,
-                        keep_icc: *format != Format::Jpeg || v.long_edge >= 1280,
+                        // The sRGB conversion applies to JPEG outputs below medium by
+                        // their actual (scaled) size, so small2x keeps the source profile.
+                        keep_icc: *format != Format::Jpeg || v.long_edge * scale >= 1280,
                     });
                 }
             }
@@ -158,9 +160,10 @@ impl VariantPlan {
         if outputs.is_empty() || outputs.len() > 32 {
             return Err(JobError::Fatal("invalid output count".into()));
         }
-        // Encoder policy revision 3 invalidates derivatives made with the old
-        // large-output settings, even when the configured sizes are unchanged.
-        let bytes = serde_json::to_vec(&(3, self))
+        // Encoder policy revision 4 invalidates derivatives made with the old
+        // large-output settings or the old small2x JPEG profile conversion, even
+        // when the configured sizes are unchanged.
+        let bytes = serde_json::to_vec(&(4, self))
             .map_err(|_| JobError::Fatal("invalid variant plan".into()))?;
         Ok((blake3::hash(&bytes).to_hex().to_string(), outputs))
     }
@@ -199,5 +202,36 @@ mod tests {
         let mut plan = VariantPlan::default();
         plan.variants.push(plan.variants[0].clone());
         assert!(plan.expand().is_err());
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod icc_policy_tests {
+    use super::*;
+
+    #[test]
+    fn jpeg_keeps_source_profile_from_medium_size_by_actual_scaled_edge() {
+        let (_, outputs) = VariantPlan::default().expand().unwrap();
+        let jpeg = |variant: &str| {
+            outputs
+                .iter()
+                .find(|o| o.variant == variant && o.format == Format::Jpeg)
+                .unwrap()
+        };
+        // small2x is 1280 px, the same size as medium, so it must not be converted to sRGB.
+        assert_eq!(jpeg("small2x").long_edge, 1280);
+        assert!(jpeg("small2x").keep_icc);
+        assert!(jpeg("medium").keep_icc);
+        // Below medium, JPEG fallbacks convert to sRGB.
+        assert!(!jpeg("small").keep_icc);
+        assert!(!jpeg("thumb").keep_icc);
+        // AVIF and JXL always keep the profile.
+        assert!(
+            outputs
+                .iter()
+                .filter(|o| o.format != Format::Jpeg)
+                .all(|o| o.keep_icc)
+        );
     }
 }
