@@ -65,6 +65,34 @@ with tempfile.TemporaryDirectory() as tmp:
     annotated(dest/'chart-srgb.png',str(dest/'exif-heavy.jpg')+'[Q=100]',strings=strings,xmp=xmp)
     for suffix in ['avif','jxl','heic']:
         v('copy',dest/'chart-srgb.png',str(dest/f'chart.{suffix}')+('[Q=95,effort=3]' if suffix!='jxl' else '[distance=0,effort=3]'))
+    # NCLX-only Display P3: libvips' HEIF saver writes ICC but has no NCLX
+    # option. Replace the generated ICC property, padding at the end of ipco
+    # with a free box so property indices and absolute iloc offsets stay fixed.
+    def nclx_only(path):
+        data=bytearray(path.read_bytes())
+        colr=data.index(b'colr')-4; ipco=data.index(b'ipco')-4
+        size=struct.unpack_from('>I',data,colr)[0]
+        end=ipco+struct.unpack_from('>I',data,ipco)[0]
+        assert data[colr+8:colr+12]==b'rICC' and colr+size<=end
+        profile=struct.pack('>I4s4sHHHB',19,b'colr',b'nclx',12,13,0,128)
+        padding=struct.pack('>I4s',size-19,b'free')+bytes(size-27)
+        data[colr:end]=profile+data[colr+size:end]+padding
+        path.write_bytes(data)
+    for compression,suffix in [('av1','avif'),('hevc','heic')]:
+        out=dest/f'chart-p3-nclx.{suffix}'
+        v('heifsave',dest/'chart-p3.png',out,'--lossless','--effort=0',
+          '--subsample-mode=off',f'--compression={compression}')
+        nclx_only(out)
+    # Committed decoder inputs keep CI independent of HEVC encoders (Ubuntu
+    # installs decoders only) and CLI bitdepth options across libvips versions.
+    rgba=b''.join(struct.pack('=4H',16384,32768,49152,alpha)
+                  for y in range(32) for alpha in [0,32768,65535] for x in range(32))
+    (t/'rgba.raw').write_bytes(rgba)
+    v('rawload',t/'rgba.raw',t/'rgba.v',96,32,4,'--format=ushort','--interpretation=rgb16')
+    for bits in [10,12]:
+        for compression,suffix in [('av1','avif'),('hevc','heic')]:
+            v('heifsave',t/'rgba.v',dest/f'alpha-{bits}.{suffix}','--lossless',
+              '--effort=0',f'--compression={compression}',f'--bitdepth={bits}')
     v('colourspace',dest/'chart-srgb.png',t/'float.v','scrgb')
     v('tiffsave',t/'float.v',dest/'float.tif','--compression=deflate')
     # libavif >=1.2 emits a real tmap derived image, two dimg references,

@@ -66,6 +66,7 @@ fn identify_fixture_matrix() {
         ("tiny-1x1.jpg", Kind::Jpeg, 1, 1, 8, false, false),
         ("wide-8000x100.jpg", Kind::Jpeg, 8000, 100, 8, false, false),
         ("chart.avif", Kind::Avif, 384, 256, 8, false, true),
+        ("chart-p3-nclx.avif", Kind::Avif, 384, 256, 8, false, false),
         ("gain-map.avif", Kind::Avif, 32, 32, 8, false, false),
         ("float.tif", Kind::Tiff, 384, 256, 32, false, true),
         ("chart.jxl", Kind::Jxl, 384, 256, 8, false, true),
@@ -89,6 +90,20 @@ fn identify_fixture_matrix() {
     }
     #[cfg(feature = "heif")]
     {
+        let p3 = identify(&fixture("chart-p3-nclx.heic"), &Limits::default()).unwrap();
+        assert_eq!(
+            (
+                p3.kind,
+                p3.width,
+                p3.height,
+                p3.bits,
+                p3.has_alpha,
+                p3.has_icc,
+                p3.orientation,
+                p3.pages
+            ),
+            (Kind::Heif, 384, 256, 8, false, false, 1, 1)
+        );
         let id = identify(&fixture("chart.heic"), &Limits::default()).unwrap();
         assert_eq!(
             (
@@ -211,7 +226,14 @@ fn charts_preserve_lab_and_profiles_in_every_encoder() {
         .iter()
         .map(|p| std::array::from_fn(|i| p[i].as_f64().unwrap()))
         .collect();
-    for name in ["chart-srgb.png", "chart-p3.png", "chart-adobergb.jpg"] {
+    for name in [
+        "chart-srgb.png",
+        "chart-p3.png",
+        "chart-adobergb.jpg",
+        "chart-p3-nclx.avif",
+        #[cfg(feature = "heif")]
+        "chart-p3-nclx.heic",
+    ] {
         let w = resize(
             &load(name),
             ResizeSpec {
@@ -776,41 +798,9 @@ fn jxl_header_probe_enforces_a_cumulative_input_cap() {
 #[test]
 fn heif_high_bit_depth_alpha_round_trips_transparent_partial_and_opaque() {
     let tmp = tempfile::tempdir().unwrap();
-    let raw = tmp.path().join("rgba.raw");
-    let mut bytes = Vec::new();
-    for _ in 0..32 {
-        for alpha in [0u16, 32768, 65535] {
-            for _ in 0..32 {
-                for sample in [16384u16, 32768, 49152, alpha] {
-                    bytes.extend(sample.to_ne_bytes());
-                }
-            }
-        }
-    }
-    std::fs::write(&raw, bytes).unwrap();
-    let source = tmp.path().join("rgba.v");
-    run(&[
-        "rawload".as_ref(),
-        raw.as_os_str(),
-        source.as_os_str(),
-        "96".as_ref(),
-        "32".as_ref(),
-        "4".as_ref(),
-        "--format=ushort".as_ref(),
-        "--interpretation=rgb16".as_ref(),
-    ]);
     for bits in [10u32, 12] {
         for (compression, suffix) in [("av1", "avif"), ("hevc", "heic")] {
-            let input = tmp.path().join(format!("alpha-{bits}.{suffix}"));
-            run(&[
-                "heifsave".as_ref(),
-                source.as_os_str(),
-                input.as_os_str(),
-                "--lossless".as_ref(),
-                "--effort=0".as_ref(),
-                format!("--compression={compression}").as_ref(),
-                format!("--bitdepth={bits}").as_ref(),
-            ]);
+            let input = fixture(&format!("alpha-{bits}.{suffix}"));
             let id = identify(&input, &Limits::default()).unwrap();
             assert_eq!(u32::from(id.bits), bits);
             assert!(id.has_alpha);
@@ -1484,7 +1474,7 @@ fn makernote_tiff(make: &str, little: bool, exif: bool, note: &[u8]) -> Vec<u8> 
         (256, 4, 1, 1024),
         (257, 4, 1, 768),
         (271, 2, make.len() as u64 + 1, 256),
-        (50706, 1, 4, 0),
+        (33422, 1, 4, 0),
     ];
     root.push(if exif {
         (34665, 4, 1, 128)
@@ -1512,7 +1502,6 @@ fn makernote_layouts(little: bool) -> Vec<(&'static str, Vec<u8>, bool, u64)> {
     vec![
         ("Canon", vec![], little, 0),
         ("SONY", vec![], little, 0),
-        ("Panasonic", b"Panasonic\0\0\0".to_vec(), little, 0),
         ("NIKON CORPORATION", nikon, !little, 522),
         (
             "OLYMPUS IMAGING CORP.",
@@ -1667,6 +1656,7 @@ fn olympus_child_directories_and_fujifilm_rawler_view_are_also_bounded() {
     let mut note = b"FUJIFILM\x0c\0\0\0".to_vec();
     note.extend(&tiff_entries(&[(65000, 4, 1, 17)], false, true)[8..]);
     let mut bytes = makernote_tiff("FUJIFILM", false, true, &note);
+    bytes[46..48].copy_from_slice(&50706u16.to_be_bytes());
     let mut dng = tiff::Tiff::from_file(
         std::io::Cursor::new(&bytes),
         bytes.len() as u64,
@@ -1698,13 +1688,7 @@ fn olympus_child_directories_and_fujifilm_rawler_view_are_also_bounded() {
 #[test]
 fn unrecognized_makernote_headers_are_unsupported() {
     let tmp = tempfile::Builder::new().suffix(".dng").tempfile().unwrap();
-    for make in [
-        "NIKON CORPORATION",
-        "Panasonic",
-        "OLYMPUS",
-        "FUJIFILM",
-        "PENTAX",
-    ] {
+    for make in ["NIKON CORPORATION", "OLYMPUS", "FUJIFILM", "PENTAX"] {
         let note = [0; 32];
         std::fs::write(tmp.path(), makernote_tiff(make, true, true, &note)).unwrap();
         rejected_tiff(tmp.path(), &CodecError::Unsupported);
@@ -2863,4 +2847,244 @@ fn heif_gain_map_box_extents_counts_and_scan_budgets_are_bounded() {
     bytes.extend(u64::MAX.to_be_bytes());
     std::fs::write(tmp.path(), bytes).unwrap();
     assert_eq!(headers::gain_map(tmp.path()), Err(CodecError::Decode));
+}
+
+#[cfg(feature = "raw")]
+#[test]
+fn apple_and_other_dng_makernotes_stay_opaque_through_preview_and_metadata() {
+    let tmp = tempfile::Builder::new().suffix(".dng").tempfile().unwrap();
+    let jpeg = std::fs::read(fixture("chart-adobergb.jpg")).unwrap();
+    let reference = load("chart-adobergb.jpg").image.pixels().unwrap();
+    // DNG dispatch ignores vendor notes for all makes, including vendors whose
+    // native RAW decoder consumes them. These bytes are not a TIFF directory.
+    for make in ["Apple", "Android", "SONY", "NIKON CORPORATION", "PENTAX"] {
+        let mut bytes = tiff_entries(
+            &[
+                (256, 4, 1, 1024),
+                (257, 4, 1, 768),
+                (258, 3, 1, 16),
+                (259, 3, 1, 1),
+                (262, 3, 1, 34892),
+                (271, 2, make.len() as u64 + 1, 256),
+                (272, 2, 7, 320),
+                (274, 3, 1, 1),
+                (277, 3, 1, 3),
+                (34665, 4, 1, 512),
+                (50706, 1, 4, 0x0000_0401),
+                (513, 4, 1, 2048),
+                (514, 4, 1, jpeg.len() as u64),
+            ],
+            false,
+            true,
+        );
+        bytes.resize(256, 0);
+        bytes.extend(make.as_bytes());
+        bytes.push(0);
+        bytes.resize(320, 0);
+        bytes.extend(b"iPhone\0");
+        bytes.resize(512, 0);
+        bytes.extend(&tiff_entries(&[(37500, 7, 16, 1024)], false, true)[8..]);
+        bytes.resize(1024, 0);
+        bytes.extend(b"Apple iOS\0\xff\xff\xff\xff\xff\xff");
+        bytes.resize(2048, 0);
+        bytes.extend(&jpeg);
+        std::fs::write(tmp.path(), &bytes).unwrap();
+        let id = identify(tmp.path(), &Limits::default()).unwrap();
+        assert_eq!(id.kind, Kind::Raw(RawMake(make.to_owned())));
+        assert_eq!((id.width, id.height), (1024, 768));
+        assert!(id.has_icc);
+        let working = decode(tmp.path(), &id, &Limits::default()).unwrap();
+        assert_eq!(working.dimensions().unwrap(), (384, 256));
+        assert_eq!(working.image.pixels().unwrap(), reference);
+        let md = metadata(tmp.path()).unwrap();
+        assert_eq!(md.make.as_deref(), Some(make));
+        assert_eq!(md.model.as_deref(), Some("iPhone"));
+        assert_eq!(md.orientation, 1);
+        // Opacity does not exempt the blob's declared allocation or extent.
+        for (count, offset, error) in [
+            ((256u32 << 20) + 1, 1024u32, CodecError::Limits),
+            (16, bytes.len() as u32, CodecError::Decode),
+        ] {
+            let mut invalid = bytes.clone();
+            invalid[518..522].copy_from_slice(&count.to_le_bytes());
+            invalid[522..526].copy_from_slice(&offset.to_le_bytes());
+            std::fs::write(tmp.path(), invalid).unwrap();
+            if error == CodecError::Limits {
+                tmp.as_file().set_len(u64::from(count) + 1024).unwrap();
+            }
+            rejected_tiff(tmp.path(), &error);
+        }
+    }
+}
+
+#[test]
+fn nclx_profiles_are_attached_before_import_and_unsupported_values_are_typed() {
+    let source = fixture("chart-p3-nclx.avif");
+    let original = std::fs::read(&source).unwrap();
+    let at = original.windows(4).position(|w| w == b"nclx").unwrap();
+    let tmp = tempfile::Builder::new().suffix(".avif").tempfile().unwrap();
+    let limits = Limits::default();
+    let id = identify(&source, &limits).unwrap();
+    assert!(!id.has_icc); // NCLX is a color profile, but not an embedded ICC.
+    assert!(id.icc_desc.as_deref().unwrap().contains("Display P3"));
+    assert!(
+        metadata(&source)
+            .unwrap()
+            .icc_desc
+            .unwrap()
+            .contains("Display P3")
+    );
+    let cases = [
+        (1u16, 13u16, 0u16),
+        (1, 1, 1),
+        (12, 13, 1),
+        (9, 16, 9),
+        (9, 18, 9),
+    ];
+    // The decoded RGB interpretation of full/limited YCbCr is libheif's job.
+    for (primaries, transfer, matrix) in cases {
+        let mut bytes = original.clone();
+        for (offset, value) in [(4, primaries), (6, transfer), (8, matrix)] {
+            bytes[at + offset..at + offset + 2].copy_from_slice(&value.to_be_bytes());
+        }
+        std::fs::write(tmp.path(), &bytes).unwrap();
+        let id = identify(tmp.path(), &limits).unwrap();
+        let working = decode(tmp.path(), &id, &limits).unwrap();
+        let profile = working.profile.unwrap();
+        assert!(native::rgb_profile(&profile));
+        assert!(
+            native::profile_description(&profile)
+                .unwrap()
+                .contains("NCLX")
+        );
+    }
+    for (primaries, transfer, matrix) in [
+        (2u16, 13u16, 0u16),
+        (12, 1, 0),
+        (9, 13, 9),
+        (12, 13, 10),
+        (12, 13, 65535),
+    ] {
+        let mut bytes = original.clone();
+        for (offset, value) in [(4, primaries), (6, transfer), (8, matrix)] {
+            bytes[at + offset..at + offset + 2].copy_from_slice(&value.to_be_bytes());
+        }
+        std::fs::write(tmp.path(), bytes).unwrap();
+        assert_eq!(identify(tmp.path(), &limits), Err(CodecError::Unsupported));
+        assert!(matches!(
+            decode(tmp.path(), &id, &limits),
+            Err(CodecError::Unsupported)
+        ));
+        assert!(matches!(metadata(tmp.path()), Err(CodecError::Unsupported)));
+    }
+    // Known inverse-transfer points, independent of lcms' profile serializer.
+    assert!((native::nclx_linear(0, 0.5) - 0.214_041_14).abs() < 1e-8);
+    assert!((native::nclx_linear(1, 0.5) - 0.259_589_4).abs() < 1e-7);
+    assert!((native::nclx_linear(3, 0.508_078_421_5) - 0.01).abs() < 1e-10); // 100 nit PQ
+    assert!((native::nclx_linear(4, 0.5) - 1.0 / 12.0).abs() < 1e-10);
+    for index in 0..5 {
+        assert!(native::nclx_linear(index, 0.0).abs() < 1e-8);
+        assert!((native::nclx_linear(index, 1.0) - 1.0).abs() < 1e-7);
+    }
+}
+
+fn nclx_meta(wide_id: bool, wide_property: bool, index: u16, profile: &[u8]) -> Vec<u8> {
+    let id = if wide_id {
+        70_000u32.to_be_bytes().to_vec()
+    } else {
+        1u16.to_be_bytes().to_vec()
+    };
+    let mut primary = vec![u8::from(wide_id), 0, 0, 0];
+    primary.extend(&id);
+    let mut association = vec![u8::from(wide_id), 0, 0, u8::from(wide_property)];
+    association.extend(1u32.to_be_bytes());
+    association.extend(id);
+    association.push(1);
+    if wide_property {
+        association.extend((index | 0x8000).to_be_bytes());
+    } else {
+        association.push(index as u8 | 0x80);
+    }
+    let mut properties = bmff_box(b"ipma", &association); // order independent
+    properties.extend(bmff_box(b"ipco", &bmff_box(b"colr", profile)));
+    let mut children = bmff_box(b"pitm", &primary);
+    children.extend(bmff_box(b"iprp", &properties));
+    heif_meta(&children)
+}
+
+#[test]
+fn nclx_primary_associations_extents_and_counts_are_bounded() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let profile = b"nclx\0\x0c\0\x0d\0\x01\x80";
+    let parse = |bytes: &[u8]| {
+        std::fs::write(tmp.path(), bytes).unwrap();
+        bmff::heif_info(tmp.reopen().unwrap())
+    };
+    for wide_id in [false, true] {
+        for wide_property in [false, true] {
+            let bytes = nclx_meta(wide_id, wide_property, 1, profile);
+            let nclx = parse(&bytes).unwrap().nclx.unwrap();
+            assert_eq!(
+                (nclx.primaries, nclx.transfer, nclx.matrix, nclx.full_range),
+                (12, 13, 1, true)
+            );
+            assert!(
+                parse(&nclx_meta(wide_id, wide_property, 0, profile))
+                    .unwrap()
+                    .nclx
+                    .is_none()
+            );
+            assert!(matches!(
+                parse(&nclx_meta(wide_id, wide_property, 2, profile)),
+                Err(CodecError::Decode)
+            ));
+            for end in 0..profile.len() {
+                assert!(matches!(
+                    parse(&nclx_meta(wide_id, wide_property, 1, &profile[..end])),
+                    Err(CodecError::Decode)
+                ));
+            }
+            let ipma = bytes.windows(4).position(|w| w == b"ipma").unwrap();
+            let mut invalid = bytes.clone();
+            invalid[ipma + 8..ipma + 12].copy_from_slice(&4097u32.to_be_bytes());
+            assert!(matches!(parse(&invalid), Err(CodecError::Limits)));
+            let mut invalid = bytes.clone();
+            invalid[ipma + 12 + if wide_id { 4 } else { 2 }] = 255;
+            assert!(matches!(parse(&invalid), Err(CodecError::Decode)));
+            let mut invalid = bytes.clone();
+            let nclx = invalid.windows(4).position(|w| w == b"nclx").unwrap();
+            invalid[nclx + 10] = 1; // reserved range bits
+            assert!(matches!(parse(&invalid), Err(CodecError::Decode)));
+        }
+    }
+    // A valid NCLX property belonging only to a thumbnail must not override
+    // the primary's default/ICC color space.
+    let mut bytes = nclx_meta(false, false, 1, profile);
+    let pitm = bytes.windows(4).position(|w| w == b"pitm").unwrap();
+    bytes[pitm + 8..pitm + 10].copy_from_slice(&2u16.to_be_bytes());
+    assert!(parse(&bytes).unwrap().nclx.is_none());
+}
+
+#[cfg(feature = "raw")]
+#[test]
+fn native_raw_decoders_that_ignore_makernotes_keep_the_blob_opaque() {
+    for make in [
+        "Panasonic",
+        "LEICA",
+        "Hasselblad",
+        "Phase One",
+        "Leaf",
+        "Mamiya-OP Co.,Ltd.",
+        "KODAK",
+        "Kodak",
+    ] {
+        let bytes = makernote_tiff(make, true, true, b"opaque camera note, not an IFD");
+        let mut tiff = tiff::Tiff::from_file(
+            std::io::Cursor::new(&bytes),
+            bytes.len() as u64,
+            &Limits::default(),
+        )
+        .unwrap();
+        assert!(tiff.makernotes(make).unwrap().is_empty(), "{make}");
+    }
 }

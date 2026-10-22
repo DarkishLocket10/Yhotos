@@ -271,6 +271,34 @@ impl<F: Read + Seek> Tiff<F> {
     }
     #[cfg(feature = "raw")]
     pub(crate) fn makernotes(&mut self, make: &str) -> Result<Vec<usize>, CodecError> {
+        // DNG dispatch in rawler precedes vendor dispatch and never parses
+        // MakerNote IFDs (including Apple ProRAW notes). All entry extents and
+        // declared allocations were already checked by directory_at; keep the
+        // blob opaque instead of imposing a vendor IFD layout it does not use.
+        if self.has(0, 50706) {
+            return Ok(Vec::new());
+        }
+        // These TIFF decoders do not parse EXIF MakerNote IFDs in rawler
+        // 0.8.0. IIQ/DCR use separate vendor directories, not this blob.
+        // Kodak's DCS560C model is dispatched to Canon before Make dispatch.
+        if matches!(
+            make,
+            "Panasonic"
+                | "LEICA"
+                | "LEICA CAMERA AG"
+                | "Hasselblad"
+                | "Phase One"
+                | "Phase One A/S"
+                | "Leaf"
+                | "Mamiya-OP Co.,Ltd."
+                | "KODAK"
+                | "Kodak"
+        ) && self
+            .blob(0, 272, 256)?
+            .is_none_or(|model| model.strip_suffix(&[0]).unwrap_or(&model) != b"DCS560C")
+        {
+            return Ok(Vec::new());
+        }
         let mut indices = Vec::new();
         for i in 0..self.count() {
             let Some(entry) = self.entry(i, 37500) else {

@@ -54,12 +54,18 @@ fn codec(c: &mut Criterion) {
     for (name, file) in [
         ("identify_avif", "chart.avif"),
         ("identify_gain_map", "gain-map.avif"),
+        ("identify_p3_nclx", "chart-p3-nclx.avif"),
     ] {
         let input = root().join("images").join(file);
         c.bench_function(&format!("codec/{name}"), |b| {
             b.iter(|| yhotos_codec::identify(black_box(&input), &limits).unwrap());
         });
     }
+    let p3 = root().join("images/chart-p3-nclx.avif");
+    let p3_id = yhotos_codec::identify(&p3, &limits).unwrap();
+    c.bench_function("codec/decode_p3_nclx", |b| {
+        b.iter(|| yhotos_codec::decode(black_box(&p3), &p3_id, &limits).unwrap());
+    });
     let float = root().join("images/float.tif");
     let float_id = yhotos_codec::identify(&float, &limits).unwrap();
     c.bench_function("codec/decode_float", |b| {

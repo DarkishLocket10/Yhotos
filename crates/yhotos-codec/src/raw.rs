@@ -13,9 +13,10 @@
 //! - Sony ARW: common TIFF/sensor checks plus ARW1's eight extra coded rows.
 //! - DNG (any make): common TIFF/SubIFD checks, lossless JPEG and JPEG XL
 //!   (Compression=52546) frame dimensions before sensor decoding.
-//! - Canon/Sony/Panasonic/Nikon/Olympus/Fujifilm `MakerNotes`: vendor header,
+//! - Canon/Sony/Nikon/Olympus/Fujifilm `MakerNotes`: vendor header,
 //!   byte order, offset base, note table extent and shared TIFF budgets.
-//!   Unsupported make/header layouts never enter rawler.
+//!   Unsupported consumed layouts never enter rawler. DNG (including Apple)
+//!   and TIFF decoders which ignore the note retain only blob extent/budget checks.
 //! - Other TIFF-based makes use the common checks, with no make-specific probe;
 //!   other proprietary containers return Unsupported, never a dummy decode.
 use crate::{CodecError, Identity, Kind, Limits, Metadata, RawMake, Working, native};

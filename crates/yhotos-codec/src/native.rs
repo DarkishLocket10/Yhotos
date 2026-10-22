@@ -86,6 +86,13 @@ impl Image {
     }
     pub(crate) fn load(path: &Path, kind: &Kind) -> Result<Self, CodecError> {
         init()?;
+        let info = if matches!(kind, Kind::Heif | Kind::Avif) {
+            Some(crate::bmff::heif_info(
+                std::fs::File::open(path).map_err(|_| CodecError::Io)?,
+            )?)
+        } else {
+            None
+        };
         let path = path_string(path)?;
         // Dispatch only to the decoder selected by our magic sniffer. Generic
         // foreign_find_load probes unrelated fallback loaders (including Magick
@@ -95,7 +102,7 @@ impl Image {
         if matches!(kind, Kind::Heif) {
             return Err(CodecError::Unsupported);
         }
-        operation!(|out| match kind {
+        let image = operation!(|out| match kind {
             Kind::Jpeg => ffi::vips_jpegload(path.as_ptr(), out, c"fail_on".as_ptr(), 3i32, END),
             Kind::Png => ffi::vips_pngload(path.as_ptr(), out, c"fail_on".as_ptr(), 3i32, END),
             Kind::Tiff => ffi::vips_tiffload(path.as_ptr(), out, c"fail_on".as_ptr(), 3i32, END),
@@ -104,7 +111,37 @@ impl Image {
             Kind::Jxl => ffi::vips_jxlload(path.as_ptr(), out, c"fail_on".as_ptr(), 3i32, END),
             Kind::Webp => ffi::vips_webpload(path.as_ptr(), out, c"fail_on".as_ptr(), 3i32, END),
             _ => -1,
-        })
+        })?;
+        if let Some(info) = &info {
+            // SAFETY: image owns a live private header; this bounded scalar is copied.
+            unsafe {
+                ffi::vips_image_set_int(
+                    image.0.as_ptr(),
+                    c"yhotos-gain-map".as_ptr(),
+                    i32::from(info.gain_map),
+                );
+            }
+        }
+        if !image.has("icc-profile-data")
+            && let Some(nclx) = info.and_then(|info| info.nclx)
+        {
+            return image.with_profile(nclx_profile(nclx)?);
+        }
+        Ok(image)
+    }
+    fn with_profile(&self, profile: &[u8]) -> Result<Self, CodecError> {
+        let image = self.copy()?;
+        // SAFETY: image owns a private header; set_blob_copy copies this bounded ICC slice.
+        unsafe {
+            ffi::vips_image_set_blob_copy(
+                image.0.as_ptr(),
+                c"icc-profile-data".as_ptr(),
+                profile.as_ptr().cast(),
+                profile.len(),
+            );
+            ffi::vips_image_set_int(image.0.as_ptr(), c"yhotos-nclx-profile".as_ptr(), 1);
+        }
+        Ok(image)
     }
     #[cfg(feature = "raw")]
     fn jpeg(bytes: &[u8], limits: &crate::Limits) -> Result<Self, CodecError> {
@@ -782,5 +819,152 @@ pub(crate) fn rgb_profile(bytes: &[u8]) -> bool {
         let rgb = ffi::cmsGetColorSpace(p) == 0x5247_4220; // ICC 'RGB ' signature.
         ffi::cmsCloseProfile(p);
         rgb
+    }
+}
+
+// RGB is returned by libheif after its NCLX matrix/range conversion. The ICC
+// describes the remaining RGB primaries and transfer, never a second YCbCr
+// conversion. CICP 16 (PQ) and 18 (HLG) explicitly flag HDR transfer functions;
+// these profiles normalize PQ's 10000 nit peak / HLG scene white to XYZ Y=100.
+// HDR output/gain-map encoding remains unsupported by Encode::hdr.
+pub(crate) fn nclx_profile(nclx: crate::bmff::Nclx) -> Result<&'static [u8], CodecError> {
+    static PROFILES: [OnceLock<Option<Vec<u8>>>; 5] = [const { OnceLock::new() }; 5];
+    if !matches!(nclx.matrix, 0 | 1 | 5 | 6 | 9) {
+        return Err(CodecError::Unsupported);
+    }
+    let index = match (nclx.primaries, nclx.transfer) {
+        (1, 13) => 0,
+        (1, 1) => 1,
+        (12, 13) => 2,
+        (9, 16) => 3,
+        (9, 18) => 4,
+        _ => return Err(CodecError::Unsupported),
+    };
+    PROFILES[index]
+        .get_or_init(|| make_nclx_profile(index))
+        .as_deref()
+        .ok_or(CodecError::Unsupported)
+}
+
+#[allow(clippy::cast_possible_truncation)] // Normalized [0,1] lcms floating tone-curve samples.
+fn make_nclx_profile(index: usize) -> Option<Vec<u8>> {
+    let xy = |x, y| ffi::cmsCIExyY { x, y, Y: 1.0 };
+    let white = xy(0.3127, 0.3290);
+    let (red, green, blue, description) = match index {
+        0 => (
+            xy(0.64, 0.33),
+            xy(0.30, 0.60),
+            xy(0.15, 0.06),
+            c"sRGB (NCLX)",
+        ),
+        1 => (
+            xy(0.64, 0.33),
+            xy(0.30, 0.60),
+            xy(0.15, 0.06),
+            c"BT.709 (NCLX)",
+        ),
+        2 => (
+            xy(0.68, 0.32),
+            xy(0.265, 0.69),
+            xy(0.15, 0.06),
+            c"Display P3 (NCLX)",
+        ),
+        3 => (
+            xy(0.708, 0.292),
+            xy(0.170, 0.797),
+            xy(0.131, 0.046),
+            c"BT.2020 PQ (NCLX)",
+        ),
+        4 => (
+            xy(0.708, 0.292),
+            xy(0.170, 0.797),
+            xy(0.131, 0.046),
+            c"BT.2020 HLG (NCLX)",
+        ),
+        _ => return None,
+    };
+    let primaries = ffi::cmsCIExyYTRIPLE {
+        Red: red,
+        Green: green,
+        Blue: blue,
+    };
+    let samples: Vec<f32> = (0..4096)
+        .map(|i| nclx_linear(index, f64::from(i) / 4095.0) as f32)
+        .collect();
+    // SAFETY: all structures/samples live through their calls. lcms copies
+    // curve/profile data; each successful allocation is freed exactly once,
+    // including error paths. SaveProfileToMem receives its queried buffer size.
+    unsafe {
+        let curve = ffi::cmsBuildTabulatedToneCurveFloat(ptr::null_mut(), 4096, samples.as_ptr());
+        if curve.is_null() {
+            return None;
+        }
+        let curves = [curve; 3];
+        let profile = ffi::cmsCreateRGBProfile(&white, &primaries, curves.as_ptr());
+        ffi::cmsFreeToneCurve(curve);
+        if profile.is_null() {
+            return None;
+        }
+        let info = ffi::cmsMLUalloc(ptr::null_mut(), 1);
+        let mut ok = !info.is_null();
+        if ok {
+            ok = ffi::cmsMLUsetASCII(info, c"en".as_ptr(), c"US".as_ptr(), description.as_ptr())
+                != 0
+                && ffi::cmsWriteTag(
+                    profile,
+                    ffi::cmsTagSignature_cmsSigProfileDescriptionTag,
+                    info.cast(),
+                ) != 0;
+            ffi::cmsMLUfree(info);
+        }
+        let mut len = 0;
+        ok = ok && ffi::cmsSaveProfileToMem(profile, ptr::null_mut(), &mut len) != 0;
+        let mut bytes = if ok && len > 0 && len <= 1 << 20 {
+            vec![0; len as usize]
+        } else {
+            Vec::new()
+        };
+        ok = ok
+            && !bytes.is_empty()
+            && ffi::cmsSaveProfileToMem(profile, bytes.as_mut_ptr().cast(), &mut len) != 0;
+        ffi::cmsCloseProfile(profile);
+        ok.then_some(bytes)
+    }
+}
+
+pub(crate) fn nclx_linear(index: usize, value: f64) -> f64 {
+    // IEC 61966-2-1 inverse transfer, BT.709 inverse OETF, BT.2100 PQ EOTF
+    // and HLG inverse OETF. HLG stays scene-linear; no display OOTF/tone map.
+    match index {
+        0 | 2 => {
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        }
+        1 => {
+            if value < 0.081 {
+                value / 4.5
+            } else {
+                ((value + 0.099) / 1.099).powf(1.0 / 0.45)
+            }
+        }
+        3 => {
+            let p = value.powf(32.0 / 2523.0);
+            ((p - 3424.0 / 4096.0).max(0.0) / (2413.0 / 128.0 - 2392.0 / 128.0 * p))
+                .powf(16384.0 / 2610.0)
+        }
+        4 => {
+            if value <= 0.5 {
+                value * value / 3.0
+            } else {
+                let a = 0.178_832_77f64;
+                let b = 1.0 - 4.0 * a;
+                let c = 0.5 - a * (4.0 * a).ln();
+                (((value - c) / a).exp() + b) / 12.0
+            }
+        }
+        _ => 0.0,
     }
 }

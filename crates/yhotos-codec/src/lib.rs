@@ -153,7 +153,11 @@ pub fn identify(path: &Path, limits: &Limits) -> Result<Identity, CodecError> {
         // supplies decoder agreement and all still-image identity fields.
         return native::identify_jxl(path, limits);
     }
-    let has_gain_map = headers::gain_map(path)?;
+    let has_gain_map = if matches!(kind, Kind::Heif | Kind::Avif) {
+        false // The native loader's bounded BMFF preflight also checks gain maps.
+    } else {
+        headers::gain_map(path)?
+    };
     let image = native::Image::load(path, &kind)?;
     let compression = image.string("heif-compression");
     if matches!(kind, Kind::Avif) && compression.as_deref() != Some("av1")
@@ -175,11 +179,14 @@ pub fn identify(path: &Path, limits: &Limits) -> Result<Identity, CodecError> {
         width,
         height,
         orientation,
-        has_icc: profile.is_some(),
+        has_icc: profile.is_some() && !image.has("yhotos-nclx-profile"),
         icc_desc: profile.as_deref().and_then(native::profile_description),
         bits: image.bits(),
         has_alpha: image.has_alpha(),
-        has_gain_map: has_gain_map || image.has("gainmap-data") || image.has("gainmap"),
+        has_gain_map: has_gain_map
+            || image.int("yhotos-gain-map") == Some(1)
+            || image.has("gainmap-data")
+            || image.has("gainmap"),
         pages,
     })
 }

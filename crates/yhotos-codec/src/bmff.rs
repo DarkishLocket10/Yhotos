@@ -11,6 +11,21 @@ use std::{
     io::{Read, Seek, SeekFrom},
 };
 
+/// CICP values associated with the primary image's colr/nclx property.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Nclx {
+    pub(crate) primaries: u16,
+    pub(crate) transfer: u16,
+    pub(crate) matrix: u16,
+    pub(crate) full_range: bool,
+}
+
+#[derive(Default)]
+pub(crate) struct HeifInfo {
+    pub(crate) gain_map: bool,
+    pub(crate) nclx: Option<Nclx>,
+}
+
 const MAX_BOXES: usize = 4096;
 const MAX_DEPTH: u8 = 8;
 const MAX_METADATA: u64 = 16 << 20;
@@ -40,9 +55,74 @@ struct GainMap {
     derived: BTreeMap<u32, [u32; 2]>,
     references: usize,
     signature: bool,
+    properties: Vec<Option<Nclx>>,
+    associations: BTreeMap<u32, Vec<u16>>,
+    association_count: usize,
+    ipco: bool,
 }
 
 impl Walker {
+    fn associations(
+        &mut self,
+        payload: u64,
+        end: u64,
+        meta: &mut GainMap,
+    ) -> Result<(), CodecError> {
+        let header = self.read::<8>(payload, end)?;
+        if header[0] > 1 || header[1..3] != [0, 0] || header[3] > 1 {
+            return Err(CodecError::Unsupported);
+        }
+        let entries = u32::from_be_bytes(header[4..8].try_into().map_err(|_| CodecError::Decode)?);
+        if entries as usize > MAX_BOXES {
+            return Err(CodecError::Limits);
+        }
+        let mut at = payload + 8;
+        for _ in 0..entries {
+            let id = self.item_id(at, end, header[0] == 1)?;
+            at += if header[0] == 1 { 4 } else { 2 };
+            let count = usize::from(self.read::<1>(at, end)?[0]);
+            at += 1;
+            meta.association_count += count;
+            if meta.association_count > MAX_BOXES {
+                return Err(CodecError::Limits);
+            }
+            let mut properties = Vec::with_capacity(count);
+            for _ in 0..count {
+                let property = if header[3] == 1 {
+                    let value = u16::from_be_bytes(self.read(at, end)?) & 0x7fff;
+                    at += 2;
+                    value
+                } else {
+                    let value = u16::from(self.read::<1>(at, end)?[0] & 0x7f);
+                    at += 1;
+                    value
+                };
+                properties.push(property);
+            }
+            if id == 0 || meta.associations.insert(id, properties).is_some() {
+                return Err(CodecError::Decode);
+            }
+        }
+        if at != end {
+            return Err(CodecError::Decode);
+        }
+        Ok(())
+    }
+    fn nclx(&mut self, payload: u64, end: u64) -> Result<Option<Nclx>, CodecError> {
+        if self.read::<4>(payload, end)? != *b"nclx" {
+            return Ok(None);
+        }
+        let bytes = self.read::<7>(payload + 4, end)?;
+        if end - payload != 11 || bytes[6] & 0x7f != 0 {
+            return Err(CodecError::Decode);
+        }
+        Ok(Some(Nclx {
+            primaries: u16::from_be_bytes([bytes[0], bytes[1]]),
+            transfer: u16::from_be_bytes([bytes[2], bytes[3]]),
+            matrix: u16::from_be_bytes([bytes[4], bytes[5]]),
+            full_range: bytes[6] & 0x80 != 0,
+        }))
+    }
     fn version(&mut self, payload: u64, end: u64) -> Result<u8, CodecError> {
         Ok(self.read::<4>(payload, end)?[0])
     }
@@ -100,6 +180,7 @@ impl Walker {
         }
         Ok(())
     }
+    #[allow(clippy::too_many_lines)] // One bounded property/item dispatch with shared budgets.
     fn heif_chain(
         &mut self,
         mut offset: u64,
@@ -107,6 +188,7 @@ impl Walker {
         depth: u8,
         context: Context,
         gain: &mut GainMap,
+        info: &mut HeifInfo,
     ) -> Result<usize, CodecError> {
         if depth > MAX_DEPTH {
             return Err(CodecError::Limits);
@@ -146,8 +228,20 @@ impl Walker {
                     }
                     // Each meta has its own item-id namespace.
                     let mut meta = GainMap::default();
-                    self.heif_chain(payload + 4, box_end, depth + 1, Context::Meta, &mut meta)?;
-                    gain.signature |= meta.found();
+                    self.heif_chain(
+                        payload + 4,
+                        box_end,
+                        depth + 1,
+                        Context::Meta,
+                        &mut meta,
+                        info,
+                    )?;
+                    info.gain_map |= meta.found();
+                    if let Some(nclx) = meta.primary_nclx()?
+                        && info.nclx.replace(nclx).is_some()
+                    {
+                        return Err(CodecError::Unsupported);
+                    }
                     self.metadata = None;
                 }
                 (Context::Meta, b"pitm") => {
@@ -167,7 +261,7 @@ impl Walker {
                         return Err(CodecError::Limits);
                     }
                     let start = payload + if version == 0 { 6 } else { 8 };
-                    if self.heif_chain(start, box_end, depth + 1, Context::Info, gain)?
+                    if self.heif_chain(start, box_end, depth + 1, Context::Info, gain, info)?
                         != entries as usize
                     {
                         return Err(CodecError::Decode);
@@ -185,16 +279,34 @@ impl Walker {
                         depth + 1,
                         Context::References(version == 1),
                         gain,
+                        info,
                     )?;
                 }
                 (Context::References(wide), _) => self.references(&head, wide, gain)?,
                 (Context::Meta, b"iprp") => {
-                    self.heif_chain(payload, box_end, depth + 1, Context::Properties, gain)?;
+                    self.heif_chain(payload, box_end, depth + 1, Context::Properties, gain, info)?;
                 }
                 (Context::Properties, b"ipco") => {
-                    self.heif_chain(payload, box_end, depth + 1, Context::PropertyValues, gain)?;
+                    if gain.ipco {
+                        return Err(CodecError::Decode);
+                    }
+                    gain.ipco = true;
+                    self.heif_chain(
+                        payload,
+                        box_end,
+                        depth + 1,
+                        Context::PropertyValues,
+                        gain,
+                        info,
+                    )?;
+                }
+                (Context::Properties, b"ipma") => self.associations(payload, box_end, gain)?,
+                (Context::PropertyValues, b"colr") => {
+                    let nclx = self.nclx(payload, box_end)?;
+                    gain.properties.push(nclx);
                 }
                 (Context::PropertyValues, b"auxC") => {
+                    gain.properties.push(None);
                     self.version(payload, box_end)?;
                     let (start, bytes) = self.metadata.as_ref().ok_or(CodecError::Decode)?;
                     let from =
@@ -204,6 +316,7 @@ impl Walker {
                         bytes.get(from..to).ok_or(CodecError::Decode)?,
                     );
                 }
+                (Context::PropertyValues, _) => gain.properties.push(None),
                 _ => {} // Pixel payloads, unknown properties and UUIDs stay opaque.
             }
             offset = box_end;
@@ -213,6 +326,27 @@ impl Walker {
     }
 }
 impl GainMap {
+    fn primary_nclx(&self) -> Result<Option<Nclx>, CodecError> {
+        let mut nclx = None;
+        for (&id, properties) in &self.associations {
+            for &index in properties {
+                if index == 0 {
+                    continue;
+                } // No property associated.
+                let property = self
+                    .properties
+                    .get(usize::from(index - 1))
+                    .ok_or(CodecError::Decode)?;
+                if Some(id) == self.primary
+                    && let Some(profile) = property
+                    && nclx.replace(*profile).is_some()
+                {
+                    return Err(CodecError::Unsupported);
+                }
+            }
+        }
+        Ok(nclx)
+    }
     fn found(&self) -> bool {
         self.signature
             || self.primary.is_some_and(|primary| {
@@ -230,6 +364,10 @@ impl GainMap {
 }
 
 pub(crate) fn gain_map(file: File) -> Result<bool, CodecError> {
+    Ok(heif_info(file)?.gain_map)
+}
+
+pub(crate) fn heif_info(file: File) -> Result<HeifInfo, CodecError> {
     let len = file.metadata().map_err(|_| CodecError::Io)?.len();
     let mut walker = Walker {
         file,
@@ -248,11 +386,12 @@ pub(crate) fn gain_map(file: File) -> Result<bool, CodecError> {
         preview_count: 0,
     };
     if len < 8 || walker.read::<4>(4, len)? != *b"ftyp" {
-        return Ok(false);
+        return Ok(HeifInfo::default());
     }
     let mut gain = GainMap::default();
-    walker.heif_chain(0, len, 0, Context::Top, &mut gain)?;
-    Ok(gain.found())
+    let mut info = HeifInfo::default();
+    walker.heif_chain(0, len, 0, Context::Top, &mut gain, &mut info)?;
+    Ok(info)
 }
 
 struct Walker {

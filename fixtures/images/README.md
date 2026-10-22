@@ -6,6 +6,18 @@ images, profiles, or programs. Images are generated through the libvips CLI;
 EXIF/XMP setters use that same installed library through Python ctypes.
 The malicious samples are corruptions of those generated files.
 
+`chart-p3-nclx.heic` and `chart-p3-nclx.avif` contain Display P3 pixels and
+only a `colr/nclx` profile (primaries 12, transfer 13, identity matrix 0, full
+range). The script losslessly encodes with libvips and replaces its generated
+ICC property with NCLX, preserving property indices and all file offsets with
+a trailing `free` property. They pass the same mean <1.0/max <2.5 delta E 2000
+gates as the ICC chart inputs through all three derivative encoders.
+
+`alpha-{10,12}.{avif,heic}` are 96x32 libvips-generated lossless RGBA images
+with transparent, half and opaque vertical stripes. Committing these small
+files lets Linux tests exercise high-bit-depth decode and JXL round trips with
+decoder-only libheif installations, without CLI encoder/version dependencies.
+
 `float.tif` is the chart converted to linear floating scRGB for decode benchmarks.
 `gain-map.avif` is a 32x32 base plus a 16x16 gain image encoded locally with
 libavif 1.4.1. It contains a valid `tmap` derived image and `dimg` item references,
