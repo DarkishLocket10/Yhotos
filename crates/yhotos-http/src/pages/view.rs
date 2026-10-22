@@ -357,6 +357,102 @@ pub fn render_home(albums: &[AlbumCard], context: &PageContext<'_>) -> Result<St
     .render()
     .map_err(|e| HttpError::Internal(e.into()))
 }
+// Shared with place results so image sizing and grid layout stay identical.
+fn photo_rows(photos: &[PagePhoto], sort: PageSort, styles: &mut String) -> Vec<Row> {
+    let ratios: Vec<_> = photos
+        .iter()
+        .map(|p| {
+            let (w, h) = dimensions(p);
+            (f64::from(w) / f64::from(h)).clamp(0.1, 10.0)
+        })
+        .collect();
+    justified_rows(&ratios)
+        .iter()
+        .enumerate()
+        .map(|(row_index, row)| {
+            let cells = photos
+                .iter()
+                .enumerate()
+                .take(row.end)
+                .skip(row.start)
+                .map(|(index, p)| {
+                    let ratio = ratios.get(index).copied().unwrap_or(1.0);
+                    let percent = ratio / row.ratio * 100.0;
+                    let (w, h) = dimensions(p);
+                    let _ = write!(
+                        styles,
+                        "#cell{index}{{flex:{ratio:.5} 1 {percent:.5}%;aspect-ratio:{w}/{h};{}}}",
+                        background(p, row_index == 0)
+                    );
+                    Cell {
+                        index,
+                        href: format!("/p/{}?sort={}", p.short_id, sort.as_str()),
+                        image: image(
+                            p,
+                            format!(
+                                "(max-width: 1232px) calc((100vw - 32px) * {:.6}), {:.0}px",
+                                percent / 100.0,
+                                1200.0 * percent / 100.0
+                            ),
+                            row_index == 0,
+                            true,
+                        ),
+                        badge: match p.kind.as_str() {
+                            "raw" => "RAW",
+                            "video" => "Play video",
+                            _ => "",
+                        },
+                    }
+                })
+                .collect();
+            Row { cells }
+        })
+        .collect()
+}
+#[derive(Template)]
+#[template(path = "default/place.html")]
+struct PlaceTemplate<'a> {
+    context: &'a PageContext<'a>,
+    title: String,
+    description: &'static str,
+    styles: String,
+    rows: Vec<Row>,
+    total: u64,
+    number: u32,
+    previous: Option<String>,
+    next: Option<String>,
+}
+/// Renders visible place results using the album grid and sixty-photo pagination.
+///
+/// # Errors
+/// Returns template rendering failures.
+pub fn render_place(
+    page: &yhotos_db::places::PlacePage,
+    place: uuid::Uuid,
+    number: u32,
+    context: &PageContext<'_>,
+) -> Result<String, HttpError> {
+    let mut styles = String::new();
+    let rows = photo_rows(&page.photos, PageSort::Taken, &mut styles);
+    let title = match &page.admin1 {
+        Some(region) => format!("{}, {region}, {}", page.name, page.country),
+        None => format!("{}, {}", page.name, page.country),
+    };
+    let page_url = |n| format!("/places/{place}?page={n}");
+    PlaceTemplate {
+        context,
+        title,
+        description: "Photos taken at this place",
+        styles,
+        rows,
+        total: page.total,
+        number,
+        previous: (number > 1).then(|| page_url(number - 1)),
+        next: (u64::from(number) * 60 < page.total).then(|| page_url(number + 1)),
+    }
+    .render()
+    .map_err(|e| HttpError::Internal(e.into()))
+}
 #[derive(Template)]
 #[template(path = "default/album.html")]
 struct AlbumTemplate<'a> {
@@ -406,58 +502,8 @@ pub(crate) fn render_album_for(
     identity: &SessionIdentity,
     links: &Links,
 ) -> Result<String, HttpError> {
-    let ratios: Vec<_> = page
-        .photos
-        .iter()
-        .map(|p| {
-            let (w, h) = dimensions(p);
-            (f64::from(w) / f64::from(h)).clamp(0.1, 10.0)
-        })
-        .collect();
     let mut styles = card_styles(&page.children);
-    let rows: Vec<Row> = justified_rows(&ratios)
-        .iter()
-        .enumerate()
-        .map(|(row_index, row)| {
-            let cells = page
-                .photos
-                .iter()
-                .enumerate()
-                .take(row.end)
-                .skip(row.start)
-                .map(|(index, p)| {
-                    let ratio = ratios.get(index).copied().unwrap_or(1.0);
-                    let percent = ratio / row.ratio * 100.0;
-                    let (w, h) = dimensions(p);
-                    let _ = write!(
-                        styles,
-                        "#cell{index}{{flex:{ratio:.5} 1 {percent:.5}%;aspect-ratio:{w}/{h};{}}}",
-                        background(p, row_index == 0)
-                    );
-                    Cell {
-                        index,
-                        href: format!("/p/{}?sort={}", p.short_id, sort.as_str()),
-                        image: image(
-                            p,
-                            format!(
-                                "(max-width: 1232px) calc((100vw - 32px) * {:.6}), {:.0}px",
-                                percent / 100.0,
-                                1200.0 * percent / 100.0
-                            ),
-                            row_index == 0,
-                            true,
-                        ),
-                        badge: match p.kind.as_str() {
-                            "raw" => "RAW",
-                            "video" => "Play video",
-                            _ => "",
-                        },
-                    }
-                })
-                .collect();
-            Row { cells }
-        })
-        .collect();
+    let rows = photo_rows(&page.photos, sort, &mut styles);
     let href = path(&page.album.path)?;
     let page_url = |number| format!("{href}?page={number}&sort={}", sort.as_str());
     // Later pages may contain a photo covered by a different verified link.
@@ -704,6 +750,91 @@ fn render_photo_with_controls(
     .map_err(|e| HttpError::Internal(e.into()))
 }
 
+struct CalendarCard {
+    href: String,
+    label: String,
+    count: u64,
+    posted_count: u64,
+    image: Image,
+}
+struct CalendarCell {
+    href: String,
+    posted: bool,
+    image: Image,
+}
+#[derive(Template)]
+#[template(path = "default/calendar.html")]
+struct CalendarTemplate<'a> {
+    context: &'a PageContext<'a>,
+    title: String,
+    description: &'static str,
+    styles: &'static str,
+    buckets: Vec<CalendarCard>,
+    photos: Vec<CalendarCell>,
+    total: u64,
+    number: u32,
+    previous: Option<String>,
+    next: Option<String>,
+}
+/// Renders UTC calendar summaries and a bounded responsive photo grid.
+///
+/// # Errors
+/// Returns template failures; dates originate only from validated selections.
+pub fn render_calendar(
+    page: &yhotos_db::calendar::CalendarPage,
+    selection: yhotos_db::calendar::Selection,
+    number: u32,
+    context: &PageContext<'_>,
+) -> Result<String, HttpError> {
+    let path = selection.path();
+    let buckets = page
+        .buckets
+        .iter()
+        .filter(|_| !selection.is_day())
+        .map(|b| CalendarCard {
+            href: format!("{path}/{}", b.number),
+            label: b.number.to_string(),
+            count: b.count,
+            posted_count: b.posted_count,
+            image: image(
+                &b.cover,
+                "(max-width: 600px) calc(100vw - 32px), 360px".into(),
+                false,
+                true,
+            ),
+        })
+        .collect();
+    let photos = page
+        .photos
+        .iter()
+        .enumerate()
+        .map(|(index, p)| CalendarCell {
+            href: format!("/p/{}", p.photo.short_id),
+            posted: p.posted,
+            image: image(
+                &p.photo,
+                "(max-width: 600px) calc(100vw - 32px), 360px".into(),
+                index == 0,
+                true,
+            ),
+        })
+        .collect();
+    CalendarTemplate {
+        context,
+        title: selection.title(),
+        description: "Browse photos by year, month and day",
+        styles: "",
+        buckets,
+        photos,
+        total: page.total,
+        number,
+        previous: (number > 1).then(|| format!("{path}?page={}", number - 1)),
+        next: (!page.photos.is_empty() && u64::from(number) * 60 < page.total)
+            .then(|| format!("{path}?page={}", number + 1)),
+    }
+    .render()
+    .map_err(|e| HttpError::Internal(e.into()))
+}
 /// Direct `/p/` visits get the same navigation enhancement as album pages.
 fn photo_scripts(interactive: bool) -> Result<Vec<&'static str>, HttpError> {
     let mut scripts = vec![

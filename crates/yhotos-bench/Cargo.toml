@@ -86,3 +86,7 @@ harness = false
 [[bench]]
 name = "upload"
 harness = false
+
+[[bench]]
+name = "geo_views"
+harness = false

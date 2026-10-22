@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO gazetteer(geonameid,name,admin1,country,lat,lon,population) VALUES(6167865,'Toronto','08','CA',43.70011,-79.4163,2600000),(1,'Dateline','01','FJ',0,-179.95,1000),(2,'Polar','01','NO',89.9,90,1000)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "ba917931ae5f3865aa079a2949aedc08f1371ce8e51618d08bfff3c796788586"
+}

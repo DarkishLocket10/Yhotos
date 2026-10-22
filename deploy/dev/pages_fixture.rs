@@ -182,6 +182,27 @@ async fn main() -> Result<()> {
             }
         }
     }
+    let place = sqlx::query!(
+        "SELECT id FROM places WHERE name='Fixture city' AND country='CA' ORDER BY id LIMIT 1"
+    )
+    .fetch_optional(&mut *conn)
+    .await?;
+    let place = if let Some(row) = place {
+        row.id
+    } else {
+        let id = uuid::Uuid::now_v7();
+        sqlx::query!("INSERT INTO places(id,name,admin1,country,lat,lon) VALUES($1,'Fixture city','Fixture region','CA',43.65,-79.38)",id)
+            .execute(&mut *conn).await?;
+        id
+    };
+    // All sixty photos deliberately share one coordinate to exercise the chooser.
+    sqlx::query!(
+        "UPDATE photos SET place_id=$1,gps_lat=43.65,gps_lon=-79.38 WHERE album_id=$2",
+        place,
+        album.id.0
+    )
+    .execute(&mut *conn)
+    .await?;
     drop(conn);
     let session = STANDARD.encode(format!("{}{}", uuid::Uuid::now_v7(), uuid::Uuid::now_v7()));
     let config = Box::leak(Box::new(yhotos_config::Config::from_figment(

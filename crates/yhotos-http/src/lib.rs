@@ -47,6 +47,14 @@ pub fn public_router(state: AppState) -> Router {
         .route("/", get(pages::home))
         .route("/a/{*path}", get(pages::album))
         .route("/p/{id}", get(pages::photo))
+        .route("/map", get(pages::map::page))
+        .route("/map/tiles.json", get(pages::map::tiles))
+        .route("/map/photos.json", get(pages::map::point_photos))
+        .route("/places/{place_id}", get(pages::map::place))
+        .route("/calendar", get(pages::calendar::page))
+        .route("/calendar/{year}", get(pages::calendar::page))
+        .route("/calendar/{year}/{month}", get(pages::calendar::page))
+        .route("/calendar/{year}/{month}/{day}", get(pages::calendar::page))
         .route("/legacy/{*path}", get(pages::legacy))
         .route("/index.php", get(pages::legacy))
         .route("/picture.php", get(pages::legacy))
@@ -127,7 +135,10 @@ fn stack(router: Router<AppState>, state: AppState, audience: auth::Audience) ->
         // Wrap short-circuiting layers as well as handlers, so 413/408/429 and
         // fallback responses have exactly the same security guarantees.
         .layer(from_fn(api::envelope))
-        .layer(from_fn(middleware::security_headers::secure))
+        .layer(from_fn_with_state(
+            state.clone(),
+            middleware::security_headers::secure,
+        ))
         .layer(from_fn(middleware::request_id::assign))
         .with_state(state)
 }

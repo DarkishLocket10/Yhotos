@@ -1,7 +1,11 @@
 //! Server-rendered public gallery, with authorization performed inside page SQL.
+pub mod calendar;
 pub mod grid;
+pub mod map;
 mod view;
-pub use view::{PageContext, render_album, render_home, render_photo};
+pub use view::{
+    PageContext, render_album, render_calendar, render_home, render_photo, render_place,
+};
 pub(crate) use view::{PhotoControls, island, island_photo, render_album_for, render_scoped_photo};
 
 use crate::{
@@ -98,15 +102,30 @@ fn cached(
     identity: &SessionIdentity,
     tags: &str,
 ) -> Result<Response, HttpError> {
+    cache_response(
+        Html(html).into_response(),
+        headers,
+        identity,
+        tags,
+        "public, max-age=60, stale-while-revalidate=600",
+    )
+}
+
+fn cache_response(
+    mut response: Response,
+    headers: &HeaderMap,
+    identity: &SessionIdentity,
+    tags: &str,
+    public_policy: &'static str,
+) -> Result<Response, HttpError> {
     let private =
         headers.contains_key(header::COOKIE) || !matches!(identity, SessionIdentity::Anonymous);
-    let mut response = Html(html).into_response();
     response.headers_mut().insert(
         header::CACHE_CONTROL,
         HeaderValue::from_static(if private {
             "private, no-store"
         } else {
-            "public, max-age=60, stale-while-revalidate=600"
+            public_policy
         }),
     );
     response

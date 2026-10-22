@@ -1,0 +1,6 @@
+{% extends "default/base.html" %}
+{% block content %}<main><nav aria-label="Calendar"><a href="/calendar">All years</a></nav><h1>{{ title }}</h1><p>{{ total }} photos. Dates use UTC; photos without a capture date use their posted date.</p>
+<section class="calendar-grid" aria-label="Date groups">{% for bucket in buckets %}<a class="calendar-card" href="{{ bucket.href }}">{% let image = bucket.image %}{% include "default/partials/picture.html" %}<span>{{ bucket.label }} · {{ bucket.count }} photos</span>{% if bucket.posted_count > 0 %}<span>{{ bucket.posted_count }} use posted date</span>{% endif %}</a>{% endfor %}</section>
+<section class="calendar-grid" aria-label="Photos">{% for cell in photos %}<a class="calendar-card" href="{{ cell.href }}">{% let image = cell.image %}{% include "default/partials/picture.html" %}{% if cell.posted %}<span>Posted date used</span>{% endif %}</a>{% endfor %}</section>
+{% if total == 0 %}<p>No photos to show yet.</p>{% endif %}<nav class="pagination" aria-label="Pagination">{% if let Some(url) = previous %}<a rel="prev" href="{{ url }}">Previous page</a>{% endif %}<span>Page {{ number }}</span>{% if let Some(url) = next %}<a rel="next" href="{{ url }}">Next page</a>{% endif %}</nav>
+</main>{% endblock %}

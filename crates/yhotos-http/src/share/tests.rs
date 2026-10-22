@@ -65,10 +65,10 @@ impl Client {
         json: bool,
         admin: bool,
     ) -> Reply {
-        let mut request = HttpRequest::builder()
-            .uri(path)
-            .method(method)
-            .header(header::COOKIE, self.cookie());
+        let mut request = HttpRequest::builder().uri(path).method(method);
+        if !self.jar.is_empty() {
+            request = request.header(header::COOKIE, self.cookie());
+        }
         if json {
             request = request
                 .header(header::CONTENT_TYPE, "application/json")
@@ -1987,6 +1987,176 @@ async fn warm_protected_landings_only_write_opens_and_coalesce_recency(pool: PgP
     let (reply, queries) = crate::files::tests::count_queries(client.get(&f.app, &path)).await;
     assert_eq!(reply.status, StatusCode::OK);
     assert_eq!(queries, 1);
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn geo_views_honor_unlocked_album_share_cookies_and_account_union(pool: PgPool) {
+    geo_share_visibility(pool, false).await;
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn geo_views_honor_unlocked_photo_share_cookies_and_account_union(pool: PgPool) {
+    geo_share_visibility(pool, true).await;
+}
+
+async fn geo_share_visibility(pool: PgPool, single_photo: bool) {
+    let f = Fixture::new(pool).await;
+    let public_album = f.album(None, "public-geo", Visibility::Public).await;
+    let (public, _, _) = Fixture::add_photo(&f.pool, &f.state, public_album, "Public geo").await;
+    let account_album = f.album(None, "account-geo", Visibility::Restricted).await;
+    let (account, _, _) = Fixture::add_photo(&f.pool, &f.state, account_album, "Account geo").await;
+    let hidden_album = f.album(None, "hidden-geo", Visibility::Restricted).await;
+    let (hidden, _, _) = Fixture::add_photo(&f.pool, &f.state, hidden_album, "Hidden geo").await;
+    let (shared, target) = if single_photo {
+        let (photo, _, _) = Fixture::add_photo(&f.pool, &f.state, public_album, "Shared geo").await;
+        photos::set_visibility(
+            &mut f.pool.acquire().await.unwrap(),
+            &[photo],
+            Visibility::Restricted,
+        )
+        .await
+        .unwrap();
+        (photo, ShareTarget::Photo(photo))
+    } else {
+        (f.photo, ShareTarget::Album(f.album))
+    };
+    let place = Uuid::now_v7();
+    let hidden_place = Uuid::now_v7();
+    let mut conn = f.pool.acquire().await.unwrap();
+    sqlx::query!("INSERT INTO places(id,name,country,lat,lon) VALUES($1,'Visible city','CA',43.65,-79.38),($2,'Hidden city','CA',43.65,-79.38)",place,hidden_place)
+        .execute(&mut *conn).await.unwrap();
+    sqlx::query!("UPDATE photos SET gps_lat=43.65,gps_lon=-79.38,place_id=$1,taken_at='2026-01-02 00:00:00+00'",place)
+        .execute(&mut *conn).await.unwrap();
+    sqlx::query!(
+        "UPDATE photos SET place_id=$1 WHERE id=$2",
+        hidden_place,
+        hidden as _
+    )
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    grants::grant_album(&mut conn, account_album, Grant::User(f.creator))
+        .await
+        .unwrap();
+    drop(conn);
+    let password = yhotos_auth::generate_temp_password();
+    let (_, path) = f
+        .link(target, Some(password.expose_secret()), flags())
+        .await;
+    let mut anonymous = Client::default();
+    assert_geo_views(&f, &mut anonymous, place, &[public], false).await;
+    let mut client = Client::default();
+    assert_eq!(client.get(&f.app, &path).await.status, StatusCode::OK);
+    // A passphrase form and its CSRF cookie confer no share visibility.
+    assert!(!client.jar.contains_key(COOKIE_NAME));
+    assert_geo_views(&f, &mut client, place, &[public], true).await;
+    assert_eq!(
+        client
+            .unlock(&f.app, &path, password.expose_secret())
+            .await
+            .status,
+        StatusCode::OK
+    );
+    assert!(client.jar.contains_key(COOKIE_NAME));
+    assert_geo_views(&f, &mut client, place, &[shared], true).await;
+    concealed(&client.get(&f.app, &format!("/places/{hidden_place}")).await).await;
+    client
+        .jar
+        .insert("__Host-ys".into(), f.account(false).await);
+    assert_geo_views(&f, &mut client, place, &[public, account, shared], true).await;
+    concealed(&client.get(&f.app, &format!("/places/{hidden_place}")).await).await;
+    // The scoped visitor does not alter subsequent public anonymous results.
+    assert_geo_views(&f, &mut anonymous, place, &[public], false).await;
+}
+
+async fn assert_geo_views(
+    f: &Fixture,
+    client: &mut Client,
+    place: Uuid,
+    expected: &[PhotoId],
+    private: bool,
+) {
+    let count = expected.len();
+    for path in [
+        "/map".to_owned(),
+        format!("/places/{place}"),
+        "/calendar".into(),
+        "/calendar/2026".into(),
+        "/calendar/2026/1".into(),
+        "/calendar/2026/1/2".into(),
+        "/map/tiles.json?bbox=-80,43,-79,44&zoom=1".into(),
+        "/map/tiles.json?bbox=-80,43,-79,44&zoom=15".into(),
+        "/map/photos.json?lon=-79.38&lat=43.65".into(),
+    ] {
+        let reply = client.get(&f.app, &path).await;
+        assert_eq!(reply.status, StatusCode::OK, "{path}: {}", reply.text());
+        let policy = if private {
+            "private, no-store"
+        } else if path.contains(".json") {
+            "public, max-age=300"
+        } else {
+            "public, max-age=60, stale-while-revalidate=600"
+        };
+        assert_eq!(reply.headers[header::CACHE_CONTROL], policy, "{path}");
+        assert_eq!(reply.headers[header::VARY], "Cookie", "{path}");
+        if path.starts_with("/map/tiles.json") {
+            let json: serde_json::Value = serde_json::from_slice(&reply.body).unwrap();
+            assert_eq!(json["features"].as_array().unwrap().len(), 1);
+            assert_eq!(json["features"][0]["properties"]["count"], count);
+            let representative = json["features"][0]["properties"]["short_id"]
+                .as_str()
+                .unwrap();
+            assert!(
+                expected.iter().any(
+                    |id| yhotos_core::ShortId::from_photo_id(*id).to_string() == representative
+                )
+            );
+        } else if path.starts_with("/map/photos.json") {
+            let json: serde_json::Value = serde_json::from_slice(&reply.body).unwrap();
+            assert_eq!(json["total"], count);
+            assert_eq!(json["photos"].as_array().unwrap().len(), count);
+            for id in expected {
+                assert!(
+                    json["photos"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|p| p["short_id"]
+                            == yhotos_core::ShortId::from_photo_id(*id).to_string())
+                );
+            }
+        } else {
+            assert!(
+                reply.text().contains(&format!("{count} photos")),
+                "{path}: {}",
+                reply.text()
+            );
+            assert!(!reply.text().contains("Hidden city"));
+            if path.starts_with("/places/") || path.starts_with("/calendar/2026/1") {
+                let suffix = if path.starts_with("/places/") {
+                    "?sort=taken"
+                } else {
+                    ""
+                };
+                for id in expected {
+                    assert!(
+                        reply.text().contains(&format!(
+                            "href=\"/p/{}{suffix}\"",
+                            yhotos_core::ShortId::from_photo_id(*id)
+                        )),
+                        "{path}"
+                    );
+                }
+                // Every grid entry belongs to the expected union; no hidden siblings.
+                let grid_count = if path.starts_with("/places/") {
+                    reply.text().matches("class=\"cell\"").count()
+                } else {
+                    reply.text().matches("href=\"/p/").count()
+                };
+                assert_eq!(grid_count, count, "{path}");
+            }
+        }
+    }
 }
 
 #[sqlx::test(migrator = "yhotos_db::MIGRATOR")]

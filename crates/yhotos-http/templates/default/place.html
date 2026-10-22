@@ -1,0 +1,6 @@
+{% extends "default/base.html" %}
+{% block content %}<main><nav aria-label="Breadcrumb"><ol class="breadcrumbs"><li><a href="/">Home</a></li><li><a href="/map">Photo map</a></li></ol></nav><h1>{{ title }}</h1>
+<p>{{ total }} photos</p><section aria-label="Photos" class="photo-grid">{% for row in rows %}<div class="grid-row">{% for cell in row.cells %}<a class="cell" id="cell{{ cell.index }}" href="{{ cell.href }}">{% let image = cell.image %}{% include "default/partials/picture.html" %}{% if !cell.badge.is_empty() %}<span class="badge">{{ cell.badge }}</span>{% endif %}</a>{% endfor %}</div>{% endfor %}</section>
+{% if rows.is_empty() %}<p>No photos to show at this place.</p>{% endif %}
+<nav aria-label="Pagination" class="pagination">{% if let Some(url) = previous %}<a rel="prev" href="{{ url }}">Previous page</a>{% endif %}<span>Page {{ number }}</span>{% if let Some(url) = next %}<a rel="next" href="{{ url }}">Next page</a>{% endif %}</nav>
+</main>{% endblock %}

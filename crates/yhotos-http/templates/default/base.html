@@ -10,5 +10,5 @@
 <script type="module" nonce="{{ context.nonce }}" src="{{ context.script }}"></script>
 {% block metadata %}{% endblock %}
 </head>
-<body><header class="site-header"><a href="/">Yhotos</a><span>Photo gallery</span></header>{% block content %}{% endblock %}<footer>Yhotos photo gallery</footer></body>
+<body><header class="site-header"><a href="/">Yhotos</a><span>Photo gallery</span><nav aria-label="Gallery"><a href="/map">Map</a> <a href="/calendar">Calendar</a></nav></header>{% block content %}{% endblock %}<footer>Yhotos photo gallery · Place data: <a href="https://www.geonames.org/">GeoNames</a> (<a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>)</footer></body>
 </html>
