@@ -54,6 +54,19 @@ if (root) {
     if (!Number.isSafeInteger(offset) || offset < 0 || offset > file.size) throw new Error("Invalid upload offset");
     return offset;
   }
+  function sameDestination(response: Response, work: Work): boolean {
+    const metadata = response.headers.get("Upload-Metadata");
+    const albums = metadata?.split(",").map(field => field.trim().split(" ")).filter(([key]) => key === "album") || [];
+    return response.headers.get("Upload-Length") === String(work.file.size)
+      && albums.length === 1 && albums[0].length === 2 && albums[0][1] === encode(work.album);
+  }
+  function completed(work: Work, response: Response) {
+    if (!response.headers.has("Upload-Result")) return;
+    work.photo = safePhoto(response.headers.get("Location"));
+    work.progress.value = work.file.size;
+    work.url = null;
+    remember(work.key, null);
+  }
   async function poll(work: Work) {
     while (!work.cancelled && work.photo) {
       const response = await request(work, "GET", `${work.photo}/status`);
@@ -75,7 +88,11 @@ if (root) {
     if (work.url) {
       const response = await request(work, "HEAD", work.url);
       if (response.status === 404 || response.status === 410) { remember(work.key, null); work.url = null; }
-      else { requireSuccess(response); offset = readOffset(response, work.file); }
+      else {
+        requireSuccess(response);
+        if (sameDestination(response, work)) offset = readOffset(response, work.file);
+        else { remember(work.key, null); work.url = null; }
+      }
     }
     if (!work.url) {
       const response = await request(work, "POST", "/admin/upload", {
@@ -86,6 +103,11 @@ if (root) {
       work.url = safeUpload(response.headers.get("Location"));
       if (!work.url) throw new Error("Invalid upload response");
       remember(work.key, work.url);
+    }
+    if (offset === work.file.size) {
+      const response = await request(work, "POST", `${work.url}/finish`);
+      requireSuccess(response);
+      completed(work, response);
     }
     while (offset < work.file.size) {
       const end = Math.min(offset + chunk, work.file.size);
@@ -98,11 +120,7 @@ if (root) {
       if (next <= offset || next !== end) throw new Error("Invalid upload progress");
       offset = next;
       work.progress.value = offset;
-      if (response.headers.has("Upload-Result")) {
-        work.photo = safePhoto(response.headers.get("Location"));
-        work.url = null;
-        remember(work.key, null);
-      }
+      completed(work, response);
     }
     if (!work.photo) throw new Error("Upload completion was interrupted. Retry to resume.");
   }

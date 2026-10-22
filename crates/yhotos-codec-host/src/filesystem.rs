@@ -7,7 +7,7 @@ use landlock::{
 use std::path::Path;
 
 pub(super) fn restrict(input: &Path, out: &Path) -> Result<(), Failure> {
-    let unavailable = || Failure(2, "filesystem sandbox unavailable");
+    let unavailable = || Failure(3, "filesystem sandbox unavailable");
     // Landlock applies to this thread and future children. No pre-existing native
     // thread may retain ambient access after trusted plugin initialization.
     if std::fs::read_dir("/proc/self/task")

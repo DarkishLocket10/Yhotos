@@ -74,23 +74,23 @@ impl HostLimits {
         // macOS does not enforce RLIMIT_AS reliably; Linux is the production sandbox.
         #[cfg(target_os = "linux")]
         setrlimit(Resource::RLIMIT_AS, self.max_memory, self.max_memory)
-            .map_err(|_| Failure(2, "sandbox unavailable"))?;
-        setrlimit(Resource::RLIMIT_CORE, 0, 0).map_err(|_| Failure(2, "sandbox unavailable"))?;
+            .map_err(|_| Failure(3, "sandbox unavailable"))?;
+        setrlimit(Resource::RLIMIT_CORE, 0, 0).map_err(|_| Failure(3, "sandbox unavailable"))?;
         setrlimit(Resource::RLIMIT_CPU, self.cpu_seconds, self.cpu_seconds + 1)
-            .map_err(|_| Failure(2, "sandbox unavailable"))?;
+            .map_err(|_| Failure(3, "sandbox unavailable"))?;
         setrlimit(
             Resource::RLIMIT_FSIZE,
             self.max_file_size,
             self.max_file_size,
         )
-        .map_err(|_| Failure(2, "sandbox unavailable"))?;
+        .map_err(|_| Failure(3, "sandbox unavailable"))?;
         setrlimit(Resource::RLIMIT_NOFILE, 64, 64)
-            .map_err(|_| Failure(2, "sandbox unavailable"))?;
+            .map_err(|_| Failure(3, "sandbox unavailable"))?;
         // Linux counts threads toward NPROC, so limit process creation via seccomp
         // while retaining the two libvips threads. NPROC=0 would prohibit them too.
-        yhotos_codec::sandbox::process_limit().map_err(|_| Failure(2, "sandbox unavailable"))?;
+        yhotos_codec::sandbox::process_limit().map_err(|_| Failure(3, "sandbox unavailable"))?;
         yhotos_codec::sandbox::timeouts(self.wall_seconds)
-            .map_err(|_| Failure(2, "sandbox unavailable"))
+            .map_err(|_| Failure(3, "sandbox unavailable"))
     }
 }
 #[derive(Deserialize)]
@@ -158,7 +158,6 @@ impl From<CodecError> for Failure {
             CodecError::BadMagic
             | CodecError::Mismatch
             | CodecError::Limits
-            | CodecError::Io
             | CodecError::Options => Self(2, "image rejected"),
             _ => Self(3, "image processing failed"),
         }
@@ -200,27 +199,27 @@ fn clean_environment() -> Result<u8, Failure> {
     {
         return Ok(concurrency);
     }
-    let executable = std::env::current_exe().map_err(|_| Failure(2, "startup failed"))?;
+    let executable = std::env::current_exe().map_err(|_| Failure(3, "startup failed"))?;
     let error = std::process::Command::new(executable)
         .args(std::env::args_os().skip(1))
         .env_clear()
         .envs(expected)
         .exec();
     let _ = error;
-    Err(Failure(2, "startup failed"))
+    Err(Failure(3, "startup failed"))
 }
 fn paths(job: &Job) -> Result<(PathBuf, Vec<PathBuf>), Failure> {
     let input = job
         .input
         .canonicalize()
-        .map_err(|_| Failure(2, "invalid input"))?;
+        .map_err(|_| Failure(3, "input unavailable"))?;
     if !input.is_file() {
         return Err(Failure(2, "invalid input"));
     }
     let dir = job
         .out_dir
         .canonicalize()
-        .map_err(|_| Failure(2, "invalid output directory"))?;
+        .map_err(|_| Failure(3, "output directory unavailable"))?;
     if !dir.is_dir() || job.outputs.len() > 32 {
         return Err(Failure(2, "invalid output directory"));
     }
@@ -255,12 +254,12 @@ fn run() -> Result<(), Failure> {
         let parent = std::env::args()
             .nth(2)
             .and_then(|p| p.parse().ok())
-            .ok_or(Failure(2, "startup failed"))?;
-        yhotos_codec::sandbox::parent_lifetime(parent).map_err(|_| Failure(2, "startup failed"))?;
+            .ok_or(Failure(3, "startup failed"))?;
+        yhotos_codec::sandbox::parent_lifetime(parent).map_err(|_| Failure(3, "startup failed"))?;
     }
     HostLimits::default().apply()?;
     #[cfg(target_os = "linux")]
-    seccomp::apply().map_err(|()| Failure(2, "sandbox unavailable"))?;
+    seccomp::apply().map_err(|()| Failure(3, "sandbox unavailable"))?;
     #[cfg(all(target_os = "linux", debug_assertions))]
     if std::env::args_os().any(|a| a == "--self-test-network") {
         return match std::net::UdpSocket::bind("127.0.0.1:0") {
@@ -311,7 +310,7 @@ fn run() -> Result<(), Failure> {
             &input,
             &job.out_dir
                 .canonicalize()
-                .map_err(|_| Failure(2, "invalid output directory"))?,
+                .map_err(|_| Failure(3, "output directory unavailable"))?,
         )?;
         #[cfg(debug_assertions)]
         if std::env::args_os().any(|a| a == "--self-test-filesystem") {
@@ -319,7 +318,15 @@ fn run() -> Result<(), Failure> {
         }
     }
     let start = Instant::now();
-    let id = yhotos_codec::identify(&input, &job.limits.codec())?;
+    let id = yhotos_codec::identify(&input, &job.limits.codec()).map_err(|error| {
+        // Corrupt headers are definitive rejections. IO and native-host failures
+        // say nothing about the validity of an otherwise resumable upload.
+        if error == CodecError::Decode {
+            Failure(2, "image rejected")
+        } else {
+            Failure::from(error)
+        }
+    })?;
     let identify_ms = start.elapsed().as_millis();
     if job.outputs.is_empty()
         && job

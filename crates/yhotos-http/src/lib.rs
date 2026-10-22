@@ -152,7 +152,16 @@ async fn request_limits(
     {
         return (StatusCode::PAYLOAD_TOO_LARGE, "Request too large").into_response();
     }
-    let deadline = if upload {
+    let finish = cfg!(feature = "admin")
+        && audience.0
+        && request.method() == axum::http::Method::POST
+        && request
+            .uri()
+            .path()
+            .strip_prefix("/admin/upload/")
+            .and_then(|path| path.strip_suffix("/finish"))
+            .is_some_and(|id| id.parse::<uuid::Uuid>().is_ok());
+    let deadline = if upload || finish {
         Duration::from_secs(u64::from(state.config.worker.codec_timeout) + 120)
     } else {
         Duration::from_secs(10)

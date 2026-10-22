@@ -19,7 +19,7 @@ use std::time::Duration;
 use uuid::Uuid;
 use yhotos_core::{AlbumId, ShortId};
 use yhotos_db::{photos, uploads};
-use yhotos_jobs::{Job, Queue};
+use yhotos_jobs::{Job, JobError, Queue};
 use yhotos_pipeline::Ingest;
 use yhotos_storage::TempId;
 
@@ -31,6 +31,7 @@ pub fn routes() -> Router<AppState> {
             "/admin/upload/{id}",
             axum::routing::head(head).patch(patch).delete(terminate),
         )
+        .route("/admin/upload/{id}/finish", axum::routing::post(finish))
         .route("/admin/api/photos/{id}/status", get(status))
         .layer(from_fn(protocol))
 }
@@ -283,14 +284,18 @@ async fn patch(
     let offset = number(request.headers(), "upload-offset")?;
     let mut tx = pool(&state)?.begin().await?;
     uploads::patch_deadline(&mut tx, state.config.worker.codec_timeout + 120).await?;
-    let row = uploads::lock(&mut tx, id, current.0.session.user_id)
+    let mut row = uploads::lock_for_write(&mut tx, id, current.0.session.user_id)
         .await?
         .ok_or(HttpError::NotFound)?;
     if offset != row.received_bytes {
         return Err(HttpError::Upload(StatusCode::CONFLICT));
     }
     let temp: TempId = row.tmp_path.parse().map_err(internal)?;
-    let mut file = state.store.open_upload(&temp).await.map_err(internal)?;
+    let mut file = state
+        .store
+        .open_upload(&temp)
+        .await
+        .map_err(|_| HttpError::UploadUnavailable)?;
     let cap = u64::from(state.config.upload.chunk_bytes)
         .min(u64::try_from(row.declared_bytes - offset).map_err(internal)?);
     let next = stream::write(
@@ -300,29 +305,98 @@ async fn patch(
         cap,
     )
     .await
-    .map_err(HttpError::Upload)?;
+    .map_err(|status| {
+        if status.is_server_error() {
+            HttpError::UploadUnavailable
+        } else {
+            HttpError::Upload(status)
+        }
+    })?;
     drop(file);
-    let mut r = StatusCode::NO_CONTENT.into_response();
-    add(&mut r, "upload-offset", next)?;
-    add(&mut r, "upload-expires", expires(row.expires_at))?;
+    row.received_bytes = i64::try_from(next).map_err(internal)?;
+    uploads::advance(&mut tx, id, row.received_bytes).await?;
     if next < u64::try_from(row.declared_bytes).map_err(internal)? {
-        uploads::advance(&mut tx, id, i64::try_from(next).map_err(internal)?).await?;
         tx.commit().await?;
-        return Ok(r);
+        return progress(&row);
     }
-    let path = state.store.upload_path_for_host(&temp).map_err(internal)?;
-    let Ok(validated) = validator(&state)?.finish(&path).await else {
-        state.store.remove_upload(&temp).await.map_err(internal)?;
-        uploads::remove(&mut tx, id).await?;
-        tx.commit().await?;
-        return Err(HttpError::Upload(StatusCode::UNPROCESSABLE_ENTITY));
-    };
-    let input = state.store.open_upload(&temp).await.map_err(internal)?;
+    complete(&state, tx, row).await
+}
+fn progress(row: &uploads::Upload) -> Result<Response, HttpError> {
+    let mut r = StatusCode::NO_CONTENT.into_response();
+    add(&mut r, "upload-offset", row.received_bytes)?;
+    add(&mut r, "upload-expires", expires(row.expires_at))?;
+    Ok(r)
+}
+async fn finish(
+    State(state): State<AppState>,
+    current: Current,
+    Path(id): Path<Uuid>,
+) -> Result<Response, HttpError> {
+    let mut tx = pool(&state)?.begin().await?;
+    uploads::patch_deadline(&mut tx, state.config.worker.codec_timeout + 120).await?;
+    let row = uploads::lock_for_write(&mut tx, id, current.0.session.user_id)
+        .await?
+        .ok_or(HttpError::NotFound)?;
+    if row.received_bytes != row.declared_bytes {
+        return Err(HttpError::Upload(StatusCode::CONFLICT));
+    }
+    complete(&state, tx, row).await
+}
+async fn prepare_original(
+    state: &AppState,
+    row: &uploads::Upload,
+    temp: &TempId,
+) -> Result<(yhotos_pipeline::validate::Validated, yhotos_storage::Put), HttpError> {
+    let path = state
+        .store
+        .upload_path_for_host(temp)
+        .map_err(|_| HttpError::UploadUnavailable)?;
+    let validated = validator(state)?
+        .finish(&path)
+        .await
+        .map_err(|error| match error {
+            JobError::Fatal(_) => HttpError::Upload(StatusCode::UNPROCESSABLE_ENTITY),
+            JobError::Retry { .. } => HttpError::UploadUnavailable,
+        })?;
+    let input = state
+        .store
+        .open_upload(temp)
+        .await
+        .map_err(|_| HttpError::UploadUnavailable)?;
     let put = state
         .store
         .put_original(input, u64::try_from(row.declared_bytes).map_err(internal)?)
         .await
-        .map_err(internal)?;
+        .map_err(|_| HttpError::UploadUnavailable)?;
+    Ok((validated, put))
+}
+async fn complete(
+    state: &AppState,
+    mut tx: sqlx::Transaction<'_, sqlx::Postgres>,
+    row: uploads::Upload,
+) -> Result<Response, HttpError> {
+    // Both entry points hold the creator's upload lock and a share lock on its live album.
+    let id = row.id;
+    let temp: TempId = row.tmp_path.parse().map_err(internal)?;
+    let prepared = prepare_original(state, &row, &temp).await;
+    let (validated, put) = match prepared {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            if matches!(error, HttpError::Upload(StatusCode::UNPROCESSABLE_ENTITY)) {
+                state
+                    .store
+                    .remove_upload(&temp)
+                    .await
+                    .map_err(|_| HttpError::UploadUnavailable)?;
+                uploads::remove(&mut tx, id).await?;
+            }
+            // Retain the fsynced final offset on temporary failures. HEAD then lets a
+            // client retry with an empty final PATCH or POST to the finish endpoint.
+            tx.commit().await?;
+            return Err(error);
+        }
+    };
+    let mut r = progress(&row)?;
     let hash = put.hash.to_string();
     uploads::lock_hash(&mut tx, &hash).await?;
     let existing = photos::get_by_hash(&mut tx, &hash)

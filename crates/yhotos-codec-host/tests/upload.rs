@@ -249,6 +249,38 @@ impl Client {
             assert_eq!(entries.count(), 0);
         }
     }
+    fn use_host(&mut self, executable: PathBuf, timeout: u32) {
+        let mut config = config_for_host(self, executable);
+        config.worker.codec_timeout = timeout;
+        self.state = AppState::new(
+            Box::leak(Box::new(config)),
+            self.pool.clone(),
+            self.state.store.clone(),
+            self.state.auth.clone(),
+        );
+        self.app = yhotos_http::admin_router(self.state.clone());
+    }
+    async fn retained(&self, url: &str, bytes: &[u8]) {
+        assert_eq!(
+            self.head(url).await["upload-offset"],
+            bytes.len().to_string()
+        );
+        let uploads = self.state.store.list_uploads().await.unwrap();
+        assert_eq!(uploads.len(), 1);
+        let path = self
+            .state
+            .store
+            .upload_path_for_host(&uploads[0].0)
+            .unwrap();
+        assert_eq!(std::fs::read(path).unwrap(), bytes);
+        assert_eq!(
+            sqlx::query_scalar!("SELECT count(*) FROM photos")
+                .fetch_one(&self.pool)
+                .await
+                .unwrap(),
+            Some(0)
+        );
+    }
 }
 fn getrandom_fill(bytes: &mut [u8]) {
     let secret = Token::generate();
@@ -518,6 +550,13 @@ async fn tus_auth_ownership_csrf_and_expiry_sweep(pool: PgPool) {
         other.patch(&url, 0, b"x").await.status(),
         StatusCode::NOT_FOUND
     );
+    assert_eq!(
+        other
+            .send("POST", &format!("{url}/finish"), &[], Body::empty())
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
     let mut request = Request::builder()
         .method("DELETE")
         .uri(&url)
@@ -611,8 +650,11 @@ cat >/dev/null
 printf '%s\n' '{"identity":{"kind":"Jpeg","width":1,"height":1,"pages":1,"orientation":1,"bits":8,"has_gain_map":false,"icc_desc":null}}'
 "#).unwrap();
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut config = config_for_host(&c, executable);
+    config.upload.max_bytes = 32 * 1024 * 1024;
+    config.upload.chunk_bytes = 8 * 1024 * 1024;
     let state = AppState::new(
-        state_for_perf(&c, executable),
+        Box::leak(Box::new(config)),
         c.pool.clone(),
         c.state.store.clone(),
         c.state.auth.clone(),
@@ -669,7 +711,7 @@ printf '%s\n' '{"identity":{"kind":"Jpeg","width":1,"height":1,"pages":1,"orient
     c.no_pending().await;
     server.abort();
 }
-fn state_for_perf(c: &Client, executable: PathBuf) -> &'static yhotos_config::Config {
+fn config_for_host(c: &Client, executable: PathBuf) -> yhotos_config::Config {
     let mut config = yhotos_config::Config::from_figment(
         figment::Figment::new()
             .merge((
@@ -695,10 +737,14 @@ fn state_for_perf(c: &Client, executable: PathBuf) -> &'static yhotos_config::Co
             .merge(("session_key", c.state.config.session_key.expose_secret())),
     )
     .unwrap();
+    assert_eq!(
+        config.upload.max_bytes,
+        yhotos_codec::Limits::default().max_bytes
+    );
     config.worker.codec_host_path = executable;
-    config.upload.max_bytes = 32 * 1024 * 1024;
-    config.upload.chunk_bytes = 8 * 1024 * 1024;
-    Box::leak(Box::new(config))
+    config.upload = c.state.config.upload;
+    config.worker.codec_timeout = c.state.config.worker.codec_timeout;
+    config
 }
 
 #[sqlx::test(migrations = "../yhotos-db/migrations")]
@@ -748,4 +794,226 @@ async fn tus_concurrent_identical_uploads_publish_one_photo_and_one_ingest(pool:
     let value: serde_json::Value =
         serde_json::from_slice(&r.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(value["status"], "ready");
+}
+
+async fn retry_completion_after_recovery(pool: PgPool, script: Option<&str>, via_finish: bool) {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let mut c = Client::new(pool).await;
+    let host = c.state.config.data_dir.join("recovering-host");
+    if let Some(script) = script {
+        std::fs::write(&host, format!("#!/bin/sh\ncat >/dev/null\n{script}\n")).unwrap();
+        std::fs::set_permissions(&host, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    c.use_host(host.clone(), 1);
+    let bytes = fixture("chart-srgb.png");
+    let url = c.start(bytes.len()).await;
+    let failure = c.patch(&url, 0, &bytes).await;
+    assert_eq!(failure.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(failure.headers()[header::RETRY_AFTER], "30");
+    assert_eq!(failure.headers()[header::CACHE_CONTROL], "no-store");
+    assert_eq!(
+        failure.into_body().collect().await.unwrap().to_bytes(),
+        "Upload temporarily unavailable. Retry later."
+    );
+    c.retained(&url, &bytes).await;
+    // A second authenticated admin cannot resume or complete the creator's upload,
+    // including when all bytes are present and the host has recovered.
+    let other = Client::new(c.pool.clone()).await;
+    if script.is_some() {
+        std::fs::remove_file(&host).unwrap();
+    }
+    symlink(env!("CARGO_BIN_EXE_yhotos-codec-host"), &host).unwrap();
+    assert_eq!(
+        other.patch(&url, bytes.len(), &[]).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        other
+            .send("POST", &format!("{url}/finish"), &[], Body::empty())
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    c.retained(&url, &bytes).await;
+    let response = if via_finish {
+        c.send("POST", &format!("{url}/finish"), &[], Body::empty())
+            .await
+    } else {
+        c.patch(&url, bytes.len(), &[]).await
+    };
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(response.headers()["upload-result"], "created");
+    assert_eq!(response.headers()["upload-offset"], bytes.len().to_string());
+    assert_eq!(
+        sqlx::query_scalar!("SELECT count(*) FROM photos")
+            .fetch_one(&c.pool)
+            .await
+            .unwrap(),
+        Some(1)
+    );
+    assert_eq!(
+        sqlx::query_scalar!("SELECT count(*) FROM jobs WHERE kind='ingest'")
+            .fetch_one(&c.pool)
+            .await
+            .unwrap(),
+        Some(1)
+    );
+    c.no_pending().await;
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn tus_unavailable_host_retains_bytes_and_finish_recovers(pool: PgPool) {
+    retry_completion_after_recovery(pool, None, true).await;
+}
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn tus_failed_host_retains_bytes_and_final_patch_recovers(pool: PgPool) {
+    retry_completion_after_recovery(pool, Some("exit 3"), false).await;
+}
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn tus_host_timeout_exit_retains_bytes_and_finish_recovers(pool: PgPool) {
+    retry_completion_after_recovery(pool, Some("exit 4"), true).await;
+}
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn tus_host_wall_timeout_retains_bytes_and_final_patch_recovers(pool: PgPool) {
+    retry_completion_after_recovery(pool, Some("exec /bin/sleep 10"), false).await;
+}
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn tus_invalid_host_report_retains_bytes_and_finish_recovers(pool: PgPool) {
+    retry_completion_after_recovery(pool, Some("echo '{}'"), true).await;
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn tus_storage_failure_preserves_final_offset_and_bytes(pool: PgPool) {
+    let c = Client::new(pool).await;
+    let bytes = fixture("chart-srgb.png");
+    let url = c.start(bytes.len()).await;
+    // Occupy the originals directory with a file, so publication fails after
+    // successful identity validation without affecting the durable upload.
+    let originals = c.state.config.data_dir.join("originals");
+    std::fs::write(&originals, []).unwrap();
+    let failure = c.patch(&url, 0, &bytes).await;
+    assert_eq!(failure.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(failure.headers()[header::RETRY_AFTER], "30");
+    c.retained(&url, &bytes).await;
+    std::fs::remove_file(originals).unwrap();
+    let response = c
+        .send("POST", &format!("{url}/finish"), &[], Body::empty())
+        .await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(response.headers()["upload-result"], "created");
+    c.no_pending().await;
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn tus_deleted_album_blocks_patch_and_completion(pool: PgPool) {
+    let mut c = Client::new(pool).await;
+    c.use_host(c.state.config.data_dir.join("unavailable-host"), 1);
+    let bytes = fixture("chart-srgb.png");
+    let partial = c.start(bytes.len()).await;
+    let full = c.start(bytes.len()).await;
+    assert_eq!(
+        c.patch(&partial, 0, &bytes[..10]).await.status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        c.patch(&full, 0, &bytes).await.status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    yhotos_db::albums::soft_delete(&mut c.pool.acquire().await.unwrap(), c.album)
+        .await
+        .unwrap();
+    c.use_host(env!("CARGO_BIN_EXE_yhotos-codec-host").into(), 10);
+    assert_eq!(
+        c.patch(&partial, 10, &bytes[10..]).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        c.patch(&full, bytes.len(), &[]).await.status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        c.send("POST", &format!("{full}/finish"), &[], Body::empty())
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(c.head(&partial).await["upload-offset"], "10");
+    assert_eq!(
+        c.head(&full).await["upload-offset"],
+        bytes.len().to_string()
+    );
+    assert_eq!(
+        sqlx::query_scalar!("SELECT count(*) FROM photos")
+            .fetch_one(&c.pool)
+            .await
+            .unwrap(),
+        Some(0)
+    );
+    // Cleanup remains available to the owner even after the album disappears.
+    for url in [partial, full] {
+        assert_eq!(
+            c.send("DELETE", &url, &[], Body::empty()).await.status(),
+            StatusCode::NO_CONTENT
+        );
+    }
+    c.no_pending().await;
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn tus_finish_requires_all_bytes_and_valid_csrf(pool: PgPool) {
+    let c = Client::new(pool).await;
+    let url = c.start(100).await;
+    assert_eq!(
+        c.send("POST", &format!("{url}/finish"), &[], Body::empty())
+            .await
+            .status(),
+        StatusCode::CONFLICT
+    );
+    let mut request = Request::builder()
+        .method("POST")
+        .uri(format!("{url}/finish"))
+        .header(header::COOKIE, &c.cookie)
+        .header("tus-resumable", "1.0.0")
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(ConnectInfo("127.0.0.1:4321".parse::<SocketAddr>().unwrap()));
+    assert_eq!(
+        c.app.clone().oneshot(request).await.unwrap().status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(c.head(&url).await["upload-offset"], "0");
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn tus_configured_ceiling_matches_the_host_and_is_advertised(pool: PgPool) {
+    let mut c = Client::new(pool).await;
+    let mut config = config_for_host(&c, env!("CARGO_BIN_EXE_yhotos-codec-host").into());
+    let ceiling = yhotos_codec::Limits::default().max_bytes;
+    assert_eq!(ceiling, 2 << 30);
+    config.upload.max_bytes = ceiling;
+    let state = AppState::new(
+        Box::leak(Box::new(config)),
+        c.pool.clone(),
+        c.state.store.clone(),
+        c.state.auth.clone(),
+    );
+    c.state = state;
+    c.app = yhotos_http::admin_router(c.state.clone());
+    let response = c.send("OPTIONS", "/admin/upload", &[], Body::empty()).await;
+    assert_eq!(response.headers()["tus-max-size"], ceiling.to_string());
+    assert_eq!(
+        c.create(usize::try_from(ceiling).unwrap() + 1, "large.jpg")
+            .await
+            .status(),
+        StatusCode::PAYLOAD_TOO_LARGE
+    );
+    assert_eq!(
+        c.upload(&fixture("chart-srgb.png"), "small.png")
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    c.no_pending().await;
 }

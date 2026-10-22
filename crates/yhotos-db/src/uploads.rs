@@ -75,6 +75,30 @@ pub async fn lock(
 ) -> Result<Option<Upload>, DbError> {
     Ok(sqlx::query_as!(Upload,r#"SELECT id,user_id AS "user_id: _",album_id AS "album_id: _",filename,declared_bytes,received_bytes,mime_hint,tmp_path,metadata,expires_at,created_at FROM uploads WHERE id=$1 AND user_id=$2 AND expires_at>now() FOR UPDATE"#,id,user.0).fetch_optional(conn).await?)
 }
+/// Locks an owned, unexpired upload and its live destination until transaction end.
+/// The album share lock prevents both soft and hard deletion during PATCH or completion.
+/// # Errors
+/// Returns database errors; unavailable albums and uploads all return None.
+pub async fn lock_for_write(
+    conn: &mut PgConnection,
+    id: Uuid,
+    user: UserId,
+) -> Result<Option<Upload>, DbError> {
+    let Some(row) = lock(conn, id, user).await? else {
+        return Ok(None);
+    };
+    if sqlx::query!(
+        "SELECT id FROM albums WHERE id=$1 AND deleted_at IS NULL FOR SHARE",
+        row.album_id.0
+    )
+    .fetch_optional(conn)
+    .await?
+    .is_none()
+    {
+        return Ok(None);
+    }
+    Ok(Some(row))
+}
 /// Advances the durable offset after the caller has synced the corresponding bytes.
 /// # Errors
 /// Returns constraint or database errors.

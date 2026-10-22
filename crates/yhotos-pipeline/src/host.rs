@@ -19,7 +19,7 @@ async fn capture(reader: impl AsyncRead + Unpin, cap: usize) -> Result<Vec<u8>, 
         .await
         .map_err(|_| retry("codec stream failed"))?;
     if bytes.len() > cap {
-        return Err(JobError::Fatal("codec report exceeded limit".into()));
+        return Err(retry("codec report exceeded limit"));
     }
     Ok(bytes)
 }
@@ -110,8 +110,9 @@ impl Ingest {
                 wait
             )?;
             match status.code() {
-                Some(0) => serde_json::from_slice(&stdout)
-                    .map_err(|_| JobError::Fatal("invalid codec report".into())),
+                Some(0) => {
+                    serde_json::from_slice(&stdout).map_err(|_| retry("invalid codec report"))
+                }
                 Some(2) => Err(JobError::Fatal(failure_reason(&stderr))),
                 Some(3) if attempt >= 2 => Err(JobError::Fatal("image processing failed".into())),
                 Some(4) => Err(retry("codec timed out")),
@@ -192,7 +193,7 @@ mod tests {
             let (dir, runner) = fake_host(script);
             assert!(matches!(
                 runner.run_host(dir.path(), dir.path(), &[], 1).await,
-                Err(JobError::Fatal(_))
+                Err(JobError::Retry { .. })
             ));
         }
     }

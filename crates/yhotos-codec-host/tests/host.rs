@@ -93,14 +93,14 @@ fn three_output_report_and_hashes() {
     }
 }
 #[test]
-fn rejected_inputs_and_outputs_exit_two_without_report() {
+fn input_failures_and_invalid_outputs_have_classified_exits() {
     let tmp = tempfile::tempdir().unwrap();
-    for input in [
-        fixture("malicious/bomb-png.png"),
-        tmp.path().join("missing"),
+    for (input, code) in [
+        (fixture("malicious/bomb-png.png"), 2),
+        (tmp.path().join("missing"), 3),
     ] {
         let result = invoke(&job(&input, tmp.path()), &[]);
-        assert_eq!(result.status.code(), Some(2));
+        assert_eq!(result.status.code(), Some(code));
         assert_eq!(result.stdout, b"");
         assert_eq!(
             result

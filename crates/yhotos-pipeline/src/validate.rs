@@ -25,7 +25,7 @@ struct IdentityReport {
 impl Ingest {
     /// Validates a trusted storage path without decoding in this process.
     /// # Errors
-    /// Rejects unsupported magic, host failures, disagreeing identity or exceeded header budgets.
+    /// Invalid content is fatal; storage failures, host unavailability and timeouts are retryable.
     pub async fn finish(&self, path: &Path) -> Result<Validated, JobError> {
         let mut file = tokio::fs::File::open(path)
             .await
@@ -47,7 +47,12 @@ impl Ingest {
             .store
             .tmp_dir()
             .map_err(|_| retry("temporary storage unavailable"))?;
-        let report:IdentityReport=self.request_host(&serde_json::json!({"input":path,"out_dir":dir.path(),"limits":self.limits,"outputs":[],"want":["identity"]}),1).await.map_err(|_|rejected())?;
+        let report: IdentityReport = self
+            .request_host(
+                &serde_json::json!({"input":path,"out_dir":dir.path(),"limits":self.limits,"outputs":[],"want":["identity"]}),
+                1,
+            )
+            .await?;
         let id = report.identity;
         let (mime, kind) = match &id.kind {
             Kind::Jpeg => ("image/jpeg", 0),
