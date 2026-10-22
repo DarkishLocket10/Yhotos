@@ -407,7 +407,8 @@ async fn photos_have_sorted_neighbours_metadata_hdr_downloads_and_og(pool: PgPoo
     ] {
         assert!(html.contains(value), "{value}");
     }
-    assert!(!html.contains("prefetch"));
+    // Hover prefetch is an island (task 013); `<link rel="prefetch">` is never emitted.
+    assert!(!html.contains("rel=\"prefetch\""));
     let response = f.get(&format!("/p/{}?sort=manual", f.photos[1])).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert!(

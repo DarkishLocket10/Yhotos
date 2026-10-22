@@ -79,3 +79,19 @@ test('zoom width excludes letterboxing for portrait and landscape photos', async
   assert.equal(containedWidth(0, 0, 0, 0), 1);
   assert.equal(containedWidth(800, 600, 0, 0), 800);
 });
+
+test('photo-state refreshes that overlap a mutation are stale', async () => {
+  const { staleRefresh } = await import('../dist/test/lib/media.js');
+  const pending = new Set(), settled = new Map();
+  assert.equal(staleRefresh(pending, settled, 'a', 10), false);
+  pending.add('a');
+  // GET issued, then the like is still in flight: the GET may read old state.
+  assert.equal(staleRefresh(pending, settled, 'a', 10), true);
+  pending.delete('a'); settled.set('a', 20);
+  // Like settled after the GET was requested (responses reordered): stale.
+  assert.equal(staleRefresh(pending, settled, 'a', 10), true);
+  // A GET requested after the like settled sees the saved state.
+  assert.equal(staleRefresh(pending, settled, 'a', 25), false);
+  // Other photos are unaffected.
+  assert.equal(staleRefresh(pending, settled, 'b', 10), false);
+});

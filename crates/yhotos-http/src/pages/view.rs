@@ -693,11 +693,7 @@ fn render_photo_with_controls(
                 flag: controls.as_ref().is_some_and(|c| c.flag),
             },
         )?)?,
-        scripts: if controls.as_ref().is_some_and(|c| c.like || c.flag) {
-            vec![crate::static_assets::likes_url()?]
-        } else {
-            Vec::new()
-        },
+        scripts: photo_scripts(controls.as_ref().is_some_and(|c| c.like || c.flag))?,
         badge: match p.kind.as_str() {
             "raw" => "RAW",
             "video" => "Play video",
@@ -708,6 +704,17 @@ fn render_photo_with_controls(
     .map_err(|e| HttpError::Internal(e.into()))
 }
 
+/// Direct `/p/` visits get the same navigation enhancement as album pages.
+fn photo_scripts(interactive: bool) -> Result<Vec<&'static str>, HttpError> {
+    let mut scripts = vec![
+        crate::static_assets::prefetch_url()?,
+        crate::static_assets::transitions_url()?,
+    ];
+    if interactive {
+        scripts.push(crate::static_assets::likes_url()?);
+    }
+    Ok(scripts)
+}
 fn json_script(value: &impl serde::Serialize) -> Result<String, HttpError> {
     Ok(serde_json::to_string(value)?
         .replace("</", "<\\/")

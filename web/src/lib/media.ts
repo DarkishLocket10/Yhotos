@@ -51,3 +51,9 @@ export class DecodedMedia {
     }
   }
 }
+
+/** A photo-state refresh requested at `requestedAt` may predate a like or flag on
+ * the same photo when that mutation is still pending or settled after the request. */
+export function staleRefresh(pending: ReadonlySet<string>, settled: ReadonlyMap<string, number>, id: string, requestedAt: number): boolean {
+  return pending.has(id) || (settled.get(id) ?? -Infinity) >= requestedAt;
+}

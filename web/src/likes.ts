@@ -1,5 +1,6 @@
 import type { Photo } from "./lib/gallery.js";
 import { enhance } from "./lib/lifecycle.js";
+import { staleRefresh } from "./lib/media.js";
 function paint(root: ParentNode, state: NonNullable<Photo["state"]>): void {
   const like = root.querySelector<HTMLButtonElement>("[data-like]");
   const flag = root.querySelector<HTMLButtonElement>("[data-flag]");
@@ -7,9 +8,26 @@ function paint(root: ParentNode, state: NonNullable<Photo["state"]>): void {
   if (flag) { flag.setAttribute("aria-pressed", String(state.flagged)); flag.textContent = state.flagged ? "Flagged" : "Flag photo for review"; flag.disabled = state.flagged; }
 }
 enhance(signal => {
-  const pending = new Set<string>();
+  const pending = new Set<string>(), settled = new Map<string, number>();
+  // Refreshes that overlapped a mutation may carry pre-mutation state. A pending
+  // mutation repaints when it settles; a settled one triggers a fresh read.
+  function accept(root: ParentNode, id: string, state: NonNullable<Photo["state"]>, requestedAt: number): void {
+    const current = root.querySelector<HTMLButtonElement>("[data-like], [data-flag]");
+    if (current?.dataset.photoId && current.dataset.photoId !== id) return;
+    if (!staleRefresh(pending, settled, id, requestedAt)) { paint(root, state); return; }
+    if (pending.has(id)) return;
+    const again = performance.now();
+    void fetch(`/api/v1/photos/${id}`, { credentials: "same-origin", signal }).then(async response => {
+      if (!response.ok) throw new Error("Unavailable");
+      const fresh = await response.json() as Photo;
+      if (!signal.aborted && fresh.state) accept(root, id, fresh.state, again);
+    }).catch(() => {});
+  }
   document.addEventListener("yhotos:photo-state", event => {
-    if (event instanceof CustomEvent) paint(event.detail.root as ParentNode, event.detail.state as NonNullable<Photo["state"]>);
+    if (!(event instanceof CustomEvent)) return;
+    const detail = event.detail as { root: ParentNode; state: NonNullable<Photo["state"]>; id?: unknown; requestedAt?: unknown };
+    if (typeof detail.id === "string" && typeof detail.requestedAt === "number") accept(detail.root, detail.id, detail.state, detail.requestedAt);
+    else paint(detail.root, detail.state);
   }, { signal });
   const page = document.querySelector("#photo-data");
   if (page && document.querySelector("[data-like], [data-flag]")) {
@@ -51,6 +69,6 @@ enhance(signal => {
       button.setAttribute("aria-pressed", String(was)); button.textContent = oldText;
       const status = root.querySelector<HTMLElement>('[role="status"]');
       if (status) status.textContent = "Could not save your choice. Please try again.";
-    }).finally(() => { pending.delete(id); if (button.dataset.photoId === id) button.disabled = flag && button.getAttribute("aria-pressed") === "true"; });
+    }).finally(() => { pending.delete(id); settled.set(id, performance.now()); if (button.dataset.photoId === id) button.disabled = flag && button.getAttribute("aria-pressed") === "true"; });
   }, { signal });
 });

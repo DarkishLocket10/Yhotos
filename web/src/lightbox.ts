@@ -133,13 +133,14 @@ enhance(signal => {
     $<HTMLButtonElement>("[data-previous]").disabled = index === 0;
     $<HTMLButtonElement>("[data-next]").disabled = index === photos.length - 1 && cursor.next === null;
     setStatus(`Photo ${index + 1} of ${photos.length}${cursor.next === null ? "" : ", more photos available"}`);
+    const requestedAt = performance.now();
     if (photo.caps.download || photo.caps.like || photo.caps.flag) void fetch(`/api/v1/photos/${photo.id}`, { credentials: "same-origin", signal }).then(async response => {
       if (!response.ok) throw new Error("Unavailable"); const current = await response.json() as Photo;
       if (version !== generation || !dialog.open || !current.state) return;
       photo.original = current.original; photo.downloads = current.downloads; photo.caps = current.caps;
       renderDownloads(photo); if (photo.caps.download && dialog.querySelector<HTMLElement>("#lightbox-downloads")?.hidden === false) setStatus("Download sizes ready."); if (scale > 1) void zoom(scale);
       for (const action of ["like", "flag"]) { const b = dialog.querySelector<HTMLButtonElement>(`[data-${action}]`); if (b) { b.disabled = false; b.hidden = !current.caps[action as "like" | "flag"]; } }
-      document.dispatchEvent(new CustomEvent("yhotos:photo-state", { detail: { root: dialog, state: current.state } }));
+      document.dispatchEvent(new CustomEvent("yhotos:photo-state", { detail: { root: dialog, state: current.state, id: photo.id, requestedAt } }));
     }).catch(() => { if (version === generation) setStatus("Could not refresh photo controls. Please reload to try again."); });
     preload();
     if (index === photos.length - 1 && cursor.next !== null && !reducedData()) void more().then(() => { if (dialog.open) preload(); });
