@@ -148,7 +148,10 @@ pub fn identify(path: &Path, limits: &Limits) -> Result<Identity, CodecError> {
         return raw::identify(path, limits);
     }
     if kind == Kind::Jxl {
-        native::check_jxl(path, limits)?;
+        // libvips' JXL header loader scans through the pixel payload to count
+        // frames and collect trailing boxes. The bounded libjxl header already
+        // supplies decoder agreement and all still-image identity fields.
+        return native::identify_jxl(path, limits);
     }
     let has_gain_map = headers::gain_map(path)?;
     let image = native::Image::load(path, &kind)?;

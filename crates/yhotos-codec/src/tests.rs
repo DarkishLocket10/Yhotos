@@ -720,6 +720,140 @@ fn short_jxl_never_probes_unrelated_fallback_decoders() {
 }
 
 #[test]
+fn jxl_header_probe_streams_chunks_and_stops_before_pixel_payload() {
+    use std::io::{Cursor, Read};
+    struct Short<'a>(&'a mut Cursor<Vec<u8>>);
+    impl Read for Short<'_> {
+        fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+            let n = bytes.len().min(7);
+            self.0.read(&mut bytes[..n])
+        }
+    }
+    let chart = std::fs::read(fixture("chart.jxl")).unwrap();
+    // Put an unknown container box before the codestream so its header crosses
+    // several chunks (including a partial next-box header retained by libjxl).
+    let mut delayed = chart[..32].to_vec();
+    delayed.extend(bmff_box(b"free", &vec![0; 8190]));
+    delayed.extend(&chart[32..]);
+    for bytes in [&chart, &delayed] {
+        let mut reader = Cursor::new(bytes);
+        native::identify_jxl_reader(&mut reader, &Limits::default()).unwrap();
+        assert!(reader.position() <= 12 << 10);
+    }
+    // A large trailing payload is never read, even though the file exceeds the
+    // cumulative header cap. A reader with very short reads also retains tails.
+    let mut bytes = chart.clone();
+    bytes.resize(20 << 20, 0);
+    let mut reader = Cursor::new(bytes);
+    native::identify_jxl_reader(&mut reader, &Limits::default()).unwrap();
+    assert_eq!(reader.position(), 4096);
+    let mut reader = Cursor::new(delayed);
+    native::identify_jxl_reader(Short(&mut reader), &Limits::default()).unwrap();
+    assert!(reader.position() < 12 << 10);
+}
+
+#[test]
+fn jxl_header_probe_enforces_a_cumulative_input_cap() {
+    let chart = std::fs::read(fixture("chart.jxl")).unwrap();
+    let mut bytes = chart[..32].to_vec();
+    bytes.extend(bmff_box(b"free", &vec![0; 16 << 20]));
+    bytes.extend(&chart[32..]);
+    for cap in [8192, 16 << 20] {
+        let mut reader = std::io::Cursor::new(&bytes);
+        let limits = Limits {
+            max_bytes: cap,
+            ..Limits::default()
+        };
+        assert_eq!(
+            native::identify_jxl_reader(&mut reader, &limits),
+            Err(CodecError::Limits)
+        );
+        assert_eq!(reader.position(), cap);
+    }
+}
+
+#[cfg(feature = "heif")]
+#[test]
+fn heif_high_bit_depth_alpha_round_trips_transparent_partial_and_opaque() {
+    let tmp = tempfile::tempdir().unwrap();
+    let raw = tmp.path().join("rgba.raw");
+    let mut bytes = Vec::new();
+    for _ in 0..32 {
+        for alpha in [0u16, 32768, 65535] {
+            for _ in 0..32 {
+                for sample in [16384u16, 32768, 49152, alpha] {
+                    bytes.extend(sample.to_ne_bytes());
+                }
+            }
+        }
+    }
+    std::fs::write(&raw, bytes).unwrap();
+    let source = tmp.path().join("rgba.v");
+    run(&[
+        "rawload".as_ref(),
+        raw.as_os_str(),
+        source.as_os_str(),
+        "96".as_ref(),
+        "32".as_ref(),
+        "4".as_ref(),
+        "--format=ushort".as_ref(),
+        "--interpretation=rgb16".as_ref(),
+    ]);
+    for bits in [10u32, 12] {
+        for (compression, suffix) in [("av1", "avif"), ("hevc", "heic")] {
+            let input = tmp.path().join(format!("alpha-{bits}.{suffix}"));
+            run(&[
+                "heifsave".as_ref(),
+                source.as_os_str(),
+                input.as_os_str(),
+                "--lossless".as_ref(),
+                "--effort=0".as_ref(),
+                format!("--compression={compression}").as_ref(),
+                format!("--bitdepth={bits}").as_ref(),
+            ]);
+            let id = identify(&input, &Limits::default()).unwrap();
+            assert_eq!(u32::from(id.bits), bits);
+            assert!(id.has_alpha);
+            let w = decode(&input, &id, &Limits::default()).unwrap();
+            let check = |w: &Working| {
+                let alpha = w.image.extract(3, 1).unwrap().pixels().unwrap();
+                for (x, expected) in [(16, 0u16), (48, 32768), (80, 65535)] {
+                    let n = (16 * 96 + x) * 2;
+                    let actual = u16::from_ne_bytes(alpha[n..n + 2].try_into().unwrap());
+                    let tolerance = if x == 48 {
+                        65535 / ((1 << bits) - 1)
+                    } else {
+                        0
+                    };
+                    assert!(
+                        u32::from(actual.abs_diff(expected)) <= tolerance,
+                        "{bits}-bit {compression}, x={x}: {actual} vs {expected}"
+                    );
+                }
+            };
+            check(&w);
+            let output = tmp.path().join("roundtrip.jxl");
+            encode(
+                &w,
+                Encode::Jxl {
+                    distance: 0.0,
+                    effort: 1,
+                    hdr: false,
+                },
+                EncodeOpts {
+                    keep_icc: false,
+                    strip_metadata: true,
+                },
+                &output,
+            )
+            .unwrap();
+            let id = identify(&output, &Limits::default()).unwrap();
+            check(&decode(&output, &id, &Limits::default()).unwrap());
+        }
+    }
+}
+
+#[test]
 fn cmyk_is_imported_before_export_to_rgb_only_codecs() {
     let source = fixture("cmyk.jpg");
     let expected = lab(&source);
@@ -2113,6 +2247,84 @@ fn rejected_tiff(path: &Path, expected: &CodecError) {
         assert_eq!(raw::decode(path, &limits).as_ref().err(), Some(expected));
         assert_eq!(raw::metadata(path).as_ref().err(), Some(expected));
         assert_eq!(raw::PIXEL_DECODES.get(), before);
+    }
+}
+
+#[cfg(feature = "raw")]
+#[test]
+fn panasonic_nested_camera_ifd_uses_shared_tiff_validation_before_rawler() {
+    let tmp = tempfile::Builder::new().suffix(".rw2").tempfile().unwrap();
+    for little in [false, true] {
+        let envelope = |camera: &[u8]| {
+            let mut bytes = tiff_entries(
+                &[
+                    (2, 4, 1, 1024),
+                    (3, 4, 1, 768),
+                    (271, 2, 10, 256),
+                    (0x0120, 7, camera.len() as u64, 512),
+                ],
+                false,
+                true,
+            );
+            bytes[2..4].copy_from_slice(&85u16.to_le_bytes());
+            bytes.resize(256, 0);
+            bytes.extend(b"Panasonic\0");
+            bytes.resize(512, 0);
+            bytes.extend(camera);
+            bytes
+        };
+        let camera = |entries: &[(u16, u16, u64, u64)]| {
+            // CameraIFD has its own byte order and blob-relative SubIFD offsets.
+            let mut bytes = tiff_entries(&[(330, 4, 1, 64)], false, !little);
+            bytes.resize(64, 0);
+            bytes.extend(&tiff_entries(entries, false, !little)[8..]);
+            bytes
+        };
+        std::fs::write(tmp.path(), envelope(&camera(&[(65000, 4, 1, 17)]))).unwrap();
+        assert!(identify(tmp.path(), &Limits::default()).is_ok());
+        for (entries, error) in [
+            (
+                vec![(65000, 12, u64::from(u32::MAX), 0)],
+                CodecError::Limits,
+            ),
+            (vec![(65000, 0, 1, 0)], CodecError::Decode),
+            (vec![(65000, 7, 64, 2048)], CodecError::Decode),
+            // The outer four entries and CameraIFD's SubIFD link share the cap.
+            (
+                (1000..5092).map(|tag| (tag, 1, 1, 0)).collect(),
+                CodecError::Limits,
+            ),
+        ] {
+            let mut bytes = envelope(&camera(&entries));
+            // An out-of-blob payload must fail even with enough outer file data.
+            bytes.resize(bytes.len().max(4096), 0);
+            std::fs::write(tmp.path(), bytes).unwrap();
+            rejected_tiff(tmp.path(), &error);
+            // RW2's decoder is also selected by Make under a normal TIFF
+            // header. The same embedded allocation must be rejected there.
+            let mut bytes = envelope(&camera(&entries));
+            bytes[2..4].copy_from_slice(&42u16.to_le_bytes());
+            std::fs::write(tmp.path(), bytes).unwrap();
+            rejected_tiff(tmp.path(), &error);
+        }
+        let mut nested = camera(&[(65000, 4, 1, 17)]);
+        nested.pop(); // incomplete SubIFD next pointer, despite trailing file bytes
+        let mut bytes = envelope(&nested);
+        bytes.resize(4096, 0);
+        std::fs::write(tmp.path(), bytes).unwrap();
+        rejected_tiff(tmp.path(), &CodecError::Decode);
+
+        let entries: Vec<_> = (65000..65004)
+            .map(|tag| (tag, 7, (64 << 20) - 4096, 4096))
+            .collect();
+        let camera = camera(&entries);
+        let mut bytes = envelope(&camera);
+        let len = (64u32 << 20).to_le_bytes();
+        // Fourth root entry's count is the declared CameraIFD blob length.
+        bytes[50..54].copy_from_slice(&len);
+        std::fs::write(tmp.path(), bytes).unwrap();
+        tmp.as_file().set_len(512 + (64 << 20)).unwrap();
+        rejected_tiff(tmp.path(), &CodecError::Limits);
     }
 }
 

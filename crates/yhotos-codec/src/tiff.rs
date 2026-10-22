@@ -49,6 +49,44 @@ pub(crate) struct Tiff<F = File> {
     entry_budget: u64,
     payload_budget: u64,
 }
+// A zero-copy, seekable view of CameraIFD's embedded TIFF. Its offsets are
+// relative to the blob, and neither directory nor payload reads can escape it.
+#[cfg(feature = "raw")]
+struct Window<'a, F> {
+    file: &'a mut F,
+    base: u64,
+    len: u64,
+    position: u64,
+}
+#[cfg(feature = "raw")]
+impl<F: Read + Seek> Read for Window<'_, F> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let available = usize::try_from(self.len - self.position).unwrap_or(usize::MAX);
+        let size = buffer.len().min(available);
+        self.file.seek(SeekFrom::Start(self.base + self.position))?;
+        let slice = buffer
+            .get_mut(..size)
+            .ok_or(std::io::ErrorKind::InvalidInput)?;
+        let n = self.file.read(slice)?;
+        self.position += n as u64;
+        Ok(n)
+    }
+}
+#[cfg(feature = "raw")]
+impl<F: Seek> Seek for Window<'_, F> {
+    fn seek(&mut self, from: SeekFrom) -> std::io::Result<u64> {
+        let position = match from {
+            SeekFrom::Start(n) => i128::from(n),
+            SeekFrom::Current(n) => i128::from(self.position) + i128::from(n),
+            SeekFrom::End(n) => i128::from(self.len) + i128::from(n),
+        };
+        if position < 0 || position > i128::from(self.len) {
+            return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+        }
+        self.position = u64::try_from(position).map_err(std::io::Error::other)?;
+        Ok(self.position)
+    }
+}
 #[cfg(feature = "raw")]
 impl Tiff<File> {
     pub(crate) fn open(path: &Path, limits: &Limits) -> Result<Self, CodecError> {
@@ -60,6 +98,15 @@ impl Tiff<File> {
 impl<F: Read + Seek> Tiff<F> {
     // Reuse the sniffer's open file and kernel-reported length on the hot path.
     pub(crate) fn from_file(file: F, len: u64, limits: &Limits) -> Result<Self, CodecError> {
+        Self::with_budgets(file, len, limits, 4096, 256 << 20)
+    }
+    fn with_budgets(
+        file: F,
+        len: u64,
+        limits: &Limits,
+        entry_budget: u64,
+        payload_budget: u64,
+    ) -> Result<Self, CodecError> {
         if len > limits.max_bytes {
             return Err(CodecError::Limits);
         }
@@ -70,9 +117,9 @@ impl<F: Read + Seek> Tiff<F> {
             big: false,
             flavor: Flavor::Standard,
             ifds: Vec::new(),
-            entry_budget: 4096,
+            entry_budget,
             // Count inline and overlapping values too: rawler allocates each.
-            payload_budget: 256 << 20,
+            payload_budget,
         };
         let header = t.read(0, len.min(16))?;
         t.little = match header.get(..2) {
@@ -125,6 +172,29 @@ impl<F: Read + Seek> Tiff<F> {
             return Err(CodecError::Decode);
         }
         Ok(t)
+    }
+    #[cfg(feature = "raw")]
+    pub(crate) fn panasonic_camera_ifds(&mut self, limits: &Limits) -> Result<(), CodecError> {
+        for i in 0..self.count() {
+            let Some((base, len)) = self.blob_range(i, 0x0120)? else {
+                continue;
+            };
+            let embedded = Tiff::with_budgets(
+                Window {
+                    file: &mut self.file,
+                    base,
+                    len,
+                    position: 0,
+                },
+                len,
+                limits,
+                self.entry_budget,
+                self.payload_budget,
+            )?;
+            self.entry_budget = embedded.entry_budget;
+            self.payload_budget = embedded.payload_budget;
+        }
+        Ok(())
     }
     // Shared by normal TIFF and all MakerNote IFDs, with one allocation budget.
     fn directory(&mut self, offset: u64) -> Result<(usize, u64), CodecError> {

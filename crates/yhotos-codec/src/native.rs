@@ -6,7 +6,7 @@
     clippy::too_many_lines
 )]
 //! All native handles own one `GObject` reference; no handle crosses threads.
-use crate::{CodecError, Encode, Kind};
+use crate::{CodecError, Encode, Identity, Kind};
 use std::{
     ffi::{CStr, CString, c_void},
     path::Path,
@@ -205,11 +205,19 @@ impl Image {
         unsafe { ffi::vips_image_get_format(self.0.as_ptr()) }
     }
     pub(crate) fn alpha16(&self) -> Result<Self, CodecError> {
-        // File-loader integer alpha spans its sample type, while floating TIFF
-        // and scRGB alpha is normalized to 0..1, independent of RGB luminance.
-        // Do not use bits-per-sample: it describes precision, not opacity range.
+        // Most integer loaders span the sample type. HEIF instead left-shifts
+        // 10/12-bit samples into ushort, leaving the low bits zero at opacity.
+        // Floating TIFF/scRGB alpha spans 0..1, independent of RGB luminance.
         let scale = match self.format() {
             ffi::VipsBandFormat_VIPS_FORMAT_UCHAR => 257.0,
+            ffi::VipsBandFormat_VIPS_FORMAT_USHORT
+                if self.string("vips-loader").as_deref() == Some("heifload")
+                    && matches!(self.bits(), 10 | 12) =>
+            {
+                let bits = self.bits();
+                let opaque = ((1u32 << bits) - 1) << (16 - bits);
+                65535.0 / f64::from(opaque)
+            }
             ffi::VipsBandFormat_VIPS_FORMAT_USHORT => 1.0,
             ffi::VipsBandFormat_VIPS_FORMAT_FLOAT | ffi::VipsBandFormat_VIPS_FORMAT_DOUBLE => {
                 65535.0
@@ -217,7 +225,9 @@ impl Image {
             _ => return Err(CodecError::Unsupported),
         };
         self.extract(self.bands() - 1, 1)?
-            .linear(scale)?
+            // Round before the integer cast, including full HEIF opacity when
+            // floating arithmetic lands just below 65535.
+            .linear_offset(scale, 0.5)?
             .cast(USHORT)
     }
     pub(crate) fn has_alpha(&self) -> bool {
@@ -309,7 +319,10 @@ impl Image {
         ))
     }
     pub(crate) fn linear(&self, scale: f64) -> Result<Self, CodecError> {
-        operation!(|out| ffi::vips_linear1(self.0.as_ptr(), out, scale, 0.0f64, END))
+        self.linear_offset(scale, 0.0)
+    }
+    fn linear_offset(&self, scale: f64, offset: f64) -> Result<Self, CodecError> {
+        operation!(|out| ffi::vips_linear1(self.0.as_ptr(), out, scale, offset, END))
     }
     pub(crate) fn extract(&self, start: i32, n: i32) -> Result<Self, CodecError> {
         operation!(|out| ffi::vips_extract_band(self.0.as_ptr(), out, start, c"n".as_ptr(), n, END))
@@ -612,19 +625,27 @@ pub(crate) fn profile_description(bytes: &[u8]) -> Option<String> {
 // Validate basic-info and color-header completion with a bounded libjxl state
 // machine before entering the explicit loader. Short JXL streams must never
 // enter the generic foreign loader probe. No pixel buffers are requested here.
-pub(crate) fn check_jxl(path: &Path, limits: &crate::Limits) -> Result<(), CodecError> {
-    use std::io::Read;
-    let mut bytes = Vec::new();
-    std::fs::File::open(path)
-        .map_err(|_| CodecError::Io)?
-        .take((16 << 20) + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| CodecError::Io)?;
-    check_jxl_bytes(&bytes, limits)
+pub(crate) fn identify_jxl(path: &Path, limits: &crate::Limits) -> Result<Identity, CodecError> {
+    identify_jxl_reader(
+        std::fs::File::open(path).map_err(|_| CodecError::Io)?,
+        limits,
+    )
 }
+#[cfg(feature = "raw")]
 pub(crate) fn check_jxl_bytes(bytes: &[u8], limits: &crate::Limits) -> Result<(), CodecError> {
-    // SAFETY: the decoder borrows bytes only inside this scope; no callbacks or pixel output
-    // buffers are installed, and every exit destroys the decoder before bytes is dropped.
+    identify_jxl_reader(bytes, limits).map(|_| ())
+}
+pub(crate) fn identify_jxl_reader(
+    mut input: impl std::io::Read,
+    limits: &crate::Limits,
+) -> Result<Identity, CodecError> {
+    let cap = usize::try_from(limits.max_bytes.min(16 << 20)).map_err(|_| CodecError::Limits)?;
+    // Keep this buffer alive until after decoder destruction, including errors.
+    let mut bytes = Vec::new();
+    // SAFETY: each SetInput borrows this live buffer until ReleaseInput or
+    // Destroy. Mutation occurs only after ReleaseInput; no pixel buffers or
+    // callbacks are installed, and all exits destroy the decoder exactly once.
+    // The ICC output uses the checked size from that same live decoder.
     unsafe {
         let decoder = ffi::JxlDecoderCreate(ptr::null());
         if decoder.is_null() {
@@ -639,16 +660,37 @@ pub(crate) fn check_jxl_bytes(bytes: &[u8], limits: &crate::Limits) -> Result<()
             {
                 return Err(CodecError::Decode);
             }
-            if ffi::JxlDecoderSetInput(decoder, bytes.as_ptr(), bytes.len())
-                != ffi::JxlDecoderStatus_JXL_DEC_SUCCESS
-            {
-                return Err(CodecError::Decode);
-            }
-            ffi::JxlDecoderCloseInput(decoder);
-            let mut seen_basic = false;
-            for _ in 0..8 {
+            let mut basic = None;
+            let mut total = 0;
+            loop {
                 match ffi::JxlDecoderProcessInput(decoder) {
-                    ffi::JxlDecoderStatus_JXL_DEC_BASIC_INFO => {
+                    ffi::JxlDecoderStatus_JXL_DEC_NEED_MORE_INPUT => {
+                        let remaining = ffi::JxlDecoderReleaseInput(decoder);
+                        if remaining > bytes.len() {
+                            return Err(CodecError::Decode);
+                        }
+                        let start = bytes.len() - remaining;
+                        bytes.copy_within(start.., 0);
+                        bytes.truncate(remaining);
+                        if total == cap {
+                            return Err(CodecError::Limits);
+                        }
+                        bytes.resize(remaining + (cap - total).min(4096), 0);
+                        let n = input
+                            .read(&mut bytes[remaining..])
+                            .map_err(|_| CodecError::Io)?;
+                        if n == 0 {
+                            return Err(CodecError::Decode);
+                        }
+                        total += n;
+                        bytes.truncate(remaining + n);
+                        if ffi::JxlDecoderSetInput(decoder, bytes.as_ptr(), bytes.len())
+                            != ffi::JxlDecoderStatus_JXL_DEC_SUCCESS
+                        {
+                            return Err(CodecError::Decode);
+                        }
+                    }
+                    ffi::JxlDecoderStatus_JXL_DEC_BASIC_INFO if basic.is_none() => {
                         let mut info = std::mem::MaybeUninit::<ffi::JxlBasicInfo>::uninit();
                         if ffi::JxlDecoderGetBasicInfo(decoder, info.as_mut_ptr())
                             != ffi::JxlDecoderStatus_JXL_DEC_SUCCESS
@@ -657,13 +699,70 @@ pub(crate) fn check_jxl_bytes(bytes: &[u8], limits: &crate::Limits) -> Result<()
                         }
                         let info = info.assume_init();
                         limits.check(info.xsize, info.ysize, 1)?;
-                        seen_basic = true;
+                        // Counting animated frames requires scanning past the
+                        // color header; do not silently report one page.
+                        if info.have_animation != 0 {
+                            return Err(CodecError::Unsupported);
+                        }
+                        basic = Some(info);
                     }
-                    ffi::JxlDecoderStatus_JXL_DEC_COLOR_ENCODING if seen_basic => return Ok(()),
+                    ffi::JxlDecoderStatus_JXL_DEC_COLOR_ENCODING => {
+                        let info = basic.as_ref().ok_or(CodecError::Decode)?;
+                        let target = ffi::JxlColorProfileTarget_JXL_COLOR_PROFILE_TARGET_DATA;
+                        let mut len = 0;
+                        #[cfg(libjxl_legacy_icc)]
+                        let status = ffi::JxlDecoderGetICCProfileSize(
+                            decoder,
+                            ptr::null(),
+                            target,
+                            &mut len,
+                        );
+                        #[cfg(not(libjxl_legacy_icc))]
+                        let status = ffi::JxlDecoderGetICCProfileSize(decoder, target, &mut len);
+                        if status != ffi::JxlDecoderStatus_JXL_DEC_SUCCESS {
+                            return Err(CodecError::Decode);
+                        }
+                        if len > 16 << 20 {
+                            return Err(CodecError::Limits);
+                        }
+                        let mut profile = vec![0; len];
+                        #[cfg(libjxl_legacy_icc)]
+                        let status = ffi::JxlDecoderGetColorAsICCProfile(
+                            decoder,
+                            ptr::null(),
+                            target,
+                            profile.as_mut_ptr(),
+                            len,
+                        );
+                        #[cfg(not(libjxl_legacy_icc))]
+                        let status = ffi::JxlDecoderGetColorAsICCProfile(
+                            decoder,
+                            target,
+                            profile.as_mut_ptr(),
+                            len,
+                        );
+                        if status != ffi::JxlDecoderStatus_JXL_DEC_SUCCESS {
+                            return Err(CodecError::Decode);
+                        }
+                        return Ok(Identity {
+                            kind: Kind::Jxl,
+                            width: info.xsize,
+                            height: info.ysize,
+                            // libjxl defaults to applying codestream orientation,
+                            // just like the libvips loader used for pixel decode.
+                            orientation: 1,
+                            has_icc: len != 0,
+                            icc_desc: profile_description(&profile),
+                            bits: u8::try_from(info.bits_per_sample)
+                                .map_err(|_| CodecError::Decode)?,
+                            has_alpha: info.alpha_bits != 0,
+                            has_gain_map: false,
+                            pages: 1,
+                        });
+                    }
                     _ => return Err(CodecError::Decode),
                 }
             }
-            Err(CodecError::Decode)
         })();
         ffi::JxlDecoderDestroy(decoder);
         result

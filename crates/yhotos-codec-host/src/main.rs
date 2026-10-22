@@ -14,6 +14,7 @@ use std::{
 };
 use yhotos_codec::{CodecError, Encode, EncodeOpts, Limits, ResizeSpec};
 const JOB_BYTES: u64 = 1 << 20;
+const CHILD_ARGUMENT: &str = "--sandboxed-job";
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct HostLimits {
@@ -70,6 +71,7 @@ impl HostLimits {
         #[cfg(target_os = "linux")]
         setrlimit(Resource::RLIMIT_AS, self.max_memory, self.max_memory)
             .map_err(|_| Failure(2, "sandbox unavailable"))?;
+        setrlimit(Resource::RLIMIT_CORE, 0, 0).map_err(|_| Failure(2, "sandbox unavailable"))?;
         setrlimit(Resource::RLIMIT_CPU, self.cpu_seconds, self.cpu_seconds + 1)
             .map_err(|_| Failure(2, "sandbox unavailable"))?;
         setrlimit(
@@ -225,6 +227,14 @@ fn paths(job: &Job) -> Result<(PathBuf, Vec<PathBuf>), Failure> {
 #[allow(clippy::too_many_lines)] // The single-job protocol is kept in one sequential flow.
 fn run() -> Result<(), Failure> {
     clean_environment()?;
+    #[cfg(target_os = "linux")]
+    {
+        let parent = std::env::args()
+            .nth(2)
+            .and_then(|p| p.parse().ok())
+            .ok_or(Failure(2, "startup failed"))?;
+        yhotos_codec::sandbox::parent_lifetime(parent).map_err(|_| Failure(2, "startup failed"))?;
+    }
     HostLimits::default().apply()?;
     #[cfg(target_os = "linux")]
     seccomp::apply().map_err(|()| Failure(2, "sandbox unavailable"))?;
@@ -252,7 +262,18 @@ fn run() -> Result<(), Failure> {
         return Err(Failure(2, "job too large"));
     }
     let job: Job = serde_json::from_slice(&bytes).map_err(|_| Failure(2, "invalid job"))?;
+    #[cfg(all(target_os = "linux", debug_assertions))]
+    let memory_probe = std::env::args_os().any(|a| a == "--self-test-memory");
     job.limits.apply()?; // Job may only tighten startup caps.
+    #[cfg(all(target_os = "linux", debug_assertions))]
+    if memory_probe {
+        // 128 MiB succeeds without the test's 64 MiB RLIMIT_AS. Under the
+        // limit this takes Rust's real allocation-failure/abort path, including
+        // its allocator diagnostic, rather than returning a simulated error.
+        let allocation = vec![0u8; std::hint::black_box(128 << 20)];
+        std::hint::black_box(allocation);
+        return Err(Failure(2, "memory limit not enforced"));
+    }
     let (input, paths) = paths(&job)?;
     let start = Instant::now();
     let id = yhotos_codec::identify(&input, &job.limits.codec())?;
@@ -350,8 +371,58 @@ fn run() -> Result<(), Failure> {
         .map_err(|_| Failure(3, "report failed"))?;
     Ok(())
 }
+// The small supervisor never calls a codec or reads the job. Only the child
+// inherits stdin, and it applies its sandbox before reading it. Capture the
+// report until success and discard native/allocator stderr so aborts and signals
+// have the same parent-facing contract as a returned decode error.
+fn supervise() -> Result<(), Failure> {
+    use std::process::{Command, Stdio};
+    clean_environment()?;
+    let executable = std::env::current_exe().map_err(|_| Failure(3, "image processing failed"))?;
+    let mut child = Command::new(executable)
+        .arg(CHILD_ARGUMENT)
+        .arg(std::process::id().to_string())
+        .args(std::env::args_os().skip(1))
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| Failure(3, "image processing failed"))?;
+    let mut report = Vec::new();
+    let read = child
+        .stdout
+        .take()
+        .ok_or(Failure(3, "image processing failed"))?
+        .take(JOB_BYTES + 1)
+        .read_to_end(&mut report);
+    if read.is_err() || report.len() as u64 > JOB_BYTES {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(Failure(3, "image processing failed"));
+    }
+    let status = child
+        .wait()
+        .map_err(|_| Failure(3, "image processing failed"))?;
+    match status.code() {
+        Some(0) => std::io::stdout()
+            .lock()
+            .write_all(&report)
+            .map_err(|_| Failure(3, "report failed")),
+        Some(2) => Err(Failure(2, "image rejected")),
+        Some(4) => Err(Failure(4, "codec timeout")),
+        _ => Err(Failure(3, "image processing failed")),
+    }
+}
 fn main() -> std::process::ExitCode {
-    match run() {
+    let result = if std::env::args_os()
+        .nth(1)
+        .is_some_and(|a| a == CHILD_ARGUMENT)
+    {
+        run()
+    } else {
+        supervise()
+    };
+    match result {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(Failure(code, message)) => {
             let _ = writeln!(std::io::stderr().lock(), "{message}");

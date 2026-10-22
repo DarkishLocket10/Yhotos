@@ -3,6 +3,27 @@
 //! Async-signal-safe timeout exit, confined to the native boundary crate.
 use crate::CodecError;
 use nix::libc;
+
+/// Kill the Linux decoder child if its supervisor exits, including a worker's
+/// forced termination of the supervisor. Reject a parent that died during setup.
+///
+/// # Errors
+/// Returns a typed error if the parent is invalid or the kernel setup fails.
+#[cfg(target_os = "linux")]
+pub fn parent_lifetime(parent: u32) -> Result<(), CodecError> {
+    let parent = libc::pid_t::try_from(parent).map_err(|_| CodecError::Options)?;
+    if parent <= 0 {
+        return Err(CodecError::Options);
+    }
+    nix::sys::prctl::set_pdeathsig(nix::sys::signal::Signal::SIGKILL)
+        .map_err(|_| CodecError::Io)?;
+    // Check after installing the signal so a parent lost during startup cannot
+    // leave an orphaned decoder running past the worker's deadline.
+    if nix::unistd::getppid().as_raw() != parent {
+        return Err(CodecError::Io);
+    }
+    Ok(())
+}
 unsafe extern "C" fn timeout(_: libc::c_int) {
     // SAFETY: write and _exit are async-signal-safe; the static buffer has the exact stated length.
     unsafe {

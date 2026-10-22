@@ -9,7 +9,14 @@ wrappers. No native code is placed outside this crate.
 
 `identify` probes headers only. JPEG and HEIF gain map detection reads metadata
 segments/boxes and seeks past pixel payloads. JXL's basic-info and color headers
-are checked with libjxl before the explicit libvips loader. Generic loader probing is avoided because
+provide decoder agreement and identity directly through libjxl. Input is fed in 4 KiB
+chunks, preserving unconsumed tails, and stops at `JXL_DEC_COLOR_ENCODING` without
+requesting pixels. A cumulative `min(max_bytes, 16 MiB)` scan cap includes skipped
+container boxes; a large pixel payload after the color header does not consume
+that cap. Identify does not enter libvips' JXL header loader, which scans through
+the container for frames and trailing metadata. Animated JXL returns `Unsupported`
+because counting its pages would require that scan. Decode still uses libvips.
+Generic loader probing is avoided because
 short JXL streams can enter unrelated fallback decoders and hang. Limits are checked again before decode, and
 supplied Identity values must agree with a fresh header probe.
 
@@ -50,9 +57,13 @@ all directories. EXIF, GPS, interoperability and typed IFD links are included.
 Overflow and budget failures return `Limits`; invalid types/extents return
 `Decode` through identify, decode and metadata alike.
 
-Alpha import uses the sample format's opacity range: 8-bit 0..255, 16-bit
-0..65535, and floating TIFF/scRGB 0..1. It is scaled before casting to the
+Alpha import uses the loader's effective opacity range: 8-bit 0..255, ordinary
+16-bit 0..65535, and floating TIFF/scRGB 0..1. HEIF's 10/12-bit samples are
+left-shifted into ushort, so their full opacity is
+`((1 << bits) - 1) << (16 - bits)`. Alpha is scaled and rounded before casting to the
 16-bit working alpha band; signed/complex alpha formats return `Unsupported`.
+Generated 10/12-bit AVIF and HEIC tests cover transparent, partial and opaque
+alpha through import and a lossless JXL round trip.
 Floating scRGB color bypasses `icc_import`'s device-RGB uchar cast and uses
 `vips_scRGB2XYZ` directly, retaining floating precision until the working-image
 quantization. Other floating interpretations return `Unsupported` rather than
@@ -104,6 +115,16 @@ Canon Cr2OldOffset (0x0081) and slice
 offset/length tables (0x00c5/0x00c6) have their referenced JPEG SOFs checked,
 including component-expanded widths and in-file extents, before any rawler
 entry point. `src/raw.rs` lists the validated decoder inputs by camera make.
+Panasonic CameraIFD (0x0120) is an embedded TIFF, validated with the same reader
+before any rawler entry point (also for rawler's Leica dispatch). A seekable
+blob view enforces its own byte order, relative offsets and blob extent without
+copying it; nested IFDs share the outer entry and allocation budgets. Nested
+CameraIFD regressions cover invalid types, multiplication overflow, out-of-blob
+payloads, truncated tables and aggregate budgets through identify/decode/metadata.
+Beyond these container checks, rawler's internal allocation behavior is contained
+by the Linux host's resource limits and seccomp sandbox. RAW is accepted only via
+admin upload over Tailscale. This is the bounded residual risk accepted in review;
+no additional rawler parser preflights are added here.
 CR3 never enters rawler, including for metadata. Our BMFF walker locates JPEGs
 in Canon's PRVW preview UUID (after its eight-byte prefix) and THMB records under
 moov/the descriptor UUID, validates each record's extent and JPEG SOF against
@@ -130,6 +151,8 @@ test remains an additional optional check.
 
 Run normal codec benchmarks with `cargo bench -p yhotos-bench --bench codec`;
 add `--features raw` to include CR3 preview identification and medium encodes.
+`codec/identify_large_jxl` generates a reproducible 25.2 MP lossless grayscale JXL
+larger than 16 MiB outside the timed loop; no large binary fixture is committed.
 
 The ThumbHash DCT and packing follow the MIT-licensed reference by Evan Wallace:
 https://github.com/evanw/thumbhash . Reference vectors were generated with the

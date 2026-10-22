@@ -8,7 +8,8 @@
 //!   `MakerNote` IFD entries, `Cr2OldOffset` (0x0081), slice offsets/lengths
 //!   (0x00c5/0x00c6), and each referenced sensor SOF before rawler selection.
 //! - Canon CR3: never passed to rawler; only bounded BMFF JPEG previews decode.
-//! - Panasonic RW2: sensor dimensions 0x0002/0x0003 and JPEG blob 0x002e.
+//! - Panasonic RW2: sensor dimensions 0x0002/0x0003, JPEG blob 0x002e,
+//!   and `CameraIFD` 0x0120's embedded TIFF with shared entry/payload budgets.
 //! - Sony ARW: common TIFF/sensor checks plus ARW1's eight extra coded rows.
 //! - DNG (any make): common TIFF/SubIFD checks, lossless JPEG and JPEG XL
 //!   (Compression=52546) frame dimensions before sensor decoding.
@@ -134,6 +135,7 @@ impl Probe {
         Ok(())
     }
 }
+#[allow(clippy::too_many_lines)] // Keep the pre-rawler validation sequence in one flow.
 fn probe(path: &Path, limits: &Limits) -> Result<Probe, CodecError> {
     let mut tiff = match crate::tiff::Tiff::open(path, limits) {
         Ok(tiff) => tiff,
@@ -229,6 +231,15 @@ fn probe(path: &Path, limits: &Limits) -> Result<Probe, CodecError> {
             limits,
             &mut preview_budget,
         )?;
+    }
+    // rawler also selects its RW2 decoder by Make for standard TIFF containers.
+    if tiff.flavor == crate::tiff::Flavor::Panasonic
+        || matches!(
+            probe.make.as_str(),
+            "Panasonic" | "LEICA" | "LEICA CAMERA AG"
+        )
+    {
+        tiff.panasonic_camera_ifds(limits)?;
     }
     let notes = tiff.makernotes(&probe.make)?;
     if (tiff.flavor == crate::tiff::Flavor::Canon || probe.make == "Canon") && !tiff.has(0, 50706) {

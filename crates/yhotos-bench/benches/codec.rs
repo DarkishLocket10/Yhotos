@@ -65,6 +65,7 @@ fn codec(c: &mut Criterion) {
     c.bench_function("codec/decode_float", |b| {
         b.iter(|| yhotos_codec::decode(black_box(&float), &float_id, &limits).unwrap());
     });
+    large_jxl_identify(c);
     #[cfg(feature = "raw")]
     raw_benchmarks(c);
     let large = root().join("large/24mp.jpg");
@@ -74,6 +75,49 @@ fn codec(c: &mut Criterion) {
         eprintln!("SKIP medium/24mp: sync fixtures/large/24mp.jpg from tower");
     }
     medium(c, &input, "chart");
+}
+fn large_jxl_identify(c: &mut Criterion) {
+    // Generate a reproducible 25.2 MP lossless stream with a payload larger than
+    // the header scan cap. Generation is outside the measured iterations.
+    let tmp = tempfile::tempdir().unwrap();
+    let noise = tmp.path().join("noise.v");
+    let pixels = tmp.path().join("pixels.v");
+    let jxl = tmp.path().join("large.jxl");
+    for args in [
+        vec![
+            "gaussnoise".as_ref(),
+            noise.as_os_str(),
+            "4096".as_ref(),
+            "6144".as_ref(),
+            "--seed=42".as_ref(),
+            "--sigma=64".as_ref(),
+        ],
+        vec![
+            "cast".as_ref(),
+            noise.as_os_str(),
+            pixels.as_os_str(),
+            "uchar".as_ref(),
+        ],
+        vec![
+            "jxlsave".as_ref(),
+            pixels.as_os_str(),
+            jxl.as_os_str(),
+            "--distance=0".as_ref(),
+            "--effort=1".as_ref(),
+        ],
+    ] {
+        assert!(
+            std::process::Command::new("vips")
+                .args(args)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    assert!(std::fs::metadata(&jxl).unwrap().len() > 16 << 20);
+    c.bench_function("codec/identify_large_jxl", |b| {
+        b.iter(|| yhotos_codec::identify(black_box(&jxl), &Limits::default()).unwrap());
+    });
 }
 #[cfg(feature = "raw")]
 fn raw_benchmarks(c: &mut Criterion) {

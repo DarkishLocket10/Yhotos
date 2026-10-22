@@ -145,6 +145,32 @@ fn cpu_timeout_exits_four() {
     assert_eq!(result.stderr, b"codec timeout\n");
 }
 
+#[cfg(all(target_os = "linux", debug_assertions))]
+#[test]
+fn address_space_allocation_abort_is_a_failed_decode() {
+    use std::os::unix::process::ExitStatusExt;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut j = job(&fixture("chart-srgb.png"), tmp.path());
+    // Without the tightened address-space limit the allocation succeeds and
+    // the debug probe returns its explicit "limit not enforced" rejection.
+    assert_eq!(invoke(&j, &["--self-test-memory"]).status.code(), Some(2));
+    j["limits"] = json!({"max_memory":64 << 20});
+    let parent = std::process::id().to_string();
+    let direct = invoke(&j, &["--sandboxed-job", &parent, "--self-test-memory"]);
+    assert_eq!(direct.status.signal(), Some(nix::libc::SIGABRT));
+    assert_eq!(direct.stdout, b"");
+    assert!(
+        direct
+            .stderr
+            .starts_with(b"memory allocation of 134217728 bytes failed")
+    );
+    let result = invoke(&j, &["--self-test-memory"]);
+    assert_eq!(result.status.code(), Some(3));
+    assert_eq!(result.stdout, b"");
+    assert_eq!(result.stderr, b"image processing failed\n");
+    assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
+}
+
 #[test]
 fn corrupt_pixel_stream_exits_three_without_decoder_diagnostics() {
     let tmp = tempfile::tempdir().unwrap();
