@@ -33,7 +33,7 @@ pub(crate) async fn form(
         return Ok(redirect(a.root()));
     }
     let _ = required(&state)?;
-    views::login(a, next_path(&query.next).unwrap_or(""))
+    views::login(a, next_path(&query.next).as_deref().unwrap_or(""))
 }
 #[derive(Deserialize)]
 struct Credentials {
@@ -139,6 +139,12 @@ pub(crate) async fn password(
         users::lock_auth(&mut tx, found.id).await?;
         user = users::get_by_id(&mut tx, found.id).await?;
     }
+    if let Some(user) = &user
+        && let Some(response) = check_mfa_lockout(&mut tx, user, &network).await?
+    {
+        tx.commit().await?;
+        return Ok(response);
+    }
     let valid = verify(
         auth,
         input.password,
@@ -153,7 +159,8 @@ pub(crate) async fn password(
         }
         let methods = mfa::list(&mut tx, user.id).await?;
         let destination = next_path(&input.next);
-        if !methods.is_empty() {
+        let rp = a.rp_id(&state)?;
+        if methods.iter().any(|m| usable(m, rp) || m.kind == "email") {
             let token = Token::generate();
             let hash = token.hash(TokenKind::PendingLogin);
             sessions::pending_create(
@@ -162,7 +169,7 @@ pub(crate) async fn password(
                 user.id,
                 hash.as_bytes(),
                 a.0,
-                destination,
+                destination.as_deref(),
                 blake3::hash(user.password_hash.as_bytes()).as_bytes(),
             )
             .await?;
@@ -180,7 +187,6 @@ pub(crate) async fn password(
         }
         let response = establish(
             &mut tx,
-            auth,
             a,
             &state,
             &user,
@@ -189,24 +195,20 @@ pub(crate) async fn password(
             agent,
             None,
             None,
-            destination,
+            destination.as_deref(),
         )
         .await?;
         tx.commit().await?;
-        auth.invalidate_all();
+        if let Some(Extension(current)) = current {
+            auth.invalidate(current.0.session.id);
+        }
         Ok(response)
     } else {
         let mut retry = None;
         for (key, mut lock) in keys.iter().zip(locks) {
             // Task 009 locks immediately after the fifth failure. The primitive's
             // default permits five free failures, so this flow permits four.
-            lock.record_failure(
-                now(),
-                LockoutPolicy {
-                    free_attempts: 4,
-                    ..LockoutPolicy::default()
-                },
-            );
+            lock.record_failure(now(), lockout_policy());
             if let Err(until) = lock.check(now()) {
                 retry = Some(until.0.saturating_sub(now()).as_secs() + 1);
             }
@@ -227,7 +229,6 @@ pub(crate) async fn password(
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn establish(
     c: &mut PgConnection,
-    auth: &Auth,
     a: Audience,
     state: &AppState,
     user: &users::UserRow,
@@ -239,9 +240,10 @@ pub(crate) async fn establish(
     destination: Option<&str>,
 ) -> Result<Response, HttpError> {
     if let Some(old) = old
-        && let Some(hash) = sessions::revoke(c, old.0.session.user_id, old.0.session.id).await?
+        && sessions::revoke(c, old.0.session.user_id, old.0.session.id)
+            .await?
+            .is_some()
     {
-        auth.invalidate(&hash);
         audit::write(
             c,
             Some(old.0.session.user_id),
@@ -373,6 +375,12 @@ async fn finish(
     let user = users::get_by_id(&mut tx, pending.user_id)
         .await?
         .filter(|u| u.disabled_at.is_none() && (!a.0 || u.is_admin));
+    if let Some(user) = &user
+        && let Some(response) = check_mfa_lockout(&mut tx, user, &network).await?
+    {
+        tx.commit().await?;
+        return Ok(response);
+    }
     let password_current = user
         .as_ref()
         .zip(pending.password_version.as_ref())
@@ -384,7 +392,12 @@ async fn finish(
                     .ct_eq(v.as_slice()),
             )
         });
-    let methods = mfa::list(&mut tx, pending.user_id).await?;
+    let rp = a.rp_id(&state)?;
+    let methods = mfa::list(&mut tx, pending.user_id)
+        .await?
+        .into_iter()
+        .filter(|m| usable(m, rp) || m.kind == "email")
+        .collect::<Vec<_>>();
     if methods.iter().all(|m| m.kind == "email") {
         return Err(yhotos_auth::AuthError::Unsupported.into());
     }
@@ -452,27 +465,54 @@ async fn finish(
         false
     };
     let username = user.as_ref().map(|u| u.username.clone());
-    if let Some(user) = user.filter(|_| valid && password_current) {
+    if let Some(user) = user.as_ref().filter(|_| valid && password_current) {
         sessions::pending_delete(&mut tx, pending.id).await?;
+        // Only completed MFA clears backoff, never password checks or session rotation.
+        users::set_mfa_lockout(&mut tx, user.id, 0, None).await?;
         let response = establish(
             &mut tx,
-            auth,
             a,
             &state,
-            &user,
+            user,
             current.as_ref().map(|c| &c.0),
             &network,
             agent,
             Some(pending.password_at),
             Some(time::OffsetDateTime::now_utc()),
-            pending.next_path.as_deref().and_then(next_path),
+            pending.next_path.as_deref().and_then(next_path).as_deref(),
         )
         .await?;
         tx.commit().await?;
-        auth.invalidate_all();
+        if let Some(Extension(current)) = current {
+            auth.invalidate(current.0.session.id);
+        }
         Ok(response)
     } else {
         sessions::pending_failure(&mut tx, pending.id).await?;
+        let retry = if let Some(user) = &user {
+            let mut lock = mfa_lockout(user)?;
+            lock.record_failure(now(), lockout_policy());
+            let deadline = lock
+                .locked_until()
+                .map(|until| {
+                    time::Duration::try_from(until)
+                        .map(|duration| time::OffsetDateTime::UNIX_EPOCH + duration)
+                })
+                .transpose()
+                .map_err(|_| HttpError::BadRequest)?;
+            users::set_mfa_lockout(
+                &mut tx,
+                user.id,
+                i32::try_from(lock.failures()).unwrap_or(i32::MAX),
+                deadline,
+            )
+            .await?;
+            lock.check(now())
+                .err()
+                .map(|until| until.0.saturating_sub(now()).as_secs() + 1)
+        } else {
+            None
+        };
         audit::write(
             &mut tx,
             Some(pending.user_id),
@@ -482,7 +522,7 @@ async fn finish(
         )
         .await?;
         tx.commit().await?;
-        let mut response = failed();
+        let mut response = retry.map_or_else(failed, locked);
         if pending.attempts >= 4 {
             set_cookie(&mut response, a.cookie(a.pending_cookie(), "", true)?);
         }
@@ -502,12 +542,23 @@ pub(crate) async fn passkey_start(
     let Some(p) = sessions::pending_get(&mut tx, &hash, a.0).await? else {
         return Ok(failed());
     };
+    users::lock_auth(&mut tx, p.user_id).await?;
+    let user = users::get_by_id(&mut tx, p.user_id)
+        .await?
+        .ok_or(HttpError::BadRequest)?;
+    if let Err(until) = mfa_lockout(&user)?.check(now()) {
+        return Ok(locked(until.0.saturating_sub(now()).as_secs() + 1));
+    }
+    let rp = a.rp_id(&state)?;
     let methods = mfa::list(&mut tx, p.user_id).await?;
     let keys = methods
         .iter()
-        .filter(|m| m.kind == "passkey")
+        .filter(|m| m.kind == "passkey" && usable(m, rp))
         .map(|m| serde_json::from_slice::<Passkey>(m.public_key.as_deref().unwrap_or_default()))
         .collect::<Result<Vec<_>, _>>()?;
+    if keys.is_empty() {
+        return Ok(failed());
+    }
     let (challenge, ceremony) = auth.passkeys(a)?.start_authentication(&keys, a.0)?;
     sessions::ceremony_put(
         &mut tx,
@@ -519,4 +570,41 @@ pub(crate) async fn passkey_start(
     .await?;
     tx.commit().await?;
     Ok(Json(challenge).into_response())
+}
+
+fn usable(method: &mfa::Method, rp: &str) -> bool {
+    method.kind == "totp" || (method.kind == "passkey" && method.rp_id.as_deref() == Some(rp))
+}
+fn lockout_policy() -> LockoutPolicy {
+    LockoutPolicy {
+        free_attempts: 4,
+        ..LockoutPolicy::default()
+    }
+}
+fn mfa_lockout(user: &users::UserRow) -> Result<LockoutState, HttpError> {
+    let failures = u32::try_from(user.mfa_failures).map_err(|_| HttpError::BadRequest)?;
+    let deadline = user
+        .mfa_locked_until
+        .map(|until| std::time::Duration::try_from(until - time::OffsetDateTime::UNIX_EPOCH))
+        .transpose()
+        .map_err(|_| HttpError::BadRequest)?;
+    Ok(LockoutState::from_parts(failures, deadline))
+}
+async fn check_mfa_lockout(
+    c: &mut PgConnection,
+    user: &users::UserRow,
+    network: &[u8],
+) -> Result<Option<Response>, HttpError> {
+    if let Err(until) = mfa_lockout(user)?.check(now()) {
+        audit::write(
+            c,
+            Some(user.id),
+            "login.failure",
+            None,
+            &json!({"username":user.username,"ip_hash":network,"outcome":"mfa_locked"}),
+        )
+        .await?;
+        return Ok(Some(locked(until.0.saturating_sub(now()).as_secs() + 1)));
+    }
+    Ok(None)
 }

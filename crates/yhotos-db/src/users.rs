@@ -24,6 +24,10 @@ pub struct UserRow {
     pub is_admin: bool,
     /// Stored disabled at.
     pub disabled_at: Option<OffsetDateTime>,
+    /// Failed MFA attempts across every challenge and network.
+    pub mfa_failures: i32,
+    /// Account-wide MFA backoff deadline.
+    pub mfa_locked_until: Option<OffsetDateTime>,
     /// Stored last login at.
     pub last_login_at: Option<OffsetDateTime>,
 }
@@ -46,7 +50,7 @@ pub async fn create(
     password_hash: &secrecy::SecretString,
     must_change: bool,
 ) -> Result<UserRow, DbError> {
-    Ok(sqlx::query_as!(UserRow,r#"INSERT INTO users(id,username,password_hash,must_change_password) VALUES ($1,$2,$3,$4) RETURNING id as "id: _", created_at, updated_at, username::text AS "username!", password_hash, must_change_password, is_admin, disabled_at, last_login_at"#, UserId::new() as _, username, secrecy::ExposeSecret::expose_secret(password_hash), must_change).fetch_one(conn).await?)
+    Ok(sqlx::query_as!(UserRow,r#"INSERT INTO users(id,username,password_hash,must_change_password) VALUES ($1,$2,$3,$4) RETURNING id as "id: _", created_at, updated_at, username::text AS "username!", password_hash, must_change_password, is_admin, disabled_at, last_login_at, mfa_failures, mfa_locked_until"#, UserId::new() as _, username, secrecy::ExposeSecret::expose_secret(password_hash), must_change).fetch_one(conn).await?)
 }
 
 /// Looks up account state by case-insensitive username, including disabled accounts.
@@ -57,7 +61,7 @@ pub async fn get_by_username(
     conn: &mut PgConnection,
     username: &str,
 ) -> Result<Option<UserRow>, DbError> {
-    Ok(sqlx::query_as!(UserRow,r#"SELECT id as "id: _", created_at, updated_at, username::text AS "username!", password_hash, must_change_password, is_admin, disabled_at, last_login_at FROM users WHERE username=$1::citext"#, username).fetch_optional(conn).await?)
+    Ok(sqlx::query_as!(UserRow,r#"SELECT id as "id: _", created_at, updated_at, username::text AS "username!", password_hash, must_change_password, is_admin, disabled_at, last_login_at, mfa_failures, mfa_locked_until FROM users WHERE username=$1::citext"#, username).fetch_optional(conn).await?)
 }
 
 /// Fetches account state by its verified identifier, including disabled accounts.
@@ -65,7 +69,7 @@ pub async fn get_by_username(
 /// # Errors
 /// Returns invalid input or a database constraint/connection failure.
 pub async fn get_by_id(conn: &mut PgConnection, id: UserId) -> Result<Option<UserRow>, DbError> {
-    Ok(sqlx::query_as!(UserRow,r#"SELECT id as "id: _", created_at, updated_at, username::text AS "username!", password_hash, must_change_password, is_admin, disabled_at, last_login_at FROM users WHERE id=$1"#, id as _).fetch_optional(conn).await?)
+    Ok(sqlx::query_as!(UserRow,r#"SELECT id as "id: _", created_at, updated_at, username::text AS "username!", password_hash, must_change_password, is_admin, disabled_at, last_login_at, mfa_failures, mfa_locked_until FROM users WHERE id=$1"#, id as _).fetch_optional(conn).await?)
 }
 
 /// Changes the authenticated user password through the narrow SECURITY DEFINER seam; caller supplies a verified user id.
@@ -149,6 +153,28 @@ pub async fn lock_auth(conn: &mut PgConnection, id: UserId) -> Result<(), DbErro
     sqlx::query!(
         "SELECT pg_advisory_xact_lock(hashtextextended($1::uuid::text,0))",
         id as _
+    )
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
+/// Persists account-wide MFA backoff while the caller holds `lock_auth`.
+/// Only completed MFA may clear this state.
+///
+/// # Errors
+/// Returns a database connection, permission or constraint failure.
+pub async fn set_mfa_lockout(
+    conn: &mut PgConnection,
+    id: UserId,
+    failures: i32,
+    deadline: Option<OffsetDateTime>,
+) -> Result<(), DbError> {
+    sqlx::query!(
+        "SELECT user_set_mfa_lockout($1,$2,$3)",
+        id as _,
+        failures,
+        deadline
     )
     .execute(conn)
     .await?;

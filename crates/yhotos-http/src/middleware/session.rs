@@ -131,7 +131,7 @@ async fn run(
     } else {
         next.run(request).await
     };
-    if carried && loaded.is_none() {
+    if carried && loaded.is_none() && !replaces_cookie(&response, name) {
         auth::set_cookie(&mut response, a.cookie(name, "", true)?);
     }
     if loaded.is_some() {
@@ -141,6 +141,17 @@ async fn run(
         );
     }
     Ok(response)
+}
+fn replaces_cookie(response: &Response, name: &str) -> bool {
+    response
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .any(|value| {
+            value
+                .to_str()
+                .is_ok_and(|value| value.split_once('=').is_some_and(|(key, _)| key == name))
+        })
 }
 fn setup_allowed(path: &str) -> bool {
     matches!(

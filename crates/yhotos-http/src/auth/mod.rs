@@ -17,7 +17,10 @@ use axum::{
 };
 use moka::sync::Cache;
 use secrecy::{ExposeSecret, SecretString};
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use yhotos_auth::{Keyring, Token, TokenKind, webauthn::Passkeys};
 pub(crate) use yhotos_db::PgConnection;
 use yhotos_db::{Db, sessions};
@@ -26,8 +29,7 @@ use yhotos_db::{Db, sessions};
 pub struct Auth {
     public_db: Arc<Db>,
     admin_db: Option<Arc<Db>>,
-    pub(crate) cache: Cache<Vec<u8>, (u64, Arc<sessions::Loaded>)>,
-    generation: std::sync::atomic::AtomicU64,
+    cache: Cache<Vec<u8>, Arc<Mutex<SessionEntry>>>,
     pub(crate) keys: Keyring,
     public_passkeys: Passkeys,
     admin_passkeys: Option<Passkeys>,
@@ -35,6 +37,11 @@ pub struct Auth {
     listener_stop: Arc<tokio::sync::Notify>,
     pub(crate) password_slots: Arc<tokio::sync::Semaphore>,
     fingerprint_key: [u8; 32],
+}
+#[derive(Default)]
+struct SessionEntry {
+    version: u64,
+    loaded: Option<Arc<sessions::Loaded>>,
 }
 impl Auth {
     /// Validates cryptographic settings once; no secrets enter error messages.
@@ -69,7 +76,6 @@ impl Auth {
         let auth = Arc::new(Self {
             public_db,
             admin_db,
-            generation: std::sync::atomic::AtomicU64::new(0),
             cache: Cache::builder()
                 .max_capacity(16_384)
                 .time_to_live(Duration::from_secs(30))
@@ -96,38 +102,67 @@ impl Auth {
         });
         Ok(auth)
     }
-    /// Invalidates local cache entries immediately after transactional revocation.
-    pub fn invalidate(&self, hash: &[u8]) {
-        self.generation
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.cache.invalidate(hash);
+    /// Evicts only this session, including lookups already in flight.
+    pub fn invalidate(&self, id: uuid::Uuid) {
+        self.evict(Some(&sessions::Invalidation::Session(id)));
     }
-    /// Loads cached session context, issuing exactly one query on a miss.
+    pub(crate) fn invalidate_user(&self, id: yhotos_core::UserId) {
+        self.evict(Some(&sessions::Invalidation::User(id)));
+    }
+    fn evict(&self, target: Option<&sessions::Invalidation>) {
+        for (_, entry) in &self.cache {
+            let mut entry = entry
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // A miss has not learned its identity yet. Advance only that slot's
+            // version so an older database snapshot cannot repopulate it.
+            let matches = entry.loaded.as_ref().is_none_or(|s| match target {
+                Some(sessions::Invalidation::Session(id)) => s.session.id == *id,
+                Some(sessions::Invalidation::User(id)) => s.session.user_id == *id,
+                None => true,
+            });
+            if matches {
+                entry.version = entry.version.wrapping_add(1);
+                entry.loaded = None;
+            }
+        }
+    }
+    /// Loads cached session context, issuing exactly one query on an uncontended miss.
+    /// Each slot's version prevents a concurrent revocation from caching stale data.
     ///
     /// # Errors
     /// Returns a generic infrastructure error if the query fails.
     pub async fn load(&self, hash: &[u8]) -> Result<Option<Arc<sessions::Loaded>>, HttpError> {
-        let generation = self.generation.load(std::sync::atomic::Ordering::SeqCst);
-        if self.cache_ready.load(std::sync::atomic::Ordering::SeqCst)
-            && let Some((version, s)) = self.cache.get(hash)
-            && version == generation
-        {
-            return Ok(Some(s));
+        let slot = self
+            .cache
+            .get(hash)
+            .unwrap_or_else(|| self.cache.get_with(hash.to_vec(), Arc::default));
+        loop {
+            let version = {
+                let entry = slot
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if self.cache_ready.load(std::sync::atomic::Ordering::SeqCst)
+                    && let Some(s) = &entry.loaded
+                {
+                    return Ok(Some(s.clone()));
+                }
+                entry.version
+            };
+            let mut c = self.public_db.pool().acquire().await?;
+            let loaded = sessions::load(&mut c, hash).await?.map(Arc::new);
+            let mut entry = slot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if version != entry.version {
+                // Drop the stale query result and retry after the invalidation.
+                continue;
+            }
+            if self.cache_ready.load(std::sync::atomic::Ordering::SeqCst) {
+                entry.loaded.clone_from(&loaded);
+            }
+            return Ok(loaded);
         }
-        let mut c = self.public_db.pool().acquire().await?;
-        let loaded = sessions::load(&mut c, hash).await?.map(Arc::new);
-        if let Some(s) = &loaded
-            && self.cache_ready.load(std::sync::atomic::Ordering::SeqCst)
-            && generation == self.generation.load(std::sync::atomic::Ordering::SeqCst)
-        {
-            self.cache.insert(hash.to_vec(), (generation, s.clone()));
-        }
-        Ok(loaded)
-    }
-    pub(crate) fn invalidate_all(&self) {
-        self.generation
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        self.cache.invalidate_all();
     }
     pub(crate) fn db(&self, a: Audience) -> Result<&Db, HttpError> {
         if a.0 {
@@ -154,20 +189,20 @@ impl Auth {
                     result = listener.recv() => result,
                 };
                 let Some(auth) = weak.upgrade() else { break };
-                if result.is_ok() {
-                    auth.invalidate_all();
+                if let Ok(target) = result {
+                    auth.evict(Some(&target));
                     continue;
                 }
                 auth.cache_ready
                     .store(false, std::sync::atomic::Ordering::SeqCst);
-                auth.invalidate_all();
+                auth.evict(None);
                 // Re-LISTEN before enabling cache reads again; missed
                 // notifications during a disconnect can never revive entries.
                 loop {
                     match sessions::Invalidations::connect(&auth.public_db).await {
                         Ok(new) => {
                             listener = new;
-                            auth.invalidate_all();
+                            auth.evict(None);
                             auth.cache_ready
                                 .store(true, std::sync::atomic::Ordering::SeqCst);
                             break;
@@ -215,6 +250,11 @@ impl Audience {
         } else {
             Some(&state.config.public_base_url)
         }
+    }
+    pub(crate) fn rp_id(self, state: &AppState) -> Result<&str, HttpError> {
+        self.base_url(state)
+            .and_then(|url| url.host_str())
+            .ok_or(HttpError::BadRequest)
     }
     pub(crate) fn root(self) -> &'static str {
         if self.0 { "/admin/" } else { "/" }
@@ -337,13 +377,30 @@ pub(crate) fn now() -> Duration {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
 }
-pub(crate) fn next_path(value: &str) -> Option<&str> {
-    (value.starts_with('/')
-        && !value.starts_with("//")
-        && !value.contains('\\')
-        && !value.contains('%')
-        && !value.chars().any(char::is_control))
-    .then_some(value)
+pub(crate) fn next_path(value: &str) -> Option<String> {
+    fn single_slash(path: &str) -> bool {
+        path.starts_with('/') && !path.starts_with("//")
+    }
+    if !single_slash(value) || value.contains(['\\', '%']) || value.chars().any(char::is_control) {
+        return None;
+    }
+    // URL parsing collapses dot segments before a browser navigates. Validate
+    // the normalized pathname too, then emit only that checked internal target.
+    let base = yhotos_auth::webauthn::Url::parse("https://redirect.invalid/").ok()?;
+    let destination = base.join(value).ok()?;
+    if destination.origin() != base.origin() || !single_slash(destination.path()) {
+        return None;
+    }
+    let mut path = destination.path().to_owned();
+    if let Some(query) = destination.query() {
+        path.push('?');
+        path.push_str(query);
+    }
+    if let Some(fragment) = destination.fragment() {
+        path.push('#');
+        path.push_str(fragment);
+    }
+    Some(path)
 }
 pub(crate) fn redirect(path: &str) -> Response {
     Redirect::to(path).into_response()
@@ -373,5 +430,35 @@ pub(crate) fn ua(headers: &HeaderMap) -> &'static str {
         "browser"
     } else {
         "other"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::next_path;
+
+    #[test]
+    fn redirects_validate_the_normalized_path() {
+        for path in [
+            "/..//evil.invalid",
+            "/a/../..//evil.invalid",
+            "/..///evil.invalid",
+            "//evil.invalid",
+            "/\\evil.invalid",
+            "/%2e%2e//evil.invalid",
+            "/..%2f/evil.invalid",
+        ] {
+            assert!(next_path(path).is_none(), "{path}");
+        }
+        for (input, expected) in [
+            ("/", "/"),
+            (
+                "/a/../u/security?tab=sessions#current",
+                "/u/security?tab=sessions#current",
+            ),
+            ("/./u/security", "/u/security"),
+        ] {
+            assert_eq!(next_path(input).as_deref(), Some(expected));
+        }
     }
 }

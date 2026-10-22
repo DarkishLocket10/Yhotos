@@ -42,7 +42,7 @@ async function ceremony(button: HTMLButtonElement): Promise<void> {
   if (finished.redirected) {
     const destination = new URL(finished.url);
     if (destination.origin !== location.origin) throw new Error("Sign in failed");
-    location.assign(destination.pathname + destination.search + destination.hash);
+    location.assign(destination.href);
     return;
   }
   if (!finished.ok) throw new Error("Sign in failed");

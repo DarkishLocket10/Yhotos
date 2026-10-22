@@ -25,7 +25,7 @@ pub(crate) async fn logout(
     let auth = required(&state)?;
     if let Some(Extension(c)) = current {
         let mut tx = auth.db(a)?.pool().begin().await?;
-        let hash = sessions::revoke(&mut tx, c.0.session.user_id, c.0.session.id).await?;
+        let revoked = sessions::revoke(&mut tx, c.0.session.user_id, c.0.session.id).await?;
         audit::write(
             &mut tx,
             Some(c.0.session.user_id),
@@ -35,8 +35,8 @@ pub(crate) async fn logout(
         )
         .await?;
         tx.commit().await?;
-        if let Some(hash) = hash {
-            auth.invalidate(&hash);
+        if revoked.is_some() {
+            auth.invalidate(c.0.session.id);
         }
     }
     let mut response = redirect(a.login());
@@ -118,7 +118,6 @@ pub(crate) async fn password(
     changed.must_change_password = false;
     let response = login::establish(
         &mut tx,
-        auth,
         a,
         &state,
         &changed,
@@ -131,9 +130,7 @@ pub(crate) async fn password(
     )
     .await?;
     tx.commit().await?;
-    for hash in revoked {
-        auth.invalidate(&hash);
-    }
+    auth.invalidate_user(changed.id);
     Ok(response)
 }
 pub(crate) async fn index(
@@ -145,7 +142,12 @@ pub(crate) async fn index(
     let auth = required(&state)?;
     let mut c = auth.db(a)?.pool().acquire().await?;
     let sessions = sessions::list(&mut c, current.0.session.user_id).await?;
-    let methods = mfa::list(&mut c, current.0.session.user_id).await?;
+    let rp = a.rp_id(&state)?;
+    let methods = mfa::list(&mut c, current.0.session.user_id)
+        .await?
+        .into_iter()
+        .filter(|method| method.rp_id.as_deref().is_none_or(|id| id == rp))
+        .collect::<Vec<_>>();
     views::security(a, &sessions, &methods, current.0.session.id, nonce)
 }
 #[cfg(feature = "admin")]
@@ -175,7 +177,7 @@ pub(crate) async fn reauth(
         return Ok(login::failed());
     }
     sessions::reauthenticate(&mut c, current.0.session.id, user.id).await?;
-    auth.invalidate(&current.0.session.token_hash);
+    auth.invalidate(current.0.session.id);
     Ok(redirect(a.security()))
 }
 pub(crate) async fn revoke(
@@ -186,7 +188,7 @@ pub(crate) async fn revoke(
 ) -> Result<Response, HttpError> {
     let auth = required(&state)?;
     let mut tx = auth.db(a)?.pool().begin().await?;
-    let hash = sessions::revoke(&mut tx, current.0.session.user_id, id)
+    let _hash = sessions::revoke(&mut tx, current.0.session.user_id, id)
         .await?
         .ok_or(HttpError::NotFound)?;
     audit::write(
@@ -198,7 +200,7 @@ pub(crate) async fn revoke(
     )
     .await?;
     tx.commit().await?;
-    auth.invalidate(&hash);
+    auth.invalidate(id);
     let mut response = redirect(a.security());
     if id == current.0.session.id {
         set_cookie(&mut response, a.cookie(a.cookie_name(&state), "", true)?);
@@ -280,6 +282,7 @@ pub(crate) async fn totp_finish(
             public_key: None,
             sign_count: 0,
             label: "Authenticator app".into(),
+            rp_id: None,
             last_used_step: Some(i64::try_from(step).map_err(|_| HttpError::BadRequest)?),
         };
         mfa::add(&mut tx, current.0.session.user_id, &method).await?;
@@ -293,7 +296,7 @@ pub(crate) async fn totp_finish(
         .await?;
         let cookie = rotate(&mut tx, a, &state, &current, true).await?;
         tx.commit().await?;
-        auth.invalidate_all();
+        auth.invalidate_user(current.0.session.user_id);
         let mut response = redirect(a.security());
         set_cookie(&mut response, cookie);
         Ok(response)
@@ -313,8 +316,10 @@ pub(crate) async fn passkey_start(
         .await?
         .ok_or(HttpError::NotFound)?;
     let methods = mfa::list(&mut c, user.id).await?;
+    let rp = a.rp_id(&state)?;
     let excluded = methods
         .iter()
+        .filter(|m| m.rp_id.as_deref() == Some(rp))
         .filter_map(|m| m.credential_id.clone().map(Into::into))
         .collect::<Vec<_>>();
     let (challenge, ceremony) =
@@ -358,6 +363,7 @@ pub(crate) async fn passkey_finish(
         sign_count: 0,
         label: "Passkey".into(),
         last_used_step: None,
+        rp_id: Some(a.rp_id(&state)?.to_owned()),
     };
     drop(c);
     let mut tx = auth.db(a)?.pool().begin().await?;
@@ -373,7 +379,7 @@ pub(crate) async fn passkey_finish(
     .await?;
     let cookie = rotate(&mut tx, a, &state, &current, true).await?;
     tx.commit().await?;
-    auth.invalidate_all();
+    auth.invalidate_user(current.0.session.user_id);
     let mut response = Json(json!({"next":a.security()})).into_response();
     set_cookie(&mut response, cookie);
     Ok(response)
@@ -387,6 +393,16 @@ pub(crate) async fn remove(
     let auth = required(&state)?;
     let mut tx = auth.db(a)?.pool().begin().await?;
     users::lock_auth(&mut tx, current.0.session.user_id).await?;
+    let rp = a.rp_id(&state)?;
+    // Password-only access on another listener cannot remove this RP's factor.
+    // Unbound legacy credentials are unusable and may still be cleaned up.
+    if !mfa::list(&mut tx, current.0.session.user_id)
+        .await?
+        .iter()
+        .any(|method| method.id == id && method.rp_id.as_deref().is_none_or(|id| id == rp))
+    {
+        return Err(HttpError::NotFound);
+    }
     if !mfa::remove(&mut tx, current.0.session.user_id, id, current.0.session.id).await? {
         return Err(HttpError::ReauthRequired);
     }
@@ -400,7 +416,7 @@ pub(crate) async fn remove(
     .await?;
     let cookie = rotate(&mut tx, a, &state, &current, false).await?;
     tx.commit().await?;
-    auth.invalidate(&current.0.session.token_hash);
+    auth.invalidate_user(current.0.session.user_id);
     let mut response = redirect(a.security());
     set_cookie(&mut response, cookie);
     Ok(response)

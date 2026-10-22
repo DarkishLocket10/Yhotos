@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT user_set_mfa_lockout($1,$2,$3)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "user_set_mfa_lockout",
+        "type_info": "Void",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Int4",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "6d91d97dd5c9426c6f98a3596a7259d3ac808326cffdea0e9da53e35cfb628ed"
+}

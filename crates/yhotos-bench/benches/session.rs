@@ -106,7 +106,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         criterion.bench_function(label, |b| {
             b.iter(|| {
                 if cold {
-                    auth.invalidate(&hash);
+                    auth.invalidate(s.id);
                 }
                 let result =
                     request(authenticated).map(|r| runtime.block_on(app.clone().oneshot(r)));

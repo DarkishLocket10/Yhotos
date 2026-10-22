@@ -39,6 +39,8 @@ jobs:
         run: |
           npm ci
           npm run build
+      - name: Test bundled passkey redirects
+        run: node --test crates/yhotos-http/tests/passkey_redirect.mjs
 
   test:
     runs-on: ubuntu-24.04

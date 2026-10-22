@@ -270,6 +270,34 @@ impl Client {
         }
         (user.id, username, password)
     }
+    async fn seed_totp(&self, user: UserId) -> totp::Secret {
+        let raw = STANDARD
+            .decode(self.state.config.session_key.expose_secret())
+            .unwrap();
+        let key = blake3::derive_key("yhotos MFA encryption v1", &raw);
+        let ring =
+            yhotos_auth::Keyring::from_master(&SecretString::from(STANDARD.encode(key))).unwrap();
+        let secret = totp::generate_secret();
+        let id = Uuid::now_v7();
+        mfa::add(
+            &mut self.pool.acquire().await.unwrap(),
+            user,
+            &mfa::Method {
+                id,
+                kind: "totp".into(),
+                secret_enc: Some(ring.seal(id.as_bytes(), secret.expose_secret()).unwrap()),
+                credential_id: None,
+                public_key: None,
+                sign_count: 0,
+                label: "Authenticator app".into(),
+                last_used_step: None,
+                rp_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        secret
+    }
     async fn login(&mut self, username: &str, password: &SecretString, admin: bool) -> Reply {
         let path = if admin { "/admin/login" } else { "/login" };
         self.get(path).await;
@@ -472,6 +500,9 @@ async fn expiry_invalid_cookies_csrf_and_redirect_validation(pool: PgPool) {
         "/\\evil",
         "javascript:",
         "/%2f%2fevil",
+        "/..//evil.invalid",
+        "/a/../..//evil.invalid",
+        "/..///evil.invalid?next=/u/security#fragment",
     ] {
         c.get("/login").await;
         location(
@@ -507,7 +538,7 @@ async fn expiry_invalid_cookies_csrf_and_redirect_validation(pool: PgPool) {
         } else {
             sqlx::query!("UPDATE sessions SET created_at=now()-interval '16 days',last_seen_at=now()-interval '15 days' WHERE id=$1",s.id).execute(&c.pool).await.unwrap();
         }
-        c.state.auth.as_ref().unwrap().invalidate(&s.token_hash);
+        c.state.auth.as_ref().unwrap().invalidate(s.id);
         location(&c.get("/u/security").await, "/login");
         assert!(!c.jar.contains_key("__Host-ys"));
         c.login(&name, &pw, false).await;
@@ -582,6 +613,7 @@ async fn totp_enrollment_login_replay_attempt_limit_and_removal_reauth(pool: PgP
     );
     // A drift-window code for the next step can be used immediately, without sleep.
     let next = totp::generate(&secret, now + std::time::Duration::from_secs(30)).unwrap();
+    c.jar.insert("__Host-ys".into(), "stale".into());
     location(
         &c.post("/login/mfa", &[("code", next.expose_secret())])
             .await,
@@ -815,6 +847,7 @@ async fn pending_login_attempts_and_expiry_are_server_side(pool: PgPool) {
             sign_count: 0,
             label: "Authenticator app".into(),
             last_used_step: None,
+            rp_id: Some("example.test".into()),
         },
     )
     .await
@@ -822,10 +855,14 @@ async fn pending_login_attempts_and_expiry_are_server_side(pool: PgPool) {
     drop(conn);
     c.login(&name, &pw, false).await;
     c.get("/login/mfa").await;
-    for _ in 0..5 {
+    for attempt in 1..=5 {
         assert_eq!(
-            c.post("/login/mfa", &[("code", "000000")]).await.status,
-            StatusCode::UNAUTHORIZED
+            c.post("/login/mfa", &[("code", "invalid")]).await.status,
+            if attempt == 5 {
+                StatusCode::TOO_MANY_REQUESTS
+            } else {
+                StatusCode::UNAUTHORIZED
+            }
         );
     }
     assert!(!c.jar.contains_key("yc"));
@@ -837,6 +874,13 @@ async fn pending_login_attempts_and_expiry_are_server_side(pool: PgPool) {
     .await
     .unwrap();
     assert_eq!(count, 0);
+    sqlx::query!(
+        "UPDATE users SET mfa_locked_until=now()-interval '1 second' WHERE id=$1",
+        id.0
+    )
+    .execute(&c.pool)
+    .await
+    .unwrap();
     c.login(&name, &pw, false).await;
     sqlx::query!(
         "UPDATE pending_login SET expires_at=now()-interval '1 second' WHERE user_id=$1",
@@ -916,7 +960,7 @@ async fn check_session_queries(pool: PgPool, count: Arc<std::sync::atomic::Atomi
     let auth = c.state.auth.as_ref().unwrap();
     // Warm connections before counting; pool setup is independent of lookup cost.
     auth.load(&s.token_hash).await.unwrap();
-    auth.invalidate(&s.token_hash);
+    auth.invalidate(s.id);
     // Measure the exact repository used on misses on a dedicated connection,
     // excluding pool housekeeping and its independently spawned release task.
     let mut conn = sqlx::PgConnection::connect_with(
@@ -954,7 +998,7 @@ async fn check_session_queries(pool: PgPool, count: Arc<std::sync::atomic::Atomi
     assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 0);
     drop(held);
     sqlx::query!("UPDATE sessions SET created_at=now()-interval '7 minutes',last_seen_at=now()-interval '6 minutes' WHERE id=$1",s.id).execute(&c.pool).await.unwrap();
-    auth.invalidate(&s.token_hash);
+    auth.invalidate(s.id);
     let refreshed = auth.load(&s.token_hash).await.unwrap().unwrap();
     assert!(
         refreshed.session.last_seen_at
@@ -965,7 +1009,7 @@ async fn check_session_queries(pool: PgPool, count: Arc<std::sync::atomic::Atomi
         .await
         .unwrap();
     for _ in 0..5 {
-        auth.invalidate(&s.token_hash);
+        auth.invalidate(s.id);
         auth.load(&s.token_hash).await.unwrap();
     }
     let after = sqlx::query_scalar!("SELECT updated_at FROM sessions WHERE id=$1", s.id)
@@ -1308,4 +1352,417 @@ async fn admin_passkeys_use_distinct_origin_for_registration_and_login(pool: PgP
     );
     assert!(admin.session(true).await.mfa_at.is_some());
     assert_eq!(admin.get("/admin/healthz").await.status, StatusCode::OK);
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn stale_session_cookie_does_not_clear_password_login(pool: PgPool) {
+    let mut c = Client::new(pool, false).await;
+    let (_, name, password) = c.seed(false, false).await;
+    c.login(&name, &password, false).await;
+    let old = c.session(false).await;
+    let expired = c.jar["__Host-ys"].clone();
+    sqlx::query!(
+        "UPDATE sessions SET expires_at=now()-interval '1 second' WHERE id=$1",
+        old.id
+    )
+    .execute(&c.pool)
+    .await
+    .unwrap();
+    c.state.auth.as_ref().unwrap().invalidate(old.id);
+    for stale in [
+        "malformed".to_owned(),
+        Token::generate().encode(TokenKind::Session),
+        expired,
+    ] {
+        c.get("/login").await;
+        c.jar.insert("__Host-ys".into(), stale);
+        let reply = c
+            .post(
+                "/login",
+                &[("username", &name), ("password", password.expose_secret())],
+            )
+            .await;
+        location(&reply, "/");
+        assert_eq!(
+            reply
+                .headers
+                .get_all(header::SET_COOKIE)
+                .iter()
+                .filter(|v| v.to_str().unwrap().starts_with("__Host-ys="))
+                .count(),
+            1
+        );
+        assert_eq!(c.get("/u/security").await.status, StatusCode::OK);
+    }
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn mfa_backoff_survives_replacement_challenges_and_network_changes(pool: PgPool) {
+    let mut c = Client::new(pool, false).await;
+    let (id, name, password) = c.seed(false, false).await;
+    let secret = c.seed_totp(id).await;
+    let mut previous = String::new();
+    for attempt in 1..=5 {
+        c.network = format!("192.0.2.{attempt}:1234").parse().unwrap();
+        if attempt % 2 == 1 {
+            location(&c.login(&name, &password, false).await, "/login/mfa");
+            assert_ne!(c.jar["yc"], previous);
+            previous.clone_from(&c.jar["yc"]);
+            let user = users::get_by_id(&mut c.pool.acquire().await.unwrap(), id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(user.mfa_failures, attempt - 1);
+        }
+        let reply = c.post("/login/mfa", &[("code", "invalid")]).await;
+        assert_eq!(
+            reply.status,
+            if attempt == 5 {
+                StatusCode::TOO_MANY_REQUESTS
+            } else {
+                StatusCode::UNAUTHORIZED
+            }
+        );
+        if attempt == 5 {
+            let retry: u64 = reply.headers[header::RETRY_AFTER]
+                .to_str()
+                .unwrap()
+                .parse()
+                .unwrap();
+            assert!((30..=31).contains(&retry));
+        }
+    }
+    c.network = "198.51.100.1:1234".parse().unwrap();
+    assert_eq!(
+        c.login(&name, &password, false).await.status,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert_eq!(
+        c.json("/login/mfa/passkey/start", serde_json::json!({}))
+            .await
+            .status,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
+    let code = totp::generate(&secret, now).unwrap();
+    assert_eq!(
+        c.post("/login/mfa", &[("code", code.expose_secret())])
+            .await
+            .status,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    sqlx::query!(
+        "UPDATE users SET mfa_locked_until=now()-interval '1 second' WHERE id=$1",
+        id.0
+    )
+    .execute(&c.pool)
+    .await
+    .unwrap();
+    location(&c.login(&name, &password, false).await, "/login/mfa");
+    let sixth = c.post("/login/mfa", &[("code", "invalid")]).await;
+    assert_eq!(sixth.status, StatusCode::TOO_MANY_REQUESTS);
+    let retry: u64 = sixth.headers[header::RETRY_AFTER]
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!((60..=61).contains(&retry));
+    sqlx::query!(
+        "UPDATE users SET mfa_locked_until=now()-interval '1 second' WHERE id=$1",
+        id.0
+    )
+    .execute(&c.pool)
+    .await
+    .unwrap();
+    location(
+        &c.post("/login/mfa", &[("code", code.expose_secret())])
+            .await,
+        "/",
+    );
+    let user = users::get_by_id(&mut c.pool.acquire().await.unwrap(), id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(user.mfa_failures, 0);
+    assert!(user.mfa_locked_until.is_none());
+}
+
+#[cfg(feature = "admin")]
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn passkeys_bind_to_each_listener_and_allow_other_origin_enrollment(pool: PgPool) {
+    let client = Client::new(pool, false).await;
+    for first_admin in [false, true] {
+        let (id, name, password) = client.seed(false, true).await;
+        let mut first = client.listener(first_admin);
+        let mut second = client.listener(!first_admin);
+        let (soft, _) = SoftToken::new(true).unwrap();
+        let mut authenticator = WebauthnAuthenticator::new(soft);
+        for (browser, admin) in [(&mut first, first_admin), (&mut second, !first_admin)] {
+            location(
+                &browser.login(&name, &password, admin).await,
+                if admin { "/admin/setup-mfa" } else { "/" },
+            );
+            assert!(browser.session(admin).await.mfa_at.is_none());
+            if admin {
+                location(&browser.get("/admin/healthz").await, "/admin/setup-mfa");
+                assert_eq!(browser.get("/admin/setup-mfa").await.status, StatusCode::OK);
+            } else {
+                assert_eq!(browser.get("/u/security").await.status, StatusCode::OK);
+            }
+            let base = if admin {
+                "/admin/u/security"
+            } else {
+                "/u/security"
+            };
+            let start = browser
+                .json(&format!("{base}/passkey/start"), serde_json::json!({}))
+                .await;
+            assert_eq!(start.status, StatusCode::OK, "{}", start.body);
+            let challenge: CreationChallengeResponse = serde_json::from_str(&start.body).unwrap();
+            assert_eq!(
+                challenge.public_key.rp.id,
+                if admin {
+                    "admin.example.test"
+                } else {
+                    "example.test"
+                }
+            );
+            // A credential belonging to the other RP must not be offered or excluded here.
+            assert!(
+                challenge
+                    .public_key
+                    .exclude_credentials
+                    .as_ref()
+                    .is_none_or(Vec::is_empty)
+            );
+            let registration = authenticator
+                .do_registration(Url::parse(&browser.origin).unwrap(), challenge)
+                .unwrap();
+            let finish = browser
+                .json(
+                    &format!("{base}/passkey/finish"),
+                    serde_json::to_value(registration).unwrap(),
+                )
+                .await;
+            assert_eq!(finish.status, StatusCode::OK, "{}", finish.body);
+            assert!(browser.session(admin).await.mfa_at.is_some());
+            if !admin && first_admin {
+                let methods = mfa::list(&mut client.pool.acquire().await.unwrap(), id)
+                    .await
+                    .unwrap();
+                let foreign = methods
+                    .iter()
+                    .find(|method| method.rp_id.as_deref() == Some("admin.example.test"))
+                    .unwrap();
+                let page = browser.get("/u/security").await;
+                assert!(!page.body.contains(&foreign.id.to_string()));
+                assert_eq!(
+                    browser
+                        .post(&format!("/u/security/mfa/{}/remove", foreign.id), &[])
+                        .await
+                        .status,
+                    StatusCode::NOT_FOUND
+                );
+                assert_eq!(
+                    mfa::list(&mut client.pool.acquire().await.unwrap(), id)
+                        .await
+                        .unwrap()
+                        .len(),
+                    2
+                );
+            }
+            if admin == first_admin {
+                let prefix = if admin { "/admin" } else { "" };
+                browser.post(&format!("{prefix}/logout"), &[]).await;
+                location(
+                    &browser.login(&name, &password, admin).await,
+                    &format!("{prefix}/login/mfa"),
+                );
+                assert_eq!(
+                    browser
+                        .json(&format!("{prefix}/login/mfa"), serde_json::json!({}))
+                        .await
+                        .status,
+                    StatusCode::UNAUTHORIZED
+                );
+            }
+            // Password-only access and enrollment on the other RP cannot clear MFA failures.
+            let user = users::get_by_id(&mut client.pool.acquire().await.unwrap(), id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(user.mfa_failures, 1);
+        }
+        let methods = mfa::list(&mut client.pool.acquire().await.unwrap(), id)
+            .await
+            .unwrap();
+        assert_eq!(methods.len(), 2);
+        for (browser, admin) in [(&mut first, first_admin), (&mut second, !first_admin)] {
+            let prefix = if admin { "/admin" } else { "" };
+            browser.post(&format!("{prefix}/logout"), &[]).await;
+            location(
+                &browser.login(&name, &password, admin).await,
+                &format!("{prefix}/login/mfa"),
+            );
+            let start = browser
+                .json(
+                    &format!("{prefix}/login/mfa/passkey/start"),
+                    serde_json::json!({}),
+                )
+                .await;
+            assert_eq!(start.status, StatusCode::OK, "{}", start.body);
+            let challenge: RequestChallengeResponse = serde_json::from_str(&start.body).unwrap();
+            assert_eq!(challenge.public_key.allow_credentials.len(), 1);
+            let rp = if admin {
+                "admin.example.test"
+            } else {
+                "example.test"
+            };
+            let method = methods
+                .iter()
+                .find(|m| m.rp_id.as_deref() == Some(rp))
+                .unwrap();
+            assert_eq!(
+                challenge.public_key.allow_credentials[0].id.as_slice(),
+                method.credential_id.as_deref().unwrap()
+            );
+            let assertion = authenticator
+                .do_authentication(Url::parse(&browser.origin).unwrap(), challenge)
+                .unwrap();
+            location(
+                &browser
+                    .json(
+                        &format!("{prefix}/login/mfa/passkey/finish"),
+                        serde_json::to_value(assertion).unwrap(),
+                    )
+                    .await,
+                if admin { "/admin/" } else { "/" },
+            );
+        }
+    }
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn session_and_account_eviction_preserve_other_users_warm_caches(pool: PgPool) {
+    let mut a = Client::new(pool.clone(), false).await;
+    let mut b = Client::new(pool, false).await;
+    let (_, a_name, a_password) = a.seed(false, false).await;
+    let (_, b_name, b_password) = b.seed(false, false).await;
+    b.login(&b_name, &b_password, false).await;
+    let b_session = b.session(false).await;
+    let local = a.state.auth.as_ref().unwrap().clone();
+    let remote = b.state.auth.as_ref().unwrap().clone();
+    for password_change in [false, true] {
+        a.login(&a_name, &a_password, false).await;
+        let a_session = a.session(false).await;
+        for auth in [&local, &remote] {
+            auth.load(&a_session.token_hash).await.unwrap().unwrap();
+            auth.load(&b_session.token_hash).await.unwrap().unwrap();
+        }
+        if password_change {
+            let new = yhotos_auth::generate_temp_password();
+            location(
+                &a.post(
+                    "/u/password",
+                    &[
+                        ("current_password", a_password.expose_secret()),
+                        ("new_password", new.expose_secret()),
+                    ],
+                )
+                .await,
+                "/",
+            );
+        } else {
+            location(&a.post("/logout", &[]).await, "/login");
+        }
+        // The second Auth must process PostgreSQL's notification before we measure.
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while remote.load(&a_session.token_hash).await.unwrap().is_some() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(local.load(&a_session.token_hash).await.unwrap().is_none());
+        let held_local = a.db.pool().acquire().await.unwrap();
+        let held_remote = b.db.pool().acquire().await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_millis(100), async {
+            for auth in [&local, &remote] {
+                for _ in 0..10 {
+                    assert_eq!(
+                        auth.load(&b_session.token_hash)
+                            .await
+                            .unwrap()
+                            .unwrap()
+                            .session
+                            .id,
+                        b_session.id
+                    );
+                }
+            }
+        })
+        .await
+        .expect("unrelated warmed lookups must issue no database query");
+        drop((held_local, held_remote));
+    }
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn session_eviction_rejects_an_inflight_stale_database_snapshot(pool: PgPool) {
+    let mut c = Client::new(pool, false).await;
+    let (_, name, password) = c.seed(false, false).await;
+    c.login(&name, &password, false).await;
+    let session = c.session(false).await;
+    sqlx::query!("UPDATE sessions SET created_at=now()-interval '7 minutes',last_seen_at=now()-interval '6 minutes' WHERE id=$1",session.id)
+        .execute(&c.pool).await.unwrap();
+    let auth = c.state.auth.as_ref().unwrap().clone();
+    auth.invalidate(session.id);
+    let mut request_conn = c.db.pool().acquire().await.unwrap();
+    sqlx::query!("SET statement_timeout='30s'")
+        .execute(&mut *request_conn)
+        .await
+        .unwrap();
+    drop(request_conn);
+    let mut tx = c.pool.begin().await.unwrap();
+    sqlx::query!("SELECT id FROM sessions WHERE id=$1 FOR UPDATE", session.id)
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    let task_auth = auth.clone();
+    let hash = session.token_hash.clone();
+    let lookup = tokio::spawn(async move { task_auth.load(&hash).await.unwrap() });
+    // Wait until load's SQL snapshot exists and its activity write is blocked.
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let blocked = sqlx::query_scalar!(
+                r#"SELECT EXISTS(SELECT FROM pg_stat_activity
+                WHERE datname=current_database() AND wait_event_type='Lock'
+                AND query LIKE 'WITH touched AS (%') AS "blocked!""#
+            )
+            .fetch_one(&c.pool)
+            .await
+            .unwrap();
+            if blocked {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap();
+    sessions::revoke(&mut tx, session.user_id, session.id)
+        .await
+        .unwrap();
+    // Invalidate while the older lookup is still blocked in its original snapshot.
+    auth.invalidate(session.id);
+    tx.commit().await.unwrap();
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_secs(10), lookup)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_none()
+    );
 }

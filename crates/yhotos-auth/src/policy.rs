@@ -100,6 +100,21 @@ pub struct LockoutState {
 pub struct LockedUntil(pub Timestamp);
 
 impl LockoutState {
+    /// Restores boundary-validated, persistent account backoff without resetting it.
+    #[must_use]
+    pub const fn from_parts(failures: u32, locked_until: Option<Timestamp>) -> Self {
+        Self {
+            failures,
+            locked_until,
+        }
+    }
+
+    /// Returns the persisted deadline, including an elapsed deadline.
+    #[must_use]
+    pub const fn locked_until(&self) -> Option<Timestamp> {
+        self.locked_until
+    }
+
     /// Rejects an attempt strictly before the current lockout deadline.
     ///
     /// # Errors
@@ -179,6 +194,23 @@ mod tests {
         assert_eq!(state.check(Duration::ZERO), Ok(()));
         state.record_failure(now, policy);
         assert_eq!(state.check(now), Ok(()));
+    }
+
+    #[test]
+    fn restored_backoff_preserves_failure_count_and_next_delay() {
+        let mut original = LockoutState::default();
+        let policy = LockoutPolicy::default();
+        for _ in 0..6 {
+            original.record_failure(at(100), policy);
+        }
+        let mut restored = LockoutState::from_parts(original.failures(), original.locked_until());
+        assert_eq!(restored.check(at(100)), Err(LockedUntil(at(130))));
+        restored.record_failure(at(130), policy);
+        assert_eq!(restored.failures(), 7);
+        assert_eq!(restored.locked_until(), Some(at(190)));
+        restored.record_success();
+        assert_eq!(restored.failures(), 0);
+        assert_eq!(restored.locked_until(), None);
     }
 
     #[test]

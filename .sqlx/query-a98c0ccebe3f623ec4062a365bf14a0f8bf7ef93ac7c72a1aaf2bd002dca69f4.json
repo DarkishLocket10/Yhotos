@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id as \"id: _\", created_at, updated_at, username::text AS \"username!\", password_hash, must_change_password, is_admin, disabled_at, last_login_at FROM users WHERE username=$1::citext",
+  "query": "INSERT INTO users(id,username,password_hash,must_change_password) VALUES ($1,$2,$3,$4) RETURNING id as \"id: _\", created_at, updated_at, username::text AS \"username!\", password_hash, must_change_password, is_admin, disabled_at, last_login_at, mfa_failures, mfa_locked_until",
   "describe": {
     "columns": [
       {
@@ -96,16 +96,41 @@
             "name": "last_login_at"
           }
         }
+      },
+      {
+        "ordinal": 9,
+        "name": "mfa_failures",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "mfa_failures"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "mfa_locked_until",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "mfa_locked_until"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
+        "Uuid",
         {
           "Custom": {
             "name": "citext",
             "kind": "Simple"
           }
-        }
+        },
+        "Text",
+        "Bool"
       ]
     },
     "nullable": [
@@ -117,8 +142,10 @@
       false,
       false,
       true,
+      true,
+      false,
       true
     ]
   },
-  "hash": "157bbd6a4d1457f689c76fe20f3b47cd6ab83782346568e2e35b2231f26619d4"
+  "hash": "a98c0ccebe3f623ec4062a365bf14a0f8bf7ef93ac7c72a1aaf2bd002dca69f4"
 }
