@@ -110,6 +110,16 @@ fn code_at(secret: &Secret, step: u64) -> Result<[u8; 6], AuthError> {
     Ok(digits)
 }
 
+/// Generates the current six-digit code for a locally held secret.
+///
+/// # Errors
+/// Returns a generic cryptographic failure; callers must never log this value.
+pub fn generate(secret: &Secret, now: Timestamp) -> Result<SecretString, AuthError> {
+    let bytes = code_at(secret, now.as_secs() / 30)?;
+    let code = std::str::from_utf8(&bytes).map_err(|_| AuthError::Crypto)?;
+    Ok(SecretString::from(code))
+}
+
 /// Accepts a six-digit ASCII code at the previous, current, or next 30-second step.
 /// Returns the matched step, which must be persisted atomically before granting access.
 ///

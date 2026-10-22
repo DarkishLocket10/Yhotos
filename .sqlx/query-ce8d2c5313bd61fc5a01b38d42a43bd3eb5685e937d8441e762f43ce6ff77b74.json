@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DROP ROLE yhotos_009_start_public, yhotos_009_start_admin",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "ce8d2c5313bd61fc5a01b38d42a43bd3eb5685e937d8441e762f43ce6ff77b74"
+}

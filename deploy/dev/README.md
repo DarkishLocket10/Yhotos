@@ -47,10 +47,43 @@ Workers retain the `ClaimToken` returned alongside the claimed job and pass it
 to completion/failure calls. Updates match the job, worker and attempt; expired
 claims return `false` without altering a replacement worker's claim.
 
-Stop the database with `docker compose -f deploy/dev/compose.yml down`. The named
-volume preserves it; remove the volume before regenerating an existing password.
+`start.sh` derives and exports `COMPOSE_PROJECT_NAME` from a short SHA-256 hash
+of the canonical worktree path. Each worktree has an independent container and
+volume. Set `POSTGRES_PORT` to a free localhost port when running worktrees at
+the same time. Source the script before running Compose commands so they use
+that same project name:
+
+```sh
+source deploy/dev/start.sh
+docker compose -f deploy/dev/compose.yml down
+```
+
+Stopping preserves the volume. `start.sh` verifies a TCP login after the health
+check and exits on any error. A credential mismatch preserves all data and prints
+the exact project-specific `down --volumes` command for an explicit reset. Run
+that command only when you intend to discard this worktree's development data.
+`bash deploy/dev/test-start.sh` verifies isolation and failure behavior using a
+fake Docker CLI.
+
+Server configuration uses separate restricted deployment logins:
+`YHOTOS_DATABASE_URL_PUBLIC` for the public listener, and
+`YHOTOS_DATABASE_URL_ADMIN` for the admin listener and `create-admin` CLI. A public
+build needs only the public URL. An admin build serves both listeners and needs
+both URLs; never grant its public login membership in the admin role.
+`YHOTOS_ADMIN_BASE_URL` is required with the admin feature and selects the admin
+CSRF/WebAuthn origin independently of `YHOTOS_PUBLIC_BASE_URL`. Both URLs must use
+HTTPS without credentials, queries or fragments.
 
 ## CPU worker tuning
+
+The worker requires its own `YHOTOS_DATABASE_URL_WORKER`, using a deployment
+login that inherits only `yhotos_worker`. It fails at startup if this URL is
+missing or invalid and never uses the public or admin URL for its connection.
+Servers do not require or use the worker URL. The shared configuration loader
+still requires `YHOTOS_DATABASE_URL_PUBLIC`, `YHOTOS_PUBLIC_BASE_URL`,
+`YHOTOS_SESSION_KEY` and `YHOTOS_DATA_DIR`; when building the workspace with all
+features, the admin settings above are also required. Never reuse a public or
+admin login as the worker login. The old `YHOTOS_DATABASE_URL` is no longer used.
 
 `YHOTOS_WORKER__CONCURRENCY` limits simultaneous codec hosts (default half the
 available CPUs, minimum one). `YHOTOS_WORKER__VIPS_CONCURRENCY` controls threads

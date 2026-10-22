@@ -31,6 +31,10 @@ fn main() -> std::process::ExitCode {
 }
 async fn run(process_deadline: &mut Option<std::time::Instant>) -> Result<()> {
     let config = yhotos_config::Config::from_env()?;
+    let database_url = config
+        .database_url_worker
+        .as_ref()
+        .context("YHOTOS_DATABASE_URL_WORKER required for worker startup")?;
     install_metrics(config.worker.metrics_listen)?;
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
@@ -47,7 +51,7 @@ async fn run(process_deadline: &mut Option<std::time::Instant>) -> Result<()> {
         "codec executable must be a regular file"
     );
     let db = yhotos_db::Db::connect(
-        &config.database_url,
+        database_url,
         yhotos_db::Role::Worker,
         u32::from(config.worker.concurrency) + 4,
         if config.worker.local_plaintext_database {

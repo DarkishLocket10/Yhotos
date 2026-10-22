@@ -12,19 +12,25 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{net::SocketAddr, path::PathBuf, time::Duration};
 use url::Url;
 
-/// Validated process settings. Debug output redacts both secret fields.
+/// Validated process settings. Debug output redacts secret fields.
 #[derive(Debug)]
 pub struct Config {
     /// Public socket to bind.
     pub public_listen: SocketAddr,
     /// Specific admin bind address, mandatory only with the admin feature.
     pub admin_listen: Option<SocketAddr>,
-    /// Database connection string, never logged.
-    pub database_url: SecretString,
+    /// Public login connection string, never logged.
+    pub database_url_public: SecretString,
+    /// Separate administrative login, required with the admin feature.
+    pub database_url_admin: Option<SecretString>,
+    /// Separate worker login, required by worker startup and unused by servers.
+    pub database_url_worker: Option<SecretString>,
     /// Existing storage root.
     pub data_dir: PathBuf,
     /// Canonical HTTPS origin for public links.
     pub public_base_url: Url,
+    /// Canonical HTTPS origin for admin forms and passkeys; required with admin.
+    pub admin_base_url: Option<Url>,
     /// Base64-encoded key containing at least 32 decoded bytes.
     pub session_key: SecretString,
     /// Enables only Cloudflare's client-IP header, on tunnel deployments.
@@ -113,6 +119,9 @@ pub enum LogFormat {
 struct Defaults {
     public_listen: &'static str,
     admin_listen: Option<SocketAddr>,
+    database_url_admin: Option<String>,
+    database_url_worker: Option<String>,
+    admin_base_url: Option<String>,
     trust_proxy: bool,
     rate_limits: RateLimits,
     global_stream_cap: u16,
@@ -127,6 +136,9 @@ impl Default for Defaults {
         Self {
             public_listen: "0.0.0.0:8080",
             admin_listen: None,
+            database_url_admin: None,
+            database_url_worker: None,
+            admin_base_url: None,
             trust_proxy: false,
             rate_limits: RateLimits {
                 cheap_per_min: 600,
@@ -188,7 +200,12 @@ impl Config {
         let mut errors = Vec::new();
         let public_listen = read::<SocketAddr>(&f, "public_listen", &mut errors);
         let admin_listen = read::<Option<SocketAddr>>(&f, "admin_listen", &mut errors);
-        let database_url = read::<SecretString>(&f, "database_url", &mut errors);
+        let database_url_public = read::<SecretString>(&f, "database_url_public", &mut errors);
+        let database_url_admin =
+            read::<Option<SecretString>>(&f, "database_url_admin", &mut errors);
+        let database_url_worker =
+            read::<Option<SecretString>>(&f, "database_url_worker", &mut errors);
+        let admin_base_url = read::<Option<Url>>(&f, "admin_base_url", &mut errors);
         let data_dir = read::<PathBuf>(&f, "data_dir", &mut errors);
         let public_base_url = read::<Url>(&f, "public_base_url", &mut errors);
         let session_key = read::<SecretString>(&f, "session_key", &mut errors);
@@ -227,25 +244,61 @@ impl Config {
         if matches!(admin_listen, Some(None)) {
             errors.push("admin_listen: required with the admin feature".into());
         }
-        if let Some(url) = &database_url
-            && !Url::parse(url.expose_secret()).is_ok_and(|u| {
-                matches!(u.scheme(), "postgres" | "postgresql") && u.host_str().is_some()
-            })
-        {
-            errors.push("database_url: must be a PostgreSQL URL".into());
+        #[cfg(feature = "admin")]
+        for (field, missing) in [
+            (
+                "database_url_admin",
+                matches!(database_url_admin, Some(None)),
+            ),
+            ("admin_base_url", matches!(admin_base_url, Some(None))),
+        ] {
+            if missing {
+                errors.push(format!("{field}: required with the admin feature"));
+            }
+        }
+        for (field, url) in [
+            ("database_url_public", database_url_public.as_ref()),
+            (
+                "database_url_admin",
+                database_url_admin.as_ref().and_then(Option::as_ref),
+            ),
+            (
+                "database_url_worker",
+                database_url_worker.as_ref().and_then(Option::as_ref),
+            ),
+        ] {
+            if let Some(url) = url
+                && !Url::parse(url.expose_secret()).is_ok_and(|u| {
+                    matches!(u.scheme(), "postgres" | "postgresql") && u.host_str().is_some()
+                })
+            {
+                errors.push(format!("{field}: must be a PostgreSQL URL"));
+            }
         }
         if let Some(path) = &data_dir
             && !path.is_dir()
         {
             errors.push("data_dir: must exist and be a directory".into());
         }
-        if let Some(url) = &public_base_url
-            && (url.scheme() != "https"
-                || url.host_str().is_none()
-                || !url.username().is_empty()
-                || url.password().is_some())
-        {
-            errors.push("public_base_url: must be an HTTPS URL without credentials".into());
+        for (field, url) in [
+            ("public_base_url", public_base_url.as_ref()),
+            (
+                "admin_base_url",
+                admin_base_url.as_ref().and_then(Option::as_ref),
+            ),
+        ] {
+            if let Some(url) = url
+                && (url.scheme() != "https"
+                    || url.host_str().is_none()
+                    || !url.username().is_empty()
+                    || url.password().is_some()
+                    || url.query().is_some()
+                    || url.fragment().is_some())
+            {
+                errors.push(format!(
+                    "{field}: must be an HTTPS URL without credentials, query or fragment"
+                ));
+            }
         }
         if let Some(key) = &session_key
             && !STANDARD
@@ -293,7 +346,10 @@ impl Config {
         match (
             public_listen,
             admin_listen,
-            database_url,
+            database_url_public,
+            database_url_admin,
+            database_url_worker,
+            admin_base_url,
             data_dir,
             public_base_url,
             session_key,
@@ -312,7 +368,10 @@ impl Config {
             (
                 Some(public_listen),
                 Some(admin_listen),
-                Some(database_url),
+                Some(database_url_public),
+                Some(database_url_admin),
+                Some(database_url_worker),
+                Some(admin_base_url),
                 Some(data_dir),
                 Some(public_base_url),
                 Some(session_key),
@@ -330,7 +389,10 @@ impl Config {
             ) => Ok(Self {
                 public_listen,
                 admin_listen,
-                database_url,
+                database_url_public,
+                database_url_admin,
+                database_url_worker,
+                admin_base_url,
                 data_dir,
                 public_base_url,
                 session_key,
@@ -362,7 +424,7 @@ mod tests {
     fn valid_without_admin(dir: &std::path::Path) -> Figment {
         Figment::new()
             .merge((
-                "database_url",
+                "database_url_public",
                 format!("postgres://{}@localhost/test", uuid::Uuid::now_v7()),
             ))
             .merge(("data_dir", dir.to_string_lossy().as_ref()))
@@ -373,12 +435,22 @@ mod tests {
             ))
     }
     fn valid(dir: &std::path::Path) -> Figment {
-        valid_without_admin(dir).merge(("admin_listen", "127.0.0.1:8081"))
+        valid_without_admin(dir)
+            .merge(("admin_listen", "127.0.0.1:8081"))
+            .merge((
+                "database_url_admin",
+                format!("postgres://{}@localhost/test", uuid::Uuid::now_v7()),
+            ))
+            .merge(("admin_base_url", "https://admin.example.test:8443"))
     }
     #[test]
     fn defaults_and_secret_redaction() {
         let dir = tempfile::tempdir().unwrap();
-        let config = Config::from_figment(valid(dir.path())).unwrap();
+        let config = Config::from_figment(valid(dir.path()).merge((
+            "database_url_worker",
+            format!("postgres://{}@localhost/test", uuid::Uuid::now_v7()),
+        )))
+        .unwrap();
         assert!(!config.trust_proxy);
         assert_eq!(config.public_listen.to_string(), "0.0.0.0:8080");
         assert_eq!(config.rate_limits.cheap_per_min, 600);
@@ -387,8 +459,16 @@ mod tests {
         assert_eq!(config.transfer_deadline, Duration::from_mins(30));
         assert_eq!(config.upload.max_bytes, 2 * 1024 * 1024 * 1024);
         let debug = format!("{config:?}");
-        assert!(!debug.contains(config.database_url.expose_secret()));
+        assert!(!debug.contains(config.database_url_public.expose_secret()));
+        assert!(!debug.contains(config.database_url_admin.as_ref().unwrap().expose_secret()));
+        assert!(!debug.contains(config.database_url_worker.as_ref().unwrap().expose_secret()));
         assert!(!debug.contains(config.session_key.expose_secret()));
+    }
+    #[test]
+    fn server_config_does_not_require_a_worker_login() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = Config::from_figment(valid(dir.path())).unwrap();
+        assert!(config.database_url_worker.is_none());
     }
     #[test]
     fn worker_settings_are_bounded_and_overridable() {
@@ -446,7 +526,7 @@ mod tests {
             .merge(("admin_listen", "0.0.0.0:1"));
         let err = Config::from_figment(f).unwrap_err();
         for field in [
-            "database_url",
+            "database_url_public",
             "public_base_url",
             "session_key",
             "admin_listen",
@@ -479,7 +559,10 @@ mod tests {
         for (field, value) in [
             ("public_listen", "nonsense"),
             ("admin_listen", "[::]:1"),
-            ("database_url", "invalid"),
+            ("database_url_public", "invalid"),
+            ("database_url_admin", "invalid"),
+            ("database_url_worker", "invalid"),
+            ("admin_base_url", "http://admin.example.test"),
             ("data_dir", "/a/nonexistent/yhotos/directory"),
             ("public_base_url", "invalid"),
             ("session_key", "invalid"),
@@ -520,6 +603,25 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let f = valid_without_admin(dir.path());
         assert_eq!(Config::from_figment(f).is_err(), cfg!(feature = "admin"));
+        for field in ["admin_listen", "database_url_admin", "admin_base_url"] {
+            let f = valid(dir.path()).merge((field, Option::<String>::None));
+            assert_eq!(Config::from_figment(f).is_err(), cfg!(feature = "admin"));
+        }
+    }
+    #[test]
+    fn listener_origins_reject_credentials_queries_and_fragments() {
+        let dir = tempfile::tempdir().unwrap();
+        for field in ["public_base_url", "admin_base_url"] {
+            for value in [
+                "https://user@example.test",
+                "https://example.test/?query=value",
+                "https://example.test/#fragment",
+            ] {
+                let error =
+                    Config::from_figment(valid(dir.path()).merge((field, value))).unwrap_err();
+                assert!(error.problems().iter().any(|p| p.starts_with(field)));
+            }
+        }
     }
     #[test]
     fn admin_rejects_every_wildcard_spelling() {

@@ -19,7 +19,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         worker: yhotos_config::Worker::default(),
         public_listen: peer,
         admin_listen: Some(peer),
-        database_url: format!("postgres://{}@localhost/test", uuid::Uuid::now_v7()).into(),
+        database_url_admin: None,
+        database_url_worker: None,
+        admin_base_url: None,
+        database_url_public: format!("postgres://{}@localhost/test", uuid::Uuid::now_v7()).into(),
         data_dir: dir.path().to_owned(),
         public_base_url: "https://example.test".parse()?,
         // Sixty-four generated hex digits are also valid base64 (48 bytes).
@@ -48,7 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app = public_router(AppState::new(
         config,
         yhotos_db::Db::connect_lazy(
-            &config.database_url,
+            &config.database_url_public,
             yhotos_db::Role::Public,
             2,
             yhotos_db::DatabaseTls::Require,
@@ -56,6 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .pool()
         .clone(),
         yhotos_storage::Store::open(dir.path())?,
+        None,
     ));
     criterion.bench_function("http/healthz/known_ip", |b| {
         b.iter(|| {

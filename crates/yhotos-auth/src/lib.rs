@@ -15,8 +15,8 @@ pub mod webauthn;
 
 pub use keyring::Keyring;
 pub use password::{
-    PasswordHash, check_password_policy, dummy_verify, generate_temp_password, hash_password,
-    needs_rehash, verify_password,
+    PasswordHash, PasswordHasher, check_password_policy, dummy_verify, generate_temp_password,
+    hash_password, needs_rehash, verify_password,
 };
 pub use policy::{
     LockedUntil, LockoutPolicy, LockoutState, SessionPolicy, SessionState, Timestamp, session_state,
@@ -27,6 +27,9 @@ pub use token::{Token, TokenHash, TokenKind};
 /// Authentication failures contain no credentials or dependency details.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum AuthError {
+    /// Reserved MFA methods are deliberately unavailable.
+    #[error("unsupported authentication method")]
+    Unsupported,
     /// A password falls outside the supported length.
     #[error("invalid password length")]
     PasswordLength,

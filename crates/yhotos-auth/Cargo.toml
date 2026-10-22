@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+# Explicit test constructors only; production defaults never select this profile.
+test-util = []
+
 [dependencies]
 argon2.workspace = true
 password-hash.workspace = true

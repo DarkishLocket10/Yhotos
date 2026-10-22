@@ -1,0 +1,2 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Enroll authenticator app</title><h1>Enroll authenticator app</h1><p>Scan this code with your authenticator app or copy the setup address.</p>{{ qr|safe }}<p><code>{{ uri }}</code></p>
+<form method="post" action="{{ action }}"><input type="hidden" name="_csrf" value="{{ csrf }}"><label>Six digit code <input name="code" inputmode="numeric" pattern="[0-9]{6}" autocomplete="one-time-code" required></label><button>Confirm enrollment</button></form></html>

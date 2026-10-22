@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE sessions SET reauth_at=now()-interval '6 minutes' WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9b1bd4080ed05d9dc1be3e058b72b828b1e42b12239975c2a8be0fe22c5d595f"
+}

@@ -14,7 +14,7 @@ async fn migrations_from_empty_are_idempotent(pool: PgPool) {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(row.count, i64::try_from(MIGRATOR.iter().count()).unwrap());
+    assert_eq!(usize::try_from(row.count).unwrap(), MIGRATOR.iter().count());
     let extensions=sqlx::query!(r#"SELECT count(*) AS "count!" FROM pg_extension WHERE extname IN ('pgcrypto','citext','vector')"#).fetch_one(&pool).await.unwrap();
     assert_eq!(extensions.count, 3);
 }
@@ -120,15 +120,29 @@ async fn grant_matrix_catalog_and_forbidden_statements(pool: PgPool) {
     .fetch_all(&pool)
     .await
     .unwrap();
-    assert_eq!(rows.len(), 28 * 3);
+    assert_eq!(rows.len(), 31 * 3);
     for row in rows {
         let actual = (row.select, row.insert, row.update, row.delete);
         let expected = match row.role.as_str() {
             "yhotos_admin" => (true, true, true, true),
             "yhotos_worker" => {
-                let allowed =
-                    !["users", "user_mfa", "settings", "audit_log"].contains(&row.table.as_str());
+                let allowed = ![
+                    "users",
+                    "user_mfa",
+                    "settings",
+                    "audit_log",
+                    "pending_login",
+                    "pending_webauthn",
+                    "auth_lockout",
+                ]
+                .contains(&row.table.as_str());
                 (allowed, allowed, allowed, allowed)
+            }
+            "yhotos_public"
+                if ["pending_login", "pending_webauthn", "auth_lockout"]
+                    .contains(&row.table.as_str()) =>
+            {
+                (true, true, true, true)
             }
             "yhotos_public" => (
                 !["user_mfa", "audit_log"].contains(&row.table.as_str()),

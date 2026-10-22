@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO auth_lockout(key,state) VALUES($1,'{}'::jsonb) ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "112daef6d4d229ad69a21861fd059b91fa13acd36b2d6132ea25af150702cfba"
+}

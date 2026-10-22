@@ -31,7 +31,14 @@ enum Class {
     Auth,
 }
 fn class(path: &str) -> Class {
-    if matches!(path, "/login" | "/logout")
+    if path.starts_with("/login")
+        || path.starts_with("/u/security")
+        || path.starts_with("/admin/login")
+        || path.starts_with("/admin/u/security")
+        || matches!(
+            path,
+            "/u/password" | "/admin/u/password" | "/logout" | "/admin/logout"
+        )
         || (path.starts_with("/s/") && path.ends_with("/unlock"))
     {
         Class::Auth
@@ -164,7 +171,7 @@ impl RateLimiter {
         }
     }
 }
-fn client_ip(request: &Request, trust_proxy: bool) -> Result<IpAddr, HttpError> {
+pub(crate) fn client_ip(request: &Request, trust_proxy: bool) -> Result<IpAddr, HttpError> {
     if trust_proxy {
         let mut values = request.headers().get_all("cf-connecting-ip").iter();
         let ip = values
@@ -196,7 +203,14 @@ pub(crate) async fn limit(
         Ok(ip) => ip,
         Err(error) => return error.into_response(),
     };
-    if let Some(seconds) = state.check(ip, class(request.uri().path())) {
+    let route_class = class(request.uri().path());
+    let route_class = if route_class == Class::Auth && request.method() != axum::http::Method::POST
+    {
+        Class::Cheap
+    } else {
+        route_class
+    };
+    if let Some(seconds) = state.check(ip, route_class) {
         let mut response = HttpError::RateLimited.into_response();
         if let Ok(value) = HeaderValue::from_str(&seconds.to_string()) {
             response.headers_mut().insert(header::RETRY_AFTER, value);

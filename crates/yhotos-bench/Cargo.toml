@@ -13,6 +13,7 @@ raw = ["yhotos-codec/raw"]
 
 [dev-dependencies]
 criterion.workspace = true
+base64.workspace = true
 sqlx.workspace = true
 http-body-util.workspace = true
 yhotos-auth = { path = "../yhotos-auth" }
@@ -45,6 +46,10 @@ harness = false
 
 [[bench]]
 name = "jobs"
+harness = false
+
+[[bench]]
+name = "session"
 harness = false
 
 [[bench]]

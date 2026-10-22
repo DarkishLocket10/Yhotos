@@ -67,7 +67,10 @@ fn config(dir: &std::path::Path) -> BenchResult<&'static Config> {
         worker: yhotos_config::Worker::default(),
         public_listen: peer,
         admin_listen: Some(peer),
-        database_url: std::env::var("DATABASE_URL")?.into(),
+        database_url_admin: None,
+        database_url_worker: None,
+        admin_base_url: None,
+        database_url_public: std::env::var("DATABASE_URL")?.into(),
         data_dir: dir.to_owned(),
         public_base_url: "https://example.test".parse()?,
         session_key: format!("{}{}", Uuid::now_v7().simple(), Uuid::now_v7().simple()).into(),
@@ -173,13 +176,13 @@ fn main() -> BenchResult<()> {
     let config = config(dir.path())?;
     let store = Store::open(dir.path())?;
     let admin = runtime.block_on(Db::connect(
-        &config.database_url,
+        &config.database_url_public,
         Role::Admin,
         2,
         DatabaseTls::Disable,
     ))?;
     let public = runtime.block_on(Db::connect(
-        &config.database_url,
+        &config.database_url_public,
         Role::Public,
         2,
         DatabaseTls::Disable,
@@ -188,7 +191,7 @@ fn main() -> BenchResult<()> {
     let path = format!("/i/{hash}/small.jpeg");
     let original_path = format!("/o/{hash}/benchmark.jpeg");
     let video_path = format!("/v/{hash}/h264.mp4");
-    let state = AppState::new(config, public.pool().clone(), store);
+    let state = AppState::new(config, public.pool().clone(), store, None);
     let app = public_router(state.clone());
     runtime.block_on(first_byte(&app, &path))?;
     percentiles(&runtime, &app, &state, &path)?;

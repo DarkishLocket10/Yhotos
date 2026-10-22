@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT id as \"id: _\", created_at, updated_at, username::text AS \"username!\", password_hash, must_change_password, is_admin, disabled_at, last_login_at FROM users WHERE id=$1",
+  "query": "SELECT id as \"id: _\", created_at, updated_at, username::text AS \"username!\", password_hash, must_change_password, is_admin, disabled_at, last_login_at, mfa_failures, mfa_locked_until FROM users WHERE id=$1",
   "describe": {
     "columns": [
       {
@@ -96,6 +96,28 @@
             "name": "last_login_at"
           }
         }
+      },
+      {
+        "ordinal": 9,
+        "name": "mfa_failures",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "mfa_failures"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "mfa_locked_until",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "users",
+            "name": "mfa_locked_until"
+          }
+        }
       }
     ],
     "parameters": {
@@ -112,8 +134,10 @@
       false,
       false,
       true,
+      true,
+      false,
       true
     ]
   },
-  "hash": "cb27d614e3e73d51c562e14fbc172364fabacb47b9df6b91dd3a8eec25cb714e"
+  "hash": "aa642bc5947478116758f9c530c78e9bdc5c6cf2f81cf9e4af4e0ee86a8436e3"
 }

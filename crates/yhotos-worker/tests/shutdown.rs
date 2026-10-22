@@ -7,6 +7,45 @@ use std::{path::Path, time::Duration};
 use yhotos_db::{albums, photos};
 use yhotos_jobs::{Job, Queue};
 
+#[tokio::test]
+async fn missing_worker_login_fails_before_codec_or_database_startup() {
+    let root = tempfile::tempdir().unwrap();
+    let output = tokio::time::timeout(
+        Duration::from_secs(5),
+        worker_command(root.path(), &root.path().join("missing-host")).output(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(!output.status.success());
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap().trim(),
+        "YHOTOS_DATABASE_URL_WORKER required for worker startup"
+    );
+}
+
+#[tokio::test]
+async fn invalid_worker_login_fails_without_disclosing_the_secret() {
+    let root = tempfile::tempdir().unwrap();
+    let secret = uuid::Uuid::now_v7().to_string();
+    let output = tokio::time::timeout(
+        Duration::from_secs(5),
+        worker_command(root.path(), &root.path().join("missing-host"))
+            .env(
+                "YHOTOS_DATABASE_URL_WORKER",
+                format!("https://worker:{secret}@example.test/database"),
+            )
+            .output(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(!output.status.success());
+    let error = String::from_utf8(output.stderr).unwrap();
+    assert!(error.contains("database_url_worker: must be a PostgreSQL URL"));
+    assert!(!error.contains(&secret));
+}
+
 #[sqlx::test(migrations = "../yhotos-db/migrations")]
 async fn sigterm_drains_and_releases_a_running_ingest(pool: PgPool) {
     sigterm_during_ingest(pool, Block::Host).await;
@@ -179,14 +218,33 @@ async fn sigterm_during_ingest(pool: PgPool, block: Block) {
 
 fn spawn_worker(pool: &PgPool, root: &Path, host: &Path) -> tokio::process::Child {
     let url = pool.connect_options().to_url_lossy();
+    worker_command(root, host)
+        .env("YHOTOS_DATABASE_URL_WORKER", url.as_str())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+        .unwrap()
+}
+
+fn worker_command(root: &Path, host: &Path) -> tokio::process::Command {
     let key = base64::engine::general_purpose::STANDARD.encode(format!(
         "{}{}",
         uuid::Uuid::now_v7(),
         uuid::Uuid::now_v7()
     ));
-    tokio::process::Command::new(env!("CARGO_BIN_EXE_yhotos-worker"))
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_yhotos-worker"));
+    command
         .env_clear()
-        .env("YHOTOS_DATABASE_URL", url.as_str())
+        // These shared fields must parse, but only the dedicated worker URL
+        // can connect. An accidental public/admin fallback fails the test.
+        .env(
+            "YHOTOS_DATABASE_URL_PUBLIC",
+            format!("postgres://{}@127.0.0.1:1/test", uuid::Uuid::now_v7()),
+        )
+        .env(
+            "YHOTOS_DATABASE_URL_ADMIN",
+            format!("postgres://{}@127.0.0.1:1/test", uuid::Uuid::now_v7()),
+        )
+        .env("YHOTOS_ADMIN_BASE_URL", "https://admin.example.test")
         .env("YHOTOS_SESSION_KEY", key)
         .env("YHOTOS_PUBLIC_BASE_URL", "https://example.test")
         .env("YHOTOS_ADMIN_LISTEN", "127.0.0.1:8081")
@@ -200,8 +258,7 @@ fn spawn_worker(pool: &PgPool, root: &Path, host: &Path) -> tokio::process::Chil
             "{variants=[{name=thumb,long_edge=1,square=false,formats=[avif],scale2x=false}]}",
         )
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::inherit())
-        .kill_on_drop(true)
-        .spawn()
-        .unwrap()
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true);
+    command
 }

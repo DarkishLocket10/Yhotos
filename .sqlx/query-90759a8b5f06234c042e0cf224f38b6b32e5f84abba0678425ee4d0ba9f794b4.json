@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO users(id,username,password_hash,must_change_password,is_admin) VALUES($1,$2,$3,true,true)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        {
+          "Custom": {
+            "name": "citext",
+            "kind": "Simple"
+          }
+        },
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "90759a8b5f06234c042e0cf224f38b6b32e5f84abba0678425ee4d0ba9f794b4"
+}
