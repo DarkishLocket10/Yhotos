@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-//! Passwords, sessions, TOTP, WebAuthn, share tokens, rate limit keys.
+//! Passwords, sessions, TOTP, `WebAuthn`, share tokens, rate limit keys.
 
 #[cfg(test)]
 mod tests {
