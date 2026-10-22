@@ -172,7 +172,7 @@ else
   { echo "## Task"; echo; echo "tasks/$(basename "$BRIEF")"; echo; echo "Agent did not produce a PR description. See commits."; } > "$BODY_FILE"
 fi
 
-if gh pr view "$BRANCH" --json number >/dev/null 2>&1; then
+if [[ "$(gh pr view "$BRANCH" --json state --jq .state 2>/dev/null)" == "OPEN" ]]; then
   gh pr edit "$BRANCH" --body-file "$BODY_FILE" >/dev/null
   echo "updated PR for $BRANCH"
 else
