@@ -47,7 +47,13 @@ jobs:
         with:
           persist-credentials: false
       - name: Install native codec development libraries
-        run: sudo apt-get update && sudo apt-get install -y libvips-dev libvips-tools liblcms2-dev libclang-dev libjxl-dev libheif-plugin-aomenc libheif-plugin-aomdec libheif-plugin-libde265
+        # A slow Ubuntu mirror once held this step for 16 minutes; fail fast and retry instead.
+        timeout-minutes: 10
+        run: >-
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 update &&
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 install -y --no-install-recommends
+          libvips-dev libvips-tools liblcms2-dev libclang-dev libjxl-dev
+          libheif-plugin-aomenc libheif-plugin-aomdec libheif-plugin-libde265
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -96,7 +102,13 @@ jobs:
         with:
           persist-credentials: false
       - name: Install native codec development libraries
-        run: sudo apt-get update && sudo apt-get install -y libvips-dev libvips-tools liblcms2-dev libclang-dev libjxl-dev libheif-plugin-aomenc libheif-plugin-aomdec libheif-plugin-libde265
+        # A slow Ubuntu mirror once held this step for 16 minutes; fail fast and retry instead.
+        timeout-minutes: 10
+        run: >-
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 update &&
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 install -y --no-install-recommends
+          libvips-dev libvips-tools liblcms2-dev libclang-dev libjxl-dev
+          libheif-plugin-aomenc libheif-plugin-aomdec libheif-plugin-libde265
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -137,7 +149,13 @@ jobs:
         with:
           persist-credentials: false
       - name: Install native codec development libraries
-        run: sudo apt-get update && sudo apt-get install -y libvips-dev libvips-tools liblcms2-dev libclang-dev libjxl-dev libheif-plugin-aomenc libheif-plugin-aomdec libheif-plugin-libde265
+        # A slow Ubuntu mirror once held this step for 16 minutes; fail fast and retry instead.
+        timeout-minutes: 10
+        run: >-
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 update &&
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=20 install -y --no-install-recommends
+          libvips-dev libvips-tools liblcms2-dev libclang-dev libjxl-dev
+          libheif-plugin-aomenc libheif-plugin-aomdec libheif-plugin-libde265
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
