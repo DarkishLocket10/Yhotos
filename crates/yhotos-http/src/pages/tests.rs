@@ -79,8 +79,13 @@ impl Fixture {
         req
     }
     async fn get(&self, path: &str) -> Response {
+        self.get_as(path, SessionIdentity::Anonymous).await
+    }
+    async fn get_as(&self, path: &str, identity: SessionIdentity) -> Response {
+        let mut request = Self::request(path);
+        request.extensions_mut().insert(identity);
         crate::public_router(self.state.clone())
-            .oneshot(Self::request(path))
+            .oneshot(request)
             .await
             .unwrap()
     }
@@ -305,7 +310,7 @@ async fn photos_have_sorted_neighbours_metadata_hdr_downloads_and_og(pool: PgPoo
     let f = Fixture::new(pool, 3).await;
     let mut conn = f.state.pool.acquire().await.unwrap();
     let hash = "a".repeat(64);
-    sqlx::query!("INSERT INTO derivatives(id,photo_id,variant,format,hdr,hash,width,height,bytes) VALUES($1,$2,'large','avif',true,$3,2048,1536,1)",Uuid::now_v7(),Uuid::from_u128(2),hash).execute(&mut *conn).await.unwrap();
+    sqlx::query!("INSERT INTO derivatives(id,photo_id,variant,format,hdr,hash,width,height,bytes) VALUES($1,$2,'large','avif',true,$3,1536,2048,1)",Uuid::now_v7(),Uuid::from_u128(2),hash).execute(&mut *conn).await.unwrap();
     photos::set_visibility(
         &mut conn,
         &[PhotoId(Uuid::from_u128(3))],
@@ -450,6 +455,224 @@ async fn legacy_table_drives_only_relative_redirects(pool: PgPool) {
     ] {
         assert!(!redirects::valid_destination(target));
     }
+}
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn legacy_visibility_matches_pages_for_targets_and_ancestors(pool: PgPool) {
+    let f = Fixture::new(pool, 3).await;
+    let mut conn = f.state.pool.acquire().await.unwrap();
+    let photo = PhotoId(Uuid::from_u128(1));
+    let child = albums::create(
+        &mut conn,
+        Some(f.album),
+        &Slug::new("child").unwrap(),
+        "Child",
+        Visibility::Public,
+    )
+    .await
+    .unwrap();
+    for (pattern, target) in [
+        ("/category/12", ShareTarget::Album(f.album)),
+        ("/category/13", ShareTarget::Album(child.id)),
+        ("/picture.php?/1/category/12", ShareTarget::Photo(photo)),
+        ("/legacy/missing-target", ShareTarget::Album(AlbumId::new())),
+    ] {
+        redirects::insert(&mut conn, pattern, target).await.unwrap();
+    }
+    let missing = body(f.get("/legacy/missing-target").await).await;
+    photos::set_visibility(&mut conn, &[photo], Visibility::Restricted)
+        .await
+        .unwrap();
+    let photo_url = "/picture.php?/1/category/12";
+    let denied = f.get(photo_url).await;
+    assert_eq!(denied.status(), StatusCode::NOT_FOUND);
+    assert!(!denied.headers().contains_key(header::LOCATION));
+    assert_eq!(body(denied).await, missing);
+    grants::grant_photo(&mut conn, photo, Grant::User(f.user))
+        .await
+        .unwrap();
+    let user = SessionIdentity::User {
+        id: f.user,
+        groups: vec![],
+        is_admin: false,
+    };
+    let allowed = f.get_as(photo_url, user.clone()).await;
+    assert_eq!(allowed.status(), StatusCode::MOVED_PERMANENTLY);
+    assert_eq!(
+        allowed.headers()[header::LOCATION],
+        format!("/p/{}", f.photos[0])
+    );
+    assert_eq!(
+        allowed.headers()[header::CACHE_CONTROL],
+        "private, no-store"
+    );
+    assert_eq!(allowed.headers()[header::VARY], "Cookie");
+    albums::update(
+        &mut conn,
+        f.album,
+        &Slug::new("gallery").unwrap(),
+        "Hidden",
+        "",
+        Visibility::Restricted,
+        false,
+    )
+    .await
+    .unwrap();
+    // A photo grant or a grant below the restricted ancestor cannot bypass it.
+    grants::grant_album(&mut conn, child.id, Grant::User(f.user))
+        .await
+        .unwrap();
+    for url in [
+        "/index.php?/category/12",
+        "/index.php?/category/13",
+        photo_url,
+    ] {
+        for identity in [SessionIdentity::Anonymous, user.clone()] {
+            let denied = f.get_as(url, identity).await;
+            assert_eq!(denied.status(), StatusCode::NOT_FOUND);
+            assert!(!denied.headers().contains_key(header::LOCATION));
+            assert_eq!(body(denied).await, missing);
+        }
+    }
+    grants::grant_album(&mut conn, f.album, Grant::User(f.user))
+        .await
+        .unwrap();
+    for (url, destination) in [
+        ("/index.php?/category/12", "/a/gallery".to_owned()),
+        ("/index.php?/category/13", "/a/gallery/child".to_owned()),
+        (photo_url, format!("/p/{}", f.photos[0])),
+    ] {
+        let allowed = f.get_as(url, user.clone()).await;
+        assert_eq!(allowed.status(), StatusCode::MOVED_PERMANENTLY);
+        assert_eq!(allowed.headers()[header::LOCATION], destination);
+    }
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn responsive_sources_exclude_crops_and_resolve_width_ties(pool: PgPool) {
+    let f = Fixture::new(pool, 3).await;
+    let row = f.album_row(&SessionIdentity::Anonymous).await;
+    for mut photo in row.photos {
+        for format in ["jpeg", "avif", "jxl"] {
+            for (variant, w) in [("thumb", 320), ("square", 640), ("square2x", 1280)] {
+                photo.derivatives.push(photos::PageDerivative {
+                    variant: variant.into(),
+                    format: format.into(),
+                    hdr: false,
+                    hash: "0".repeat(64),
+                    w,
+                    h: w,
+                });
+            }
+            let mut duplicate = photo
+                .derivatives
+                .iter()
+                .find(|d| d.format == format && d.variant == "small")
+                .unwrap()
+                .clone();
+            let mut thumb = duplicate.clone();
+            thumb.variant = "thumbfull".into();
+            thumb.hash = "e".repeat(64);
+            thumb.w = 320;
+            thumb.h /= 2;
+            photo.derivatives.push(thumb);
+            duplicate.hash = "f".repeat(64);
+            duplicate.variant = "small2x".into();
+            photo.derivatives.push(duplicate);
+        }
+        let mut page = photos::PhotoPage {
+            photo,
+            chain: vec![],
+            previous: None,
+            next: None,
+        };
+        let html = render_photo(&page, PageSort::Taken, &context()).unwrap();
+        let picture = html
+            .split("<picture>")
+            .nth(1)
+            .unwrap()
+            .split("</picture>")
+            .next()
+            .unwrap();
+        assert!(!picture.contains(&"0".repeat(64)));
+        assert!(!picture.contains(&"f".repeat(64)));
+        assert!(picture.contains("320w"));
+        assert!(picture.contains("640w"));
+        assert!(picture.contains("1280w"));
+        assert!(picture.contains("2048w"));
+        assert!(picture.contains(&format!(
+            "width=\"{}\" height=\"{}\"",
+            page.photo.width.unwrap(),
+            page.photo.height.unwrap()
+        )));
+        page.photo.derivatives.reverse();
+        assert_eq!(
+            html,
+            render_photo(&page, PageSort::Taken, &context()).unwrap()
+        );
+        page.photo.width = None;
+        page.photo.height = None;
+        let html = render_photo(&page, PageSort::Taken, &context()).unwrap();
+        let picture = html
+            .split("<picture>")
+            .nth(1)
+            .unwrap()
+            .split("</picture>")
+            .next()
+            .unwrap();
+        assert!(!picture.contains(&"0".repeat(64)));
+        assert!(!picture.contains(&"f".repeat(64)));
+        page.photo.derivatives.reverse();
+        assert_eq!(
+            html,
+            render_photo(&page, PageSort::Taken, &context()).unwrap()
+        );
+    }
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn downloads_include_sizes_without_jpeg(pool: PgPool) {
+    let f = Fixture::new(pool, 1).await;
+    let row = f.album_row(&SessionIdentity::Anonymous).await;
+    let mut photo = row.photos[0].clone();
+    photo
+        .derivatives
+        .retain(|d| d.variant != "large" || d.format != "jpeg");
+    let mut xlarge = photo
+        .derivatives
+        .iter()
+        .find(|d| d.variant == "large" && d.format == "jxl")
+        .unwrap()
+        .clone();
+    xlarge.variant = "xlarge".into();
+    xlarge.w = 3200;
+    xlarge.h = 2133;
+    photo.derivatives.push(xlarge);
+    let mut page = photos::PhotoPage {
+        photo,
+        chain: vec![],
+        previous: None,
+        next: None,
+    };
+    let html = render_photo(&page, PageSort::Taken, &context()).unwrap();
+    let menu = html
+        .split("<details")
+        .nth(1)
+        .unwrap()
+        .split("</details>")
+        .next()
+        .unwrap();
+    assert_eq!(menu.matches(" download").count(), 5);
+    for size in ["small", "medium", "large", "xlarge"] {
+        assert_eq!(menu.matches(&format!("Download {size} (")).count(), 1);
+    }
+    for encoding in ["small.jpeg", "medium.jpeg", "large.avif", "xlarge.jxl"] {
+        assert!(menu.contains(encoding), "{encoding}");
+    }
+    page.photo.derivatives.reverse();
+    assert_eq!(
+        html,
+        render_photo(&page, PageSort::Taken, &context()).unwrap()
+    );
 }
 #[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
 async fn covers_and_counts_never_expose_hidden_photos(pool: PgPool) {

@@ -113,18 +113,31 @@ fn dimensions(photo: &PagePhoto) -> (u32, u32) {
                 .derivatives
                 .iter()
                 .filter(|d| derivative_url(d).is_some())
-                .max_by_key(|d| d.w)
+                // Without original dimensions, prefer non-square representations
+                // over square thumbnails and break ties independently of row order.
+                .max_by_key(|d| (d.w != d.h, d.w.max(d.h), d.w, d.h, &d.variant, &d.hash))
                 .map(|d| (d.w, d.h))
         })
         .unwrap_or((4, 3))
 }
-fn source(photo: &PagePhoto, format: &str, hdr: bool) -> String {
+fn full_frame((w, h): (u32, u32), d: &PageDerivative) -> bool {
+    // Resizing may round either dimension by one pixel. Cropped representations
+    // must never share a source set or fallback with the full-frame image.
+    (u64::from(d.w) * u64::from(h)).abs_diff(u64::from(d.h) * u64::from(w)) <= u64::from(w.max(h))
+}
+fn source(photo: &PagePhoto, format: &str, hdr: bool, dimensions: (u32, u32)) -> String {
     let mut derivatives: Vec<_> = photo
         .derivatives
         .iter()
-        .filter(|d| d.format == format && d.hdr == hdr && derivative_url(d).is_some())
+        .filter(|d| {
+            d.format == format
+                && d.hdr == hdr
+                && full_frame(dimensions, d)
+                && derivative_url(d).is_some()
+        })
         .collect();
-    derivatives.sort_unstable_by_key(|d| d.w);
+    // Variant and digest break width ties independently of database row order.
+    derivatives.sort_unstable_by_key(|d| (d.w, &d.variant, d.h, &d.hash));
     derivatives.dedup_by_key(|d| d.w);
     derivatives
         .into_iter()
@@ -134,9 +147,9 @@ fn source(photo: &PagePhoto, format: &str, hdr: bool) -> String {
 }
 fn image(photo: &PagePhoto, sizes: String, eager: bool) -> Image {
     let (width, height) = dimensions(photo);
-    let jpeg = source(photo, "jpeg", false);
-    let src = photo.derivatives.iter().filter(|d| d.format == "jpeg" && !d.hdr && derivative_url(d).is_some())
-        .min_by_key(|d| d.w.abs_diff(1280)).and_then(derivative_url).unwrap_or_else(|| "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='4'%20height='3'%3E%3Cpath%20fill='%23777'%20d='M0%200h4v3H0z'/%3E%3C/svg%3E".into());
+    let jpeg = source(photo, "jpeg", false, (width, height));
+    let src = photo.derivatives.iter().filter(|d| d.format == "jpeg" && !d.hdr && full_frame((width, height), d) && derivative_url(d).is_some())
+        .min_by_key(|d| (d.w.abs_diff(1280), d.w, &d.variant, d.h, &d.hash)).and_then(derivative_url).unwrap_or_else(|| "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='4'%20height='3'%3E%3Cpath%20fill='%23777'%20d='M0%200h4v3H0z'/%3E%3C/svg%3E".into());
     let thumbhash = photo
         .thumbhash
         .as_deref()
@@ -147,10 +160,10 @@ fn image(photo: &PagePhoto, sizes: String, eager: bool) -> Image {
     Image {
         src,
         jpeg,
-        avif: source(photo, "avif", false),
-        jxl: source(photo, "jxl", false),
-        hdr_avif: source(photo, "avif", true),
-        hdr_jxl: source(photo, "jxl", true),
+        avif: source(photo, "avif", false, (width, height)),
+        jxl: source(photo, "jxl", false, (width, height)),
+        hdr_avif: source(photo, "avif", true, (width, height)),
+        hdr_jxl: source(photo, "jxl", true, (width, height)),
         sizes,
         width,
         height,
@@ -446,17 +459,35 @@ pub fn render_photo(
         href: format!("/o/{}/{}", p.original_hash, filename(&p.original_name)),
         label: "Download original".into(),
     }];
-    downloads.extend(
-        p.derivatives
-            .iter()
-            .filter(|d| d.format == "jpeg" && !d.hdr)
-            .filter_map(|d| {
-                derivative_url(d).map(|url| Download {
-                    href: url,
-                    label: format!("Download {} ({} × {})", d.variant, d.w, d.h),
-                })
-            }),
-    );
+    let mut sizes: Vec<_> = p
+        .derivatives
+        .iter()
+        .filter(|d| derivative_url(d).is_some())
+        .collect();
+    // One link per size, preferring SDR JPEG, then AVIF, then JXL. Retain sizes
+    // available only in a modern encoding or HDR, with a deterministic tie break.
+    sizes.sort_unstable_by_key(|d| {
+        (
+            &d.variant,
+            d.hdr,
+            match d.format.as_str() {
+                "jpeg" => 0,
+                "avif" => 1,
+                _ => 2,
+            },
+            d.w,
+            d.h,
+            &d.hash,
+        )
+    });
+    sizes.dedup_by_key(|d| &d.variant);
+    sizes.sort_unstable_by_key(|d| (d.w, d.h, &d.variant));
+    downloads.extend(sizes.into_iter().filter_map(|d| {
+        derivative_url(d).map(|url| Download {
+            href: url,
+            label: format!("Download {} ({} × {})", d.variant, d.w, d.h),
+        })
+    }));
     let mut exif = Vec::new();
     for (label, value) in [
         ("Date taken", &p.taken_at),

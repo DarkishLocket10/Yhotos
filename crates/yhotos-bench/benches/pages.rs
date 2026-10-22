@@ -39,6 +39,25 @@ fn main() -> Result<(), Box<dyn Error>> {
     criterion.bench_function("pages/render_album/60", |b| {
         b.iter(|| black_box(render_album(black_box(&page), 1, PageSort::Taken, &context)));
     });
+    let mut cropped = page.clone();
+    for photo in &mut cropped.photos {
+        let variants = photo.derivatives.clone();
+        for mut derivative in variants {
+            derivative.variant = "square".into();
+            derivative.h = derivative.w;
+            photo.derivatives.push(derivative);
+        }
+    }
+    criterion.bench_function("pages/render_album/60_with_crops", |b| {
+        b.iter(|| {
+            black_box(render_album(
+                black_box(&cropped),
+                1,
+                PageSort::Taken,
+                &context,
+            ))
+        });
+    });
     if let Ok(url) = std::env::var("DATABASE_URL") {
         let runtime = tokio::runtime::Runtime::new()?;
         let _runtime_context = runtime.enter();

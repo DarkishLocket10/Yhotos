@@ -254,6 +254,7 @@ fn legacy_patterns(uri: &Uri) -> Option<Vec<String>> {
 }
 pub(crate) async fn legacy(
     State(state): State<AppState>,
+    Extension(identity): Extension<SessionIdentity>,
     OriginalUri(uri): OriginalUri,
 ) -> Result<Response, HttpError> {
     let patterns = legacy_patterns(&uri).ok_or(HttpError::NotFound)?;
@@ -262,7 +263,7 @@ pub(crate) async fn legacy(
         .acquire()
         .await
         .map_err(|e| HttpError::Internal(e.into()))?;
-    let destination = redirects::destination(&mut conn, &patterns)
+    let destination = redirects::destination(&mut conn, &identity.principal(), &patterns)
         .await
         .map_err(db_error)?
         .ok_or(HttpError::NotFound)?;

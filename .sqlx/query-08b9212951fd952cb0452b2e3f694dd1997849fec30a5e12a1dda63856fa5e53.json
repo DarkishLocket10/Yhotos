@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO derivatives(id,photo_id,variant,format,hash,width,height,bytes) VALUES($1,$2,$3,'jpeg',$4,$5,$6,$7) ON CONFLICT (photo_id,variant,format,hdr) DO UPDATE SET hash=excluded.hash,width=excluded.width,height=excluded.height,bytes=excluded.bytes",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text",
+        "Int4",
+        "Int4",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "08b9212951fd952cb0452b2e3f694dd1997849fec30a5e12a1dda63856fa5e53"
+}
