@@ -138,14 +138,20 @@ fn makernote(data: &[u8]) -> Vec<u8> {
 
 fn check(path: &std::path::Path, limits: &yhotos_codec::Limits) {
     if let Ok(id) = yhotos_codec::identify(path, limits) {
+        if matches!(id.kind, yhotos_codec::Kind::Video { .. }) {
+            return;
+        }
         assert!(
-            id.width > 0
-                && id.height > 0
-                && id.width <= limits.max_dim
-                && id.height <= limits.max_dim
+            id.width.unwrap_or(0) > 0
+                && id.height.unwrap_or(0) > 0
+                && id.width.unwrap_or(0) <= limits.max_dim
+                && id.height.unwrap_or(0) <= limits.max_dim
         );
         assert!(
-            u64::from(id.width) * u64::from(id.height) * u64::from(id.pages) <= limits.max_pixels
+            u64::from(id.width.unwrap_or(0))
+                * u64::from(id.height.unwrap_or(0))
+                * u64::from(id.pages)
+                <= limits.max_pixels
         );
         assert!((1..=8).contains(&id.orientation));
     }

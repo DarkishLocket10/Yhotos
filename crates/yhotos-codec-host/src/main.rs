@@ -15,6 +15,8 @@ use std::{
     time::Instant,
 };
 use yhotos_codec::{CodecError, Encode, EncodeOpts, Limits, ResizeSpec};
+#[cfg(feature = "test-hooks")]
+static DECODE_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 const JOB_BYTES: u64 = 1 << 20;
 const CHILD_ARGUMENT: &str = "--sandboxed-job";
 #[derive(Debug, Deserialize)]
@@ -143,6 +145,8 @@ struct Report {
 #[derive(Serialize)]
 #[allow(clippy::struct_field_names)] // Units are explicit in the JSON report.
 struct Timings {
+    #[cfg(feature = "test-hooks")]
+    decode_calls: usize,
     identify_ms: u128,
     decode_ms: u128,
     total_ms: u128,
@@ -317,7 +321,37 @@ fn run() -> Result<(), Failure> {
     let start = Instant::now();
     let id = yhotos_codec::identify(&input, &job.limits.codec())?;
     let identify_ms = start.elapsed().as_millis();
+    if job.outputs.is_empty()
+        && job
+            .want
+            .iter()
+            .all(|want| matches!(want, Want::Identity | Want::Metadata))
+    {
+        let report = Report {
+            identity: job.want.contains(&Want::Identity).then_some(id),
+            metadata: if job.want.contains(&Want::Metadata) {
+                Some(yhotos_codec::metadata(&input)?)
+            } else {
+                None
+            },
+            thumbhash: None,
+            dominant_colors: None,
+            outputs: Vec::new(),
+            timings: Timings {
+                #[cfg(feature = "test-hooks")]
+                decode_calls: DECODE_CALLS.load(std::sync::atomic::Ordering::Relaxed),
+                identify_ms,
+                decode_ms: 0,
+                total_ms: start.elapsed().as_millis(),
+            },
+        };
+        serde_json::to_writer(std::io::stdout().lock(), &report)
+            .map_err(|_| Failure(3, "report failed"))?;
+        return Ok(());
+    }
     let decode_start = Instant::now();
+    #[cfg(feature = "test-hooks")]
+    DECODE_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let working = yhotos_codec::decode(&input, &id, &job.limits.codec())?;
     let decode_ms = decode_start.elapsed().as_millis();
     #[cfg(feature = "test-hooks")]
@@ -410,6 +444,8 @@ fn run() -> Result<(), Failure> {
         },
         outputs,
         timings: Timings {
+            #[cfg(feature = "test-hooks")]
+            decode_calls: DECODE_CALLS.load(std::sync::atomic::Ordering::Relaxed),
             identify_ms,
             decode_ms,
             total_ms: start.elapsed().as_millis(),

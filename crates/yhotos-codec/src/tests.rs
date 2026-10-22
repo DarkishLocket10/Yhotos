@@ -76,8 +76,8 @@ fn identify_fixture_matrix() {
         assert_eq!(
             (
                 id.kind,
-                id.width,
-                id.height,
+                id.width.unwrap(),
+                id.height.unwrap(),
                 id.bits,
                 id.has_alpha,
                 id.has_icc,
@@ -94,8 +94,8 @@ fn identify_fixture_matrix() {
         assert_eq!(
             (
                 p3.kind,
-                p3.width,
-                p3.height,
+                p3.width.unwrap(),
+                p3.height.unwrap(),
                 p3.bits,
                 p3.has_alpha,
                 p3.has_icc,
@@ -108,8 +108,8 @@ fn identify_fixture_matrix() {
         assert_eq!(
             (
                 id.kind,
-                id.width,
-                id.height,
+                id.width.unwrap(),
+                id.height.unwrap(),
                 id.orientation,
                 id.bits,
                 id.has_icc,
@@ -166,7 +166,7 @@ fn all_exif_orientations_produce_identical_pixels() {
             (Kind::Jpeg, 8, false, false)
         );
         assert_eq!(
-            (id.width, id.height),
+            (id.width.unwrap(), id.height.unwrap()),
             if orientation >= 5 {
                 (96, 128)
             } else {
@@ -256,7 +256,7 @@ fn charts_preserve_lab_and_profiles_in_every_encoder() {
             .unwrap();
             let id = identify(&out, &Limits::default()).unwrap();
             assert!(id.has_icc, "{name} {suffix}");
-            assert_eq!((id.width, id.height), (192, 128));
+            assert_eq!((id.width.unwrap(), id.height.unwrap()), (192, 128));
             let actual = lab(&out);
             let mut errors = Vec::new();
             for (i, target) in reference.iter().enumerate() {
@@ -992,7 +992,7 @@ fn raw_selects_largest_preview_and_preserves_adobe_rgb_round_trip() {
         let id = identify(&input, &Limits::default()).unwrap();
         assert_eq!(raw::PIXEL_DECODES.get(), before);
         assert_eq!(raw::PREVIEW_BUFFER_BYTES.get(), buffered);
-        assert_eq!((id.width, id.height), (1024, 768));
+        assert_eq!((id.width.unwrap(), id.height.unwrap()), (1024, 768));
         assert!(id.has_icc);
         assert!(id.icc_desc.as_deref().unwrap().contains("Adobe"));
         let working = decode(&input, &id, &Limits::default()).unwrap();
@@ -1107,7 +1107,7 @@ fn raw_identification_without_a_preview_never_decodes_the_sensor() {
     preview_dng(&path, 1024, 768, &[]);
     let before = raw::PIXEL_DECODES.get();
     let id = identify(&path, &Limits::default()).unwrap();
-    assert_eq!((id.width, id.height), (1024, 768));
+    assert_eq!((id.width.unwrap(), id.height.unwrap()), (1024, 768));
     assert_eq!(id.kind, Kind::Raw(RawMake("Test".to_owned())));
     assert_eq!(raw::PIXEL_DECODES.get(), before);
 }
@@ -1375,7 +1375,7 @@ fn canon_makernote_sensor_offsets_and_slices_are_checked_before_rawler() {
                         rejected_tiff(&path, &error);
                     } else {
                         let id = identify(&path, &Limits::default()).unwrap();
-                        assert_eq!((id.width, id.height), (1024, 768));
+                        assert_eq!((id.width.unwrap(), id.height.unwrap()), (1024, 768));
                         assert_eq!(id.kind, Kind::Raw(RawMake("Canon".to_owned())));
                     }
                     assert_eq!(raw::PIXEL_DECODES.get(), before);
@@ -1736,7 +1736,7 @@ fn sparse_tiff_preview_identification_never_buffers_the_declared_payload() {
         let start = Instant::now();
         let before = raw::PREVIEW_BUFFER_BYTES.get();
         let id = identify(tmp.path(), &Limits::default()).unwrap();
-        assert_eq!((id.width, id.height), (1, 1));
+        assert_eq!((id.width.unwrap(), id.height.unwrap()), (1, 1));
         assert_eq!(raw::PREVIEW_BUFFER_BYTES.get(), before);
         assert_eq!(
             decode(tmp.path(), &id, &Limits::default()).err(),
@@ -1834,7 +1834,12 @@ fn cr3_previews_use_only_libvips_including_orientation_icc_and_metadata() {
             let source = fixture(source);
             let id = identify(&source, &Limits::default()).unwrap();
             let jpeg = std::fs::read(&source).unwrap();
-            let record = cr3_preview_record(false, &jpeg, id.width as u16, id.height as u16);
+            let record = cr3_preview_record(
+                false,
+                &jpeg,
+                id.width.unwrap() as u16,
+                id.height.unwrap() as u16,
+            );
             let small = std::fs::read(fixture("tiny-1x1.jpg")).unwrap();
             let thumbnail = cr3_preview_record(true, &small, 1, 1);
             // Neither this synthetic sensor payload nor moov has enough data
@@ -1845,7 +1850,10 @@ fn cr3_previews_use_only_libvips_including_orientation_icc_and_metadata() {
             let before = raw::PIXEL_DECODES.get();
             let raw_id = identify(&input, &Limits::default()).unwrap();
             assert_eq!(raw_id.kind, Kind::Raw(RawMake("Canon".to_owned())));
-            assert_eq!((raw_id.width, raw_id.height), (id.width, id.height));
+            assert_eq!(
+                (raw_id.width.unwrap(), raw_id.height.unwrap()),
+                (id.width.unwrap(), id.height.unwrap())
+            );
             assert_eq!(raw_id.orientation, id.orientation);
             assert_eq!(raw_id.icc_desc, id.icc_desc);
             assert_eq!(raw_id.has_icc, id.has_icc);
@@ -1876,8 +1884,8 @@ fn cr3_previews_use_only_libvips_including_orientation_icc_and_metadata() {
             descriptor.extend(cr3_preview_record(
                 true,
                 &jpeg,
-                id.width as u16,
-                id.height as u16,
+                id.width.unwrap() as u16,
+                id.height.unwrap() as u16,
             ));
             let mut bytes = cr3_container(&bmff_box(b"uuid", &descriptor));
             bytes.extend(cr3_preview_uuid(&cr3_preview_record(false, &small, 1, 1)));
@@ -2089,7 +2097,7 @@ fn raw_sensor_headers_are_validated_without_requiring_entropy_data() {
         sensor_tiff(&path, tiled, canon, 1024, 768, 1);
         let before = raw::PIXEL_DECODES.get();
         let id = identify(&path, &Limits::default()).unwrap();
-        assert_eq!((id.width, id.height), (1024, 768));
+        assert_eq!((id.width.unwrap(), id.height.unwrap()), (1024, 768));
         assert_eq!(raw::PIXEL_DECODES.get(), before);
     }
 }
@@ -2666,7 +2674,7 @@ fn iso_gain_map_fixture_uses_item_references_without_text_signatures() {
     assert!(!headers::has_gain_signature(&bytes));
     let id = identify(&path, &Limits::default()).unwrap();
     assert!(id.has_gain_map);
-    assert_eq!((id.width, id.height), (32, 32));
+    assert_eq!((id.width.unwrap(), id.height.unwrap()), (32, 32));
     assert_eq!(
         decode(&path, &id, &Limits::default())
             .unwrap()
@@ -2891,7 +2899,7 @@ fn apple_and_other_dng_makernotes_stay_opaque_through_preview_and_metadata() {
         std::fs::write(tmp.path(), &bytes).unwrap();
         let id = identify(tmp.path(), &Limits::default()).unwrap();
         assert_eq!(id.kind, Kind::Raw(RawMake(make.to_owned())));
-        assert_eq!((id.width, id.height), (1024, 768));
+        assert_eq!((id.width.unwrap(), id.height.unwrap()), (1024, 768));
         assert!(id.has_icc);
         let working = decode(tmp.path(), &id, &Limits::default()).unwrap();
         assert_eq!(working.dimensions().unwrap(), (384, 256));
@@ -3086,5 +3094,44 @@ fn native_raw_decoders_that_ignore_makernotes_keep_the_blob_opaque() {
         )
         .unwrap();
         assert!(tiff.makernotes(make).unwrap().is_empty(), "{make}");
+    }
+}
+
+#[test]
+fn video_identity_is_bounded_and_never_decodes() {
+    use crate::VideoContainer;
+    for (name, container) in [
+        ("header-only.mp4", VideoContainer::Mp4),
+        ("header-only.mov", VideoContainer::Mov),
+    ] {
+        let path = fixture(name);
+        let id = identify(&path, &Limits::default()).unwrap();
+        assert_eq!(id.kind, Kind::Video { container });
+        assert_eq!((id.width, id.height), (Some(320), Some(240)));
+        let bytes = std::fs::read(&path).unwrap();
+        assert!(bytes.len() < 10_000);
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("data");
+        let mut compatible = bytes.clone();
+        compatible[8..12].copy_from_slice(b"zzzz");
+        std::fs::write(&input, &compatible).unwrap();
+        assert_eq!(identify(&input, &Limits::default()).unwrap().kind, id.kind);
+        let mut unknown = bytes.clone();
+        unknown[8..12].copy_from_slice(b"zzzz");
+        unknown[16..20].copy_from_slice(b"zzzz");
+        std::fs::write(&input, unknown).unwrap();
+        assert!(identify(&input, &Limits::default()).is_err());
+        for n in 0..84 {
+            let pos = bytes.windows(4).position(|b| b == b"tkhd").unwrap();
+            let mut bad = bytes.clone();
+            bad[pos + 4] = 2;
+            bad.truncate(pos + 4 + n);
+            std::fs::write(&input, bad).unwrap();
+            assert!(identify(&input, &Limits::default()).is_err());
+        }
+        // ftyp without a movie header has no dimensions.
+        std::fs::write(&input, &bytes[..20]).unwrap();
+        let id = identify(&input, &Limits::default()).unwrap();
+        assert_eq!((id.width, id.height), (None, None));
     }
 }

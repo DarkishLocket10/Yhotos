@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Upload originals</title></head>
+<body><main id="upload" data-chunk-bytes="{{ chunk }}" data-csrf="{{ csrf }}">
+<h1>Upload originals</h1><label for="album">Destination album</label>
+<select id="album" required>{% for (id,title) in albums %}<option value="{{ id }}">{{ title }}</option>{% endfor %}</select>
+<div id="drop" tabindex="0" role="button" aria-label="Choose files or drop originals here"><p>Drop originals here or choose files.</p><input id="files" type="file" multiple></div>
+<p>Up to four files upload at once. To resume after reloading, choose the same files again.</p>
+<ul id="uploads" aria-live="polite"></ul>
+</main><script nonce="{{ nonce }}" type="module" src="{{ script }}"></script></body></html>

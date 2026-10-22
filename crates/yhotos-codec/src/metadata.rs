@@ -137,6 +137,12 @@ fn xml_text(value: &str) -> String {
 /// Returns a typed error when options are invalid or native processing fails.
 pub fn metadata(path: &Path) -> Result<Metadata, CodecError> {
     let kind = headers::inspect(path, &Limits::default())?;
+    if matches!(kind, crate::Kind::Video { .. }) {
+        return Ok(Metadata {
+            orientation: 1,
+            ..Metadata::default()
+        });
+    }
     #[cfg(feature = "raw")]
     if crate::raw::candidate(path, &kind) {
         return crate::raw::metadata(path);

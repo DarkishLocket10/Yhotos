@@ -58,6 +58,20 @@ pub(crate) fn passkey_url() -> Result<&'static str, HttpError> {
     Ok(&required(PASSKEY.as_ref())?.url)
 }
 
+#[cfg(feature = "admin")]
+static UPLOAD: LazyLock<Option<Asset>> = LazyLock::new(|| {
+    Asset::new(
+        "upload",
+        "js",
+        "js/upload.js",
+        "text/javascript; charset=utf-8",
+    )
+});
+#[cfg(feature = "admin")]
+pub(crate) fn upload_url() -> Result<&'static str, HttpError> {
+    Ok(&required(UPLOAD.as_ref())?.url)
+}
+
 fn required(asset: Option<&'static Asset>) -> Result<&'static Asset, HttpError> {
     asset.ok_or_else(|| HttpError::Internal(anyhow::anyhow!("embedded asset missing")))
 }
@@ -69,6 +83,8 @@ pub(crate) fn script_url() -> Result<&'static str, HttpError> {
 }
 pub(crate) async fn serve(Path(path): Path<String>) -> Result<Response, HttpError> {
     for asset in [
+        #[cfg(feature = "admin")]
+        required(UPLOAD.as_ref())?,
         required(CSS.as_ref())?,
         required(JS.as_ref())?,
         required(PASSKEY.as_ref())?,

@@ -6,6 +6,22 @@ export VIPS_CONCURRENCY=2 LC_ALL=C SOURCE_DATE_EPOCH=0
 python3 - <<'PY'
 import ctypes as C, ctypes.util, hashlib, json, pathlib, shlex, struct, subprocess, tempfile, zlib
 root=pathlib.Path.cwd(); dest=root/'fixtures/images'; dest.mkdir(parents=True,exist_ok=True)
+# Task 012 header-only video identities. No pixel or media payload is needed.
+def video_box(kind, data):
+    return struct.pack('>I4s', len(data)+8, kind)+data
+for suffix,brand in [('mp4',b'isom'),('mov',b'qt  ')]:
+    tkhd=bytearray(84)
+    tkhd[1:4]=b'\0\0\3'
+    tkhd[12:16]=struct.pack('>I',1)
+    tkhd[40:44]=struct.pack('>I',0x10000)
+    tkhd[56:60]=struct.pack('>I',0x10000)
+    tkhd[72:76]=struct.pack('>I',0x40000000)
+    tkhd[76:84]=struct.pack('>II',320<<16,240<<16)
+    handler=video_box(b'hdlr',b'\0'*8+b'vide'+b'\0'*12+b'Video\0')
+    track=video_box(b'trak',video_box(b'tkhd',tkhd)+video_box(b'mdia',handler))
+    movie=video_box(b'ftyp',brand+b'\0'*4+brand)+video_box(b'moov',track)
+    (dest/f'header-only.{suffix}').write_bytes(movie)
+
 lib=C.CDLL(ctypes.util.find_library('vips')); lib.vips_init.argtypes=[C.c_char_p]; lib.vips_init(b'fixture-generator')
 lib.vips_image_new_from_file.restype=C.c_void_p
 lib.vips_image_set_string.argtypes=[C.c_void_p,C.c_char_p,C.c_char_p]

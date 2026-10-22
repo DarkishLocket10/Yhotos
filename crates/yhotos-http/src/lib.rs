@@ -2,6 +2,8 @@
 
 //! Isolated public and admin routers, compiled templates and request controls.
 
+#[cfg(feature = "admin")]
+pub mod admin;
 pub mod auth;
 pub mod error;
 pub mod files;
@@ -21,7 +23,7 @@ use axum::{
 use error::HttpError;
 use middleware::rate_limit::RateLimiter;
 use std::time::Duration;
-use tower_http::{limit::RequestBodyLimitLayer, timeout::TimeoutLayer, trace::TraceLayer};
+use tower_http::trace::TraceLayer;
 
 /// Builds only public routes, even when the admin feature is enabled.
 ///
@@ -85,16 +87,17 @@ pub fn public_router(state: AppState) -> Router {
 /// Compiles only with `admin`, and must be served on the separate admin socket.
 #[cfg(feature = "admin")]
 pub fn admin_router(state: AppState) -> Router {
-    stack(
+    admin::upload::with_method_override(stack(
         Router::new()
             .merge(auth::routes(auth::Audience(true)))
+            .merge(admin::upload::routes())
             .route("/admin/healthz", get(health))
             .route("/admin/", get(health))
             .route("/admin/setup-mfa", get(auth::security::setup))
             .route("/static/{*path}", get(static_assets::serve)),
         state,
         auth::Audience(true),
-    )
+    ))
 }
 
 fn stack(router: Router<AppState>, state: AppState, audience: auth::Audience) -> Router {
@@ -105,11 +108,10 @@ fn stack(router: Router<AppState>, state: AppState, audience: auth::Audience) ->
         .layer(from_fn_with_state(state.clone(), middleware::csrf::protect))
         .layer(Extension(audience))
         .layer(from_fn_with_state(limits, middleware::rate_limit::limit))
-        .layer(TimeoutLayer::with_status_code(
-            StatusCode::REQUEST_TIMEOUT,
-            Duration::from_secs(10),
+        .layer(from_fn_with_state(
+            (state.clone(), audience),
+            request_limits,
         ))
-        .layer(RequestBodyLimitLayer::new(1024 * 1024))
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(middleware::trace::span)
@@ -122,6 +124,51 @@ fn stack(router: Router<AppState>, state: AppState, audience: auth::Audience) ->
         .layer(from_fn(middleware::security_headers::secure))
         .layer(from_fn(middleware::request_id::assign))
         .with_state(state)
+}
+async fn request_limits(
+    axum::extract::State((state, audience)): axum::extract::State<(AppState, auth::Audience)>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let upload = cfg!(feature = "admin")
+        && audience.0
+        && request.method() == axum::http::Method::PATCH
+        && request
+            .uri()
+            .path()
+            .strip_prefix("/admin/upload/")
+            .is_some_and(|id| id.parse::<uuid::Uuid>().is_ok());
+    let cap = if upload {
+        state.config.upload.chunk_bytes as usize
+    } else {
+        1024 * 1024
+    };
+    if request
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+        .is_some_and(|n| n > cap as u64)
+    {
+        return (StatusCode::PAYLOAD_TOO_LARGE, "Request too large").into_response();
+    }
+    let deadline = if upload {
+        Duration::from_secs(u64::from(state.config.worker.codec_timeout) + 120)
+    } else {
+        Duration::from_secs(10)
+    };
+    let (parts, body) = request.into_parts();
+    let body = if upload {
+        body
+    } else {
+        axum::body::Body::new(http_body_util::Limited::new(body, cap))
+    };
+    tokio::time::timeout(
+        deadline,
+        next.run(axum::extract::Request::from_parts(parts, body)),
+    )
+    .await
+    .unwrap_or_else(|_| (StatusCode::REQUEST_TIMEOUT, "Request timed out").into_response())
 }
 async fn health() -> impl IntoResponse {
     (

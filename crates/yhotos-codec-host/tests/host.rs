@@ -268,3 +268,48 @@ fn filesystem_rejects_input_inside_writable_output() {
     assert_eq!(result.status.code(), Some(2));
     assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 1);
 }
+
+#[cfg(feature = "test-hooks")]
+#[test]
+fn identity_only_reports_without_any_decode_call() {
+    let tmp = tempfile::tempdir().unwrap();
+    // Retain JPEG marker headers and EOI but remove the entropy-coded pixels.
+    let bytes = std::fs::read(fixture("photo.jpg")).unwrap();
+    let scan = bytes.windows(2).position(|b| b == [0xff, 0xda]).unwrap();
+    let scan_len = u16::from_be_bytes([bytes[scan + 2], bytes[scan + 3]]) as usize;
+    let mut truncated = bytes[..scan + 2 + scan_len].to_vec();
+    truncated.extend([0xff, 0xd9]);
+    let input = tmp.path().join("data");
+    std::fs::write(&input, truncated).unwrap();
+    let out = tmp.path().join("out");
+    std::fs::create_dir(&out).unwrap();
+    let identity = json!({"input":input,"out_dir":out,"outputs":[],"want":["identity"]});
+    let output = invoke(&identity, &[]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["identity"]["kind"], "Jpeg");
+    assert_eq!(report["timings"]["decode_calls"], 0);
+    let mut decode = job(&input, &out);
+    decode["outputs"] = json!([]);
+    let decoded = invoke(&decode, &[]);
+    assert!(!decoded.status.success());
+}
+
+#[cfg(feature = "test-hooks")]
+#[test]
+fn video_identity_and_metadata_do_not_decode() {
+    for name in ["header-only.mp4", "header-only.mov"] {
+        let tmp = tempfile::tempdir().unwrap();
+        let request = json!({"input":fixture(name),"out_dir":tmp.path(),"outputs":[],"want":["identity","metadata"]});
+        let output = invoke(&request, &[]);
+        assert!(output.status.success());
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(report["timings"]["decode_calls"], 0);
+        assert_eq!(report["identity"]["width"], 320);
+        assert_eq!(report["metadata"]["orientation"], 1);
+    }
+}
