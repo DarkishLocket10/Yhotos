@@ -1,2 +1,2 @@
 {% extends "default/base.html" %}
-{% block content %}<main><h1>Yhotos photo gallery</h1></main>{% endblock %}
+{% block content %}<main><h1>Yhotos photo gallery</h1>{% include "default/partials/albums.html" %}{% if albums.is_empty() %}<p>No albums to show yet.</p>{% endif %}</main>{% endblock %}

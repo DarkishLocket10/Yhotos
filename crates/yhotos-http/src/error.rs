@@ -28,9 +28,7 @@ pub enum HttpError {
 impl IntoResponse for HttpError {
     fn into_response(self) -> Response {
         let mut response = match self {
-            Self::NotFound | Self::Forbidden => {
-                (StatusCode::NOT_FOUND, "Not found").into_response()
-            }
+            Self::NotFound | Self::Forbidden => crate::pages::not_found(),
             Self::BadRequest => (StatusCode::BAD_REQUEST, "Bad request").into_response(),
             Self::RateLimited => (
                 StatusCode::TOO_MANY_REQUESTS,

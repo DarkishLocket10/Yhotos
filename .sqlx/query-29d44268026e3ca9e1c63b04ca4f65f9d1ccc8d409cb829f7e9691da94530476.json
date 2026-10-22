@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH RECURSIVE target AS (\n      SELECT target_kind,target_id FROM legacy_redirects WHERE pattern=ANY($1)\n      ORDER BY array_position($1,pattern) LIMIT 1\n    ), chain AS (\n      SELECT a.id,a.parent_id,a.slug::text AS path,ARRAY[a.id] AS visited FROM albums a JOIN target t\n        ON t.target_kind='album' AND t.target_id=a.id WHERE a.deleted_at IS NULL\n      UNION ALL SELECT a.id,a.parent_id,a.slug::text || '/' || c.path,c.visited || a.id\n        FROM albums a JOIN chain c ON c.parent_id=a.id WHERE a.deleted_at IS NULL AND NOT a.id=ANY(c.visited)\n    ) SELECT CASE WHEN t.target_kind='photo' THEN\n      (SELECT '/p/' || p.short_id FROM photos p WHERE p.id=t.target_id AND p.deleted_at IS NULL)\n      ELSE (SELECT '/a/' || path FROM chain WHERE parent_id IS NULL) END AS destination FROM target t",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "destination",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "29d44268026e3ca9e1c63b04ca4f65f9d1ccc8d409cb829f7e9691da94530476"
+}

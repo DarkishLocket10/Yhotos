@@ -505,4 +505,4 @@ fn sanitize_filename(name: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

@@ -1,0 +1,11 @@
+{% extends "default/base.html" %}
+{% block metadata %}{% include "default/partials/og.html" %}{% endblock %}
+{% block content %}<main>{% include "default/partials/breadcrumbs.html" %}<h1>{{ title }}</h1><p>{{ description }}</p>
+{% include "default/partials/albums.html" %}
+<form method="get" class="sort-form"><label for="sort">Sort photos</label><select name="sort" id="sort">
+<option value="taken"{% if sort == "taken" %} selected{% endif %}>Date taken</option><option value="posted"{% if sort == "posted" %} selected{% endif %}>Date posted</option><option value="name"{% if sort == "name" %} selected{% endif %}>Name</option><option value="manual"{% if sort == "manual" %} selected{% endif %}>Manual order</option></select><button type="submit">Apply sorting</button></form>
+<p>{{ total }} photos</p><section aria-label="Photos" class="photo-grid">{% for row in rows %}<div class="grid-row">{% for cell in row.cells %}<a class="cell" id="cell{{ cell.index }}" href="{{ cell.href }}">{% let image = cell.image %}{% include "default/partials/picture.html" %}{% if !cell.badge.is_empty() %}<span class="badge">{{ cell.badge }}</span>{% endif %}</a>{% endfor %}</div>{% endfor %}</section>
+{% if rows.is_empty() %}<p>No photos to show in this album.</p>{% endif %}
+<nav aria-label="Pagination" class="pagination">{% if let Some(url) = previous %}<a rel="prev" href="{{ url }}">Previous page</a>{% endif %}<span>Page {{ number }}</span>{% if let Some(url) = next %}<a rel="next" href="{{ url }}">Next page</a>{% endif %}</nav>
+<script type="application/json" nonce="{{ context.nonce }}" id="gallery-data">{{ island|safe }}</script>
+</main>{% endblock %}

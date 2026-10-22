@@ -50,3 +50,42 @@ impl From<RedirectTarget> for yhotos_core::access::ShareTarget {
         }
     }
 }
+
+/// Constructs a relative gallery destination from a stored typed target in one query.
+/// Deleted targets and album targets without a complete live ancestor chain resolve to no destination.
+///
+/// # Errors
+/// Returns database failures; invalid stored slugs or short ids fail closed.
+pub async fn destination(
+    conn: &mut PgConnection,
+    patterns: &[String],
+) -> Result<Option<String>, DbError> {
+    let row = sqlx::query!(r#"WITH RECURSIVE target AS (
+      SELECT target_kind,target_id FROM legacy_redirects WHERE pattern=ANY($1)
+      ORDER BY array_position($1,pattern) LIMIT 1
+    ), chain AS (
+      SELECT a.id,a.parent_id,a.slug::text AS path,ARRAY[a.id] AS visited FROM albums a JOIN target t
+        ON t.target_kind='album' AND t.target_id=a.id WHERE a.deleted_at IS NULL
+      UNION ALL SELECT a.id,a.parent_id,a.slug::text || '/' || c.path,c.visited || a.id
+        FROM albums a JOIN chain c ON c.parent_id=a.id WHERE a.deleted_at IS NULL AND NOT a.id=ANY(c.visited)
+    ) SELECT CASE WHEN t.target_kind='photo' THEN
+      (SELECT '/p/' || p.short_id FROM photos p WHERE p.id=t.target_id AND p.deleted_at IS NULL)
+      ELSE (SELECT '/a/' || path FROM chain WHERE parent_id IS NULL) END AS destination FROM target t"#, patterns)
+      .fetch_optional(conn).await?;
+    let target = row.and_then(|row| row.destination);
+    Ok(target.filter(|path| valid_destination(path)))
+}
+
+/// Accepts only canonical album and photo paths, excluding schemes, slashes and escapes.
+#[must_use]
+pub fn valid_destination(path: &str) -> bool {
+    if let Some(id) = path.strip_prefix("/p/") {
+        return id.parse::<yhotos_core::ShortId>().is_ok();
+    }
+    path.strip_prefix("/a/").is_some_and(|path| {
+        !path.is_empty()
+            && path
+                .split('/')
+                .all(|part| yhotos_core::Slug::new(part).is_ok())
+    })
+}

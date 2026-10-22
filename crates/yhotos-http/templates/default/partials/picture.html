@@ -1,0 +1,7 @@
+<picture>
+{% if !image.hdr_jxl.is_empty() %}<source media="(dynamic-range: high)" type="image/jxl" srcset="{{ image.hdr_jxl }}" sizes="{{ image.sizes }}">{% endif %}
+{% if !image.hdr_avif.is_empty() %}<source media="(dynamic-range: high)" type="image/avif" srcset="{{ image.hdr_avif }}" sizes="{{ image.sizes }}">{% endif %}
+{% if !image.jxl.is_empty() %}<source type="image/jxl" srcset="{{ image.jxl }}" sizes="{{ image.sizes }}">{% endif %}
+{% if !image.avif.is_empty() %}<source type="image/avif" srcset="{{ image.avif }}" sizes="{{ image.sizes }}">{% endif %}
+<img src="{{ image.src }}" srcset="{{ image.jpeg }}" sizes="{{ image.sizes }}" width="{{ image.width }}" height="{{ image.height }}" loading="{{ image.loading }}" decoding="async" alt="{{ image.alt }}" data-thumbhash="{{ image.thumbhash }}">
+</picture>

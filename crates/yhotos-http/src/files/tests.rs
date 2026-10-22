@@ -233,7 +233,10 @@ async fn denied_and_missing_are_byte_identical_and_granted_requests_are_private(
     let response = app.oneshot(denied).await.unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
     assert!(!response.headers().contains_key(header::ETAG));
-    assert_eq!(bytes(response).await, "Not found");
+    assert_eq!(
+        bytes(response).await,
+        bytes(crate::pages::not_found()).await
+    );
 }
 
 #[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
@@ -352,7 +355,10 @@ async fn invalid_hashes_and_selectors_never_reach_database_or_missing_store() {
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::NOT_FOUND);
-            assert_eq!(bytes(response).await, "Not found");
+            assert_eq!(
+                bytes(response).await,
+                bytes(crate::pages::not_found()).await
+            );
         }
     }
     for name in [
@@ -376,7 +382,10 @@ async fn invalid_hashes_and_selectors_never_reach_database_or_missing_store() {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        assert_eq!(bytes(response).await, "Not found");
+        assert_eq!(
+            bytes(response).await,
+            bytes(crate::pages::not_found()).await
+        );
     }
     state.files.rows.run_pending_tasks().await;
     assert_eq!(state.files.rows.entry_count(), 0);
@@ -455,7 +464,10 @@ async fn missing_file_is_concealed_and_logs_error_with_request_id(pool: PgPool) 
         .to_str()
         .unwrap()
         .to_owned();
-    assert_eq!(bytes(response).await, "Not found");
+    assert_eq!(
+        bytes(response).await,
+        bytes(crate::pages::not_found()).await
+    );
     let logs = errors.lock().unwrap();
     assert!(
         logs.iter()
@@ -764,7 +776,10 @@ async fn missing_original_filename_aliases_do_not_grow_metadata_cache(pool: PgPo
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        assert_eq!(bytes(response).await, "Not found");
+        assert_eq!(
+            bytes(response).await,
+            bytes(crate::pages::not_found()).await
+        );
         f.state.files.rows.run_pending_tasks().await;
         assert_eq!(f.state.files.rows.entry_count(), 1);
     }
@@ -1001,4 +1016,17 @@ async fn hdr_variant_paths_are_distinct_and_database_filename_is_sanitized(pool:
         app.oneshot(conditional).await.unwrap().status(),
         StatusCode::OK
     );
+}
+
+// Shares the task-local observer so page and file tests never compete for a
+// process-global tracing subscriber or count another concurrent test's SQL.
+pub(crate) async fn count_queries<T>(future: impl std::future::Future<Output = T>) -> (T, usize) {
+    init_capture();
+    let queries = Arc::new(AtomicUsize::new(0));
+    let events = Events {
+        queries: queries.clone(),
+        errors: Arc::default(),
+    };
+    let value = CAPTURE.scope(events, future).await;
+    (value, queries.load(Ordering::Relaxed))
 }

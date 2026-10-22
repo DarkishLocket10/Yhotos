@@ -49,7 +49,7 @@ fn request(path: &str, ip: &str) -> Request<Body> {
         .insert(ConnectInfo(ip.parse::<SocketAddr>().unwrap()));
     req
 }
-async fn body(response: Response) -> String {
+async fn body(response: axum::response::Response) -> String {
     String::from_utf8(
         response
             .into_body()
@@ -124,9 +124,10 @@ async fn health_is_minimal_and_server_header_is_removed() {
         .unwrap();
     security(server.headers(), false);
 }
-#[tokio::test]
-async fn templates_assets_and_errors_get_nonce_and_security_headers() {
-    let app = public_router(state(false, 600));
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn templates_assets_and_errors_get_nonce_and_security_headers(pool: sqlx::PgPool) {
+    let initial = state(false, 600);
+    let app = public_router(AppState::new(initial.config, pool, initial.store.clone()));
     let home = app
         .clone()
         .oneshot(request("/", "127.0.0.1:1"))

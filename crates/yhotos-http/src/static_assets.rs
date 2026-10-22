@@ -36,9 +36,15 @@ impl Asset {
     }
 }
 static CSS: LazyLock<Option<Asset>> =
-    LazyLock::new(|| Asset::new("app", "css", "app.css", "text/css; charset=utf-8"));
-static JS: LazyLock<Option<Asset>> =
-    LazyLock::new(|| Asset::new("noop", "js", "js/noop.js", "text/javascript; charset=utf-8"));
+    LazyLock::new(|| Asset::new("app", "css", "css/app.css", "text/css; charset=utf-8"));
+static JS: LazyLock<Option<Asset>> = LazyLock::new(|| {
+    Asset::new(
+        "thumbhash",
+        "js",
+        "js/thumbhash.js",
+        "text/javascript; charset=utf-8",
+    )
+});
 
 fn required(asset: Option<&'static Asset>) -> Result<&'static Asset, HttpError> {
     asset.ok_or_else(|| HttpError::Internal(anyhow::anyhow!("embedded asset missing")))

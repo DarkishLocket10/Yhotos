@@ -50,3 +50,7 @@ harness = false
 [[bench]]
 name = "files"
 harness = false
+
+[[bench]]
+name = "pages"
+harness = false
