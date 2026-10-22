@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "ALTER TABLE photos ENABLE TRIGGER preserve_piwigo_metadata",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "877a95d30684009da2dfdad6d92e06a40101c30ff989ec8162db90cbdfe4af83"
+}

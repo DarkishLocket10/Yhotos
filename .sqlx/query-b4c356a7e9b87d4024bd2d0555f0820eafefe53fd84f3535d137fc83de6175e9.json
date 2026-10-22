@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT author FROM photos WHERE id=$1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "author",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "author"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "b4c356a7e9b87d4024bd2d0555f0820eafefe53fd84f3535d137fc83de6175e9"
+}

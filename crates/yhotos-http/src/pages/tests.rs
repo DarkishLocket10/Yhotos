@@ -1716,3 +1716,30 @@ async fn map_place_list_paginates_after_visibility_and_stays_under_budget(pool: 
         assert_eq!(f.get(path).await.status(), StatusCode::NOT_FOUND, "{path}");
     }
 }
+
+#[test]
+fn migration_legacy_forms_reach_stored_aliases() {
+    use axum::http::Uri;
+    for path in [
+        "/picture.php?/12",
+        "/picture.php?/12/category/3",
+        "/index.php?/category/snow-ice",
+        "/index.php?/category/Snow%20%26%20Ice",
+    ] {
+        let uri: Uri = path.parse().unwrap();
+        assert!(
+            super::legacy_patterns(&uri)
+                .unwrap()
+                .iter()
+                .any(|candidate| candidate == path)
+        );
+    }
+    for path in [
+        "/picture.php?/0",
+        "/picture.php?/../x",
+        "/index.php?/category/../x",
+        "/index.php?/category/0",
+    ] {
+        assert!(super::legacy_patterns(&path.parse().unwrap()).is_none());
+    }
+}

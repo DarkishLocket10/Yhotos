@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT tag_id FROM migration_tags WHERE source_id=$1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tag_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "migration_tags",
+            "name": "tag_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "ddad640bdf1fe6f40c147bd2ab43109f82837d08746e8011a2ba3639b2106e3a"
+}

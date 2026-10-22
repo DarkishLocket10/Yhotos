@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE albums a SET slug=($2::text || replace(a.id::text,'-',''))::citext FROM migration_albums m WHERE a.id=m.album_id AND m.source_id=ANY($1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8Array",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "681be5f5d18f715418e3b77b0c3f1953be3ac07bd065bd5dd7b6b74f35c66e03"
+}

@@ -1,0 +1,50 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT CAST(image_id AS SIGNED) AS `image: i64`, CAST(category_id AS SIGNED) AS `category: i64`,\n CAST(rank AS SIGNED) AS `photo_order: i64` FROM piwigo_image_category ORDER BY image_id,category_id\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "image: i64",
+        "type_info": {
+          "type": "Long",
+          "flags": "NOT_NULL | BINARY",
+          "collation": 63,
+          "max_size": 8
+        },
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "category: i64",
+        "type_info": {
+          "type": "Long",
+          "flags": "NOT_NULL | BINARY",
+          "collation": 63,
+          "max_size": 8
+        },
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "photo_order: i64",
+        "type_info": {
+          "type": "Long",
+          "flags": "BINARY",
+          "collation": 63,
+          "max_size": 8
+        },
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "5ad7a735986f713d388d7b2e638a1dfd348daa266b082ca42c633d2591d4e018"
+}

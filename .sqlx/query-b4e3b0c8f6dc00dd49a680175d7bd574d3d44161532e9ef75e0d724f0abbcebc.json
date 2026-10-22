@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO migration_tags(source_id,tag_id) VALUES ($1,$2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b4e3b0c8f6dc00dd49a680175d7bd574d3d44161532e9ef75e0d724f0abbcebc"
+}

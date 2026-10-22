@@ -63,6 +63,18 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+      mariadb:
+        image: mariadb:11.4
+        env:
+          MARIADB_ALLOW_EMPTY_ROOT_PASSWORD: '1'
+          MARIADB_DATABASE: piwigo_fixture
+        ports:
+          - 127.0.0.1:3306:3306
+        options: >-
+          --health-cmd "healthcheck.sh --connect --innodb_initialized"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
     env:
       DATABASE_URL: postgres://yhotos@127.0.0.1:5432/yhotos_test?sslmode=disable
     steps:
@@ -81,7 +93,11 @@ jobs:
       - name: Test gazetteer import against PostgreSQL
         run: python3 -m unittest discover -s deploy/geo -p 'test_*.py'
       - name: Test workspace
-        run: cargo test --workspace --all-features
+        run: cargo test --workspace --exclude yhotos-migrate-piwigo --all-features
+      - name: Test Piwigo migration against disposable MariaDB
+        env:
+          YHOTOS_TEST_MARIADB_URL: mysql://root@127.0.0.1:3306/piwigo_fixture
+        run: cargo test -p yhotos-migrate-piwigo
       - name: Test public build without admin routes
         run: cargo test -p yhotos-config -p yhotos-http -p yhotos-server --no-default-features
 

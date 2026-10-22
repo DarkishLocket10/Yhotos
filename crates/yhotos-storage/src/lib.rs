@@ -7,6 +7,7 @@ mod filesystem;
 mod gc;
 mod hash;
 mod paths;
+mod source;
 mod temp;
 mod uploads;
 
@@ -19,6 +20,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
 pub use gc::GcReport;
 pub use hash::ContentHash;
+pub use source::{SourceFile, SourceTree};
 pub use temp::TempDir;
 pub use uploads::TempId;
 

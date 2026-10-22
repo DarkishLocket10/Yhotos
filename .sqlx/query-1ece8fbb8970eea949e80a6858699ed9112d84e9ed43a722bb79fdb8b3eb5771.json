@@ -1,0 +1,38 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT CAST(image_id AS SIGNED) AS `image: i64`,CAST(tag_id AS SIGNED) AS `tag: i64` FROM piwigo_image_tag ORDER BY image_id,tag_id\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "image: i64",
+        "type_info": {
+          "type": "Long",
+          "flags": "NOT_NULL | BINARY",
+          "collation": 63,
+          "max_size": 8
+        },
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "tag: i64",
+        "type_info": {
+          "type": "Long",
+          "flags": "NOT_NULL | BINARY",
+          "collation": 63,
+          "max_size": 5
+        },
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "1ece8fbb8970eea949e80a6858699ed9112d84e9ed43a722bb79fdb8b3eb5771"
+}

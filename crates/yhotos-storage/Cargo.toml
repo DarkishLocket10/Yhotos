@@ -14,3 +14,4 @@ tempfile.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "io-util"] }
 uuid = { workspace = true, features = ["v4"] }
+nix = { workspace = true, features = ["fs"] }

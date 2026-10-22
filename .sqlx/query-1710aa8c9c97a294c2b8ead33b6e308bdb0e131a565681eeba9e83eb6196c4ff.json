@@ -1,0 +1,135 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT CAST(id AS SIGNED) AS `id: i64`, CAST(id_uppercat AS SIGNED) AS `parent: i64`,\n name, comment AS description, global_rank, CAST(representative_picture_id AS SIGNED) AS `cover: i64`,\n status, permalink AS url_name\nFROM piwigo_categories ORDER BY id\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: i64",
+        "type_info": {
+          "type": "Long",
+          "flags": "NOT_NULL | BINARY",
+          "collation": 63,
+          "max_size": 8
+        },
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "parent: i64",
+        "type_info": {
+          "type": "Long",
+          "flags": "BINARY",
+          "collation": 63,
+          "max_size": 8
+        },
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "name",
+        "type_info": {
+          "type": "VarString",
+          "flags": "NOT_NULL | NO_DEFAULT_VALUE",
+          "collation": 224,
+          "max_size": 1020
+        },
+        "origin": {
+          "Table": {
+            "table": "piwigo_fixture.piwigo_categories",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "description",
+        "type_info": {
+          "type": "Blob",
+          "flags": "BLOB",
+          "collation": 224,
+          "max_size": 262140
+        },
+        "origin": {
+          "Table": {
+            "table": "piwigo_fixture.piwigo_categories",
+            "name": "comment"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "global_rank",
+        "type_info": {
+          "type": "VarString",
+          "flags": "",
+          "collation": 224,
+          "max_size": 1020
+        },
+        "origin": {
+          "Table": {
+            "table": "piwigo_fixture.piwigo_categories",
+            "name": "global_rank"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "cover: i64",
+        "type_info": {
+          "type": "Long",
+          "flags": "BINARY",
+          "collation": 63,
+          "max_size": 8
+        },
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "status",
+        "type_info": {
+          "type": "String",
+          "flags": "NOT_NULL | ENUM",
+          "collation": 224,
+          "max_size": 28
+        },
+        "origin": {
+          "Table": {
+            "table": "piwigo_fixture.piwigo_categories",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "url_name",
+        "type_info": {
+          "type": "VarString",
+          "flags": "",
+          "collation": 224,
+          "max_size": 256
+        },
+        "origin": {
+          "Table": {
+            "table": "piwigo_fixture.piwigo_categories",
+            "name": "permalink"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      true,
+      true,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "1710aa8c9c97a294c2b8ead33b6e308bdb0e131a565681eeba9e83eb6196c4ff"
+}

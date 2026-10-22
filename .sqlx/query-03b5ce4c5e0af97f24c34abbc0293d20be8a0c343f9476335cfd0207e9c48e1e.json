@@ -1,0 +1,43 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT CAST(id AS SIGNED) AS `id: i64`,name FROM piwigo_tags ORDER BY id\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id: i64",
+        "type_info": {
+          "type": "Long",
+          "flags": "NOT_NULL | BINARY",
+          "collation": 63,
+          "max_size": 5
+        },
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": {
+          "type": "VarString",
+          "flags": "NOT_NULL | NO_DEFAULT_VALUE",
+          "collation": 224,
+          "max_size": 1020
+        },
+        "origin": {
+          "Table": {
+            "table": "piwigo_fixture.piwigo_tags",
+            "name": "name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "03b5ce4c5e0af97f24c34abbc0293d20be8a0c343f9476335cfd0207e9c48e1e"
+}

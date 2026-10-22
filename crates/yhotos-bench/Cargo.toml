@@ -90,3 +90,7 @@ harness = false
 [[bench]]
 name = "geo_views"
 harness = false
+
+[[bench]]
+name = "migration_metadata"
+harness = false
