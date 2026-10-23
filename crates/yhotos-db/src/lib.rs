@@ -15,6 +15,7 @@ pub mod jobs;
 pub mod likes;
 pub mod map;
 pub mod mfa;
+pub mod migration;
 pub mod photos;
 pub mod places;
 pub mod redirects;

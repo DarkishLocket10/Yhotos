@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO migration_sources(image_id,category_id,original_hash,photo_id,taken_at,taken_at_local,gps_lat,gps_lon) SELECT 1,1,original_hash,id,'2024-01-02 03:04:05Z','2024-01-02 03:04:05',45.5,-73.6 FROM photos WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "64bb9b9889f47926037988ed3647670b5e002ca575ead52d451dd67bf6a0753d"
+}

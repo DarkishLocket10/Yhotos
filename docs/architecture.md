@@ -143,6 +143,20 @@ Root from config, e.g. `/data`. Layout:
 
 `hash` is lowercase hex BLAKE3 of the file bytes. `yhotos-storage` exposes `put_stream`, `open`, `exists`, `remove`, and `safe_join`; nothing else touches the tree. `safe_join` rejects `..`, absolute components, symlinks, and anything not matching the hash pattern.
 
+Migration sources use `yhotos-storage::SourceTree`, a read-only root directory
+file descriptor, and `open_file(relative) -> SourceFile`. Relative names must be
+UTF-8, nonempty, at most 4096 bytes, and contain no NUL, backslash, empty, `.` or
+`..` components. Absolute paths are rejected. Linux uses `openat2` with
+`RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_XDEV`;
+macOS walks directory descriptors with `openat`, `O_DIRECTORY` and `O_NOFOLLOW`.
+Final files are opened `O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK`, then
+`fstat` must identify a regular file. Nonblocking open prevents a FIFO from
+hanging before rejection. `SourceFile` holds the read-only file and observed
+length; callers stream that handle without reopening a pathname. No source
+operation creates entries or opens files for writing. The mount remains
+read-only during migration; macOS descriptor walking does not prohibit mount
+crossings, so Linux is required for final migration.
+
 Serving: derivatives and originals are opened by hash, never by user-supplied path. The server sends them with `ETag: "<hash>"`, `Cache-Control: public, max-age=31536000, immutable`, `Accept-Ranges`, and `Content-Type` from the derivatives row, not from the file. Range requests are honored for originals and video.
 
 Cleanup: a `gc` job removes derivatives not referenced by any row and tmp files older than 24 hours.

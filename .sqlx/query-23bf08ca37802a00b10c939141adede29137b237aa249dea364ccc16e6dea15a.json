@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM photo_grants g USING migration_sources m WHERE g.photo_id=m.photo_id AND NOT (g.photo_id=ANY($1))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "23bf08ca37802a00b10c939141adede29137b237aa249dea364ccc16e6dea15a"
+}

@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE photos p SET deleted_at=NULL,place_id=CASE WHEN (p.gps_lat,p.gps_lon) IS DISTINCT FROM (coalesce(s.lat,p.gps_lat),coalesce(s.lon,p.gps_lon)) THEN NULL ELSE p.place_id END,album_id=s.album,title=s.title,description=s.description,author=s.author,taken_at=coalesce(s.taken,p.taken_at),taken_at_local=coalesce(s.local,p.taken_at_local),posted_at=s.posted,sort_order=s.ord,visibility=CASE WHEN s.restricted THEN 'restricted'::visibility ELSE 'inherit'::visibility END,gps_lat=coalesce(s.lat,p.gps_lat),gps_lon=coalesce(s.lon,p.gps_lon),original_name=s.name FROM UNNEST($1::uuid[],$2::uuid[],$3::text[],$4::text[],$5::text[],$6::timestamptz[],$7::timestamp[],$8::timestamptz[],$9::int[],$10::bool[],$11::float8[],$12::float8[],$13::text[]) AS s(id,album,title,description,author,taken,local,posted,ord,restricted,lat,lon,name) WHERE p.id=s.id RETURNING p.id,p.gps_lat,p.gps_lon",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "gps_lat",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "gps_lat"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "gps_lon",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "gps_lon"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "UuidArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TimestamptzArray",
+        "TimestampArray",
+        "TimestamptzArray",
+        "Int4Array",
+        "BoolArray",
+        "Float8Array",
+        "Float8Array",
+        "TextArray"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "3436af437d8eb560cca81192d8c9e96dc58ab39f559274277335c42206cc1d53"
+}

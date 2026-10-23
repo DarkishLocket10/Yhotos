@@ -76,6 +76,17 @@ Each entry: threat, then the control, then where it lives in code so reviewers c
 
 ### 4.5 Infrastructure
 
+- **Untrusted Piwigo migration paths.** MariaDB rows, including `piwigo_images.path`,
+  are untrusted. Migration reads every original through storage's `SourceTree`
+  directory capability, never by joining database text onto a path. It rejects
+  traversal, absolute paths, empty/dot components, NULs, backslashes, symlinks and
+  non-regular files. Linux `openat2` additionally forbids mount crossings and magic
+  links; macOS uses a descriptor walk with `O_NOFOLLOW` for development. Every
+  descriptor is read-only, and migration reads from a read-only source mount.
+  The known `./upload/` or `upload/` prefix is removed from a Piwigo path before
+  passing the relative name to `SourceTree`; the file handle is streamed without
+  reopening a path. No source API creates entries or opens files for writing.
+
 - **Bypassing Cloudflare (T6).** Control: Cloudflare Tunnel; router ports 80/443 closed; `server-public` listens only on the container network reached by `cloudflared`. Nothing on the host is port-forwarded for Yhotos.
 - **Admin exposed (A3).** Control: admin container bound to the Tailscale IP only, `admin` feature absent from the public binary, separate Postgres role.
 - **Container breakout / lateral movement (A7).** Control: non-root, read-only root filesystem, dropped capabilities, `no-new-privileges`, seccomp default profile, `/data` read-only in public server, ML container with no internet egress, GPU device only in `ml`.

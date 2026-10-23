@@ -20,6 +20,19 @@ impl Component {
         Ok(Self(value.to_owned()))
     }
 
+    // Source names use the filesystem's UTF-8 alphabet, rather than hash tokens.
+    pub(crate) fn source(value: &str) -> Result<Self, StorageError> {
+        if value.is_empty() || matches!(value, "." | "..") || value.contains(['/', '\\', '\0']) {
+            return Err(StorageError::InvalidName);
+        }
+        Ok(Self(value.to_owned()))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+
     pub(crate) fn area(area: Area) -> Self {
         Self(
             match area {

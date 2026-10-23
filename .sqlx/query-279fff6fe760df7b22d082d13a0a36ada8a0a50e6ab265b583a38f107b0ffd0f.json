@@ -1,0 +1,12 @@
+{
+  "db_name": "MySQL",
+  "query": "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": []
+  },
+  "hash": "279fff6fe760df7b22d082d13a0a36ada8a0a50e6ab265b583a38f107b0ffd0f"
+}

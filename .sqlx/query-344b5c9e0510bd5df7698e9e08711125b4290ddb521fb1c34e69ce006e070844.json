@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tags t SET slug=($2::text || replace(t.id::text,'-',''))::citext FROM migration_tags m WHERE t.id=m.tag_id AND m.source_id=ANY($1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8Array",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "344b5c9e0510bd5df7698e9e08711125b4290ddb521fb1c34e69ce006e070844"
+}

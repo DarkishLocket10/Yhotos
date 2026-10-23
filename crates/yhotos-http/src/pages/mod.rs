@@ -273,7 +273,10 @@ fn positive_id(value: &str) -> bool {
         && value.bytes().all(|b| b.is_ascii_digit())
         && value.parse::<u64>().is_ok_and(|id| id > 0)
 }
-fn legacy_patterns(uri: &Uri) -> Option<Vec<String>> {
+/// Returns bounded, exact legacy lookup candidates without constructing redirect
+/// destinations. Malformed numeric ids and path separators are rejected.
+#[must_use]
+pub fn legacy_patterns(uri: &Uri) -> Option<Vec<String>> {
     if let Some(rest) = uri.path().strip_prefix("/legacy/") {
         if rest.len() > 4096
             || rest.is_empty()
@@ -291,14 +294,26 @@ fn legacy_patterns(uri: &Uri) -> Option<Vec<String>> {
             let (id, slug) = category
                 .split_once('-')
                 .map_or((category, None), |(id, slug)| (id, Some(slug)));
-            if !positive_id(id)
-                || slug.is_some_and(|slug| {
-                    slug.is_empty()
-                        || slug.len() > 1024
-                        || slug.contains(['/', '\\', '?', '#', '&'])
-                        || slug.chars().any(char::is_control)
-                })
-            {
+            if !positive_id(id) {
+                if category
+                    .split('-')
+                    .next()
+                    .is_some_and(|part| part.bytes().all(|b| b.is_ascii_digit()))
+                    || category.is_empty()
+                    || category.len() > 1024
+                    || category.contains(['/', '\\', '?', '#', '&'])
+                    || category.chars().any(char::is_control)
+                {
+                    return None;
+                }
+                return Some(vec![format!("/index.php?{query}"), format!("/{category}")]);
+            }
+            if slug.is_some_and(|slug| {
+                slug.is_empty()
+                    || slug.len() > 1024
+                    || slug.contains(['/', '\\', '?', '#', '&'])
+                    || slug.chars().any(char::is_control)
+            }) {
                 return None;
             }
             let mut patterns = vec![
@@ -313,7 +328,10 @@ fn legacy_patterns(uri: &Uri) -> Option<Vec<String>> {
         }
         "/picture.php" => {
             let rest = query.strip_prefix('/')?;
-            let (id, category) = rest.split_once("/category/")?;
+            let Some((id, category)) = rest.split_once("/category/") else {
+                return positive_id(rest)
+                    .then(|| vec![format!("/picture.php?/{rest}"), format!("/picture/{rest}")]);
+            };
             if !positive_id(id) || !positive_id(category) {
                 return None;
             }

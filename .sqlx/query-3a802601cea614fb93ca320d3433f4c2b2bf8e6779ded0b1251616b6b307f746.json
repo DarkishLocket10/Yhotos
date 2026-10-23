@@ -1,0 +1,48 @@
+{
+  "db_name": "MySQL",
+  "query": "SELECT param,value FROM piwigo_config WHERE param IN ('piwigo_db_version','version')\n",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "param",
+        "type_info": {
+          "type": "VarString",
+          "flags": "NOT_NULL | PRIMARY_KEY | NO_DEFAULT_VALUE",
+          "collation": 224,
+          "max_size": 160
+        },
+        "origin": {
+          "Table": {
+            "table": "piwigo_fixture.piwigo_config",
+            "name": "param"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "value",
+        "type_info": {
+          "type": "Blob",
+          "flags": "BLOB",
+          "collation": 224,
+          "max_size": 262140
+        },
+        "origin": {
+          "Table": {
+            "table": "piwigo_fixture.piwigo_config",
+            "name": "value"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "3a802601cea614fb93ca320d3433f4c2b2bf8e6779ded0b1251616b6b307f746"
+}

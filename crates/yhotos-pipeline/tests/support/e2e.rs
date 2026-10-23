@@ -127,6 +127,34 @@ async fn assert_ready(pool: &PgPool, ingest: &Ingest, id: PhotoId) {
     assert!(jobs.iter().all(|j| j.priority < 0));
 }
 #[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn piwigo_only_gps_survives_ingest_and_schedules_reverse_geocoding(pool: PgPool) {
+    // This PNG has no EXIF GPS. Only the imported values can cause GeoReverse.
+    let (_root, ingest, id) = setup(&pool, "chart-srgb.png").await;
+    let mut conn = pool.acquire().await.unwrap();
+    sqlx::query!("INSERT INTO migration_albums(source_id,album_id) SELECT 1,album_id FROM photos WHERE id=$1", id.0).execute(&mut *conn).await.unwrap();
+    sqlx::query!("INSERT INTO migration_sources(image_id,category_id,original_hash,photo_id,taken_at,taken_at_local,gps_lat,gps_lon) SELECT 1,1,original_hash,id,'2024-01-02 03:04:05Z','2024-01-02 03:04:05',45.5,-73.6 FROM photos WHERE id=$1", id.0).execute(&mut *conn).await.unwrap();
+    drop(conn);
+    ingest.ingest(id).await.unwrap();
+    let photo = sqlx::query!(
+        "SELECT taken_at,taken_at_local,gps_lat,gps_lon FROM photos WHERE id=$1",
+        id.0
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        photo.taken_at,
+        Some(time::macros::datetime!(2024-01-02 03:04:05 UTC))
+    );
+    assert_eq!(
+        photo.taken_at_local,
+        Some(time::macros::datetime!(2024-01-02 03:04:05))
+    );
+    assert_eq!((photo.gps_lat, photo.gps_lon), (Some(45.5), Some(-73.6)));
+    assert_ready(&pool, &ingest, id).await;
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
 async fn real_host_chart_and_orientations_publish_and_rerun_without_changes(pool: PgPool) {
     for name in std::iter::once("chart-srgb.png".to_owned())
         .chain((1..=8).map(|n| format!("orientation-{n}.jpg")))

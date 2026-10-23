@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO migration_albums(source_id,album_id) SELECT 1,album_id FROM photos WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1d9cf499f8f27b2eb6c3b39d2d6f24bc18cf0654fb0020ec050f99c584205de9"
+}
