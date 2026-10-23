@@ -21,7 +21,8 @@ done
 [[ -z "$EFFORT" || "$EFFORT" =~ ^(low|medium|high|xhigh|max)$ ]] || { echo "bad effort" >&2; exit 2; }
 
 if [[ "$HOST" != "local" ]]; then
-  REMOTE_CMD="cd ~/work/Yhotos && git fetch -q origin && scripts/agent-review.sh $(printf %q "$TASK_ID")${EFFORT:+ --effort $EFFORT}"
+  # Run main's copy of this script and prompt (the review host's checkout can be stale).
+  REMOTE_CMD="cd ~/work/Yhotos && git fetch -q origin && git checkout -q --detach origin/main && scripts/agent-review.sh $(printf %q "$TASK_ID")${EFFORT:+ --effort $EFFORT}"
   ssh -o BatchMode=yes "$HOST" "bash -lc $(printf %q "$REMOTE_CMD")" < /dev/null
   exit $?
 fi
