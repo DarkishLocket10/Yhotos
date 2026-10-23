@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "TRUNCATE pg_temp.photos,pg_temp.derivatives,pg_temp.video_renditions",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "80c91633c60a2214df74c74f4b7efa8a66020503bbdc95962d349b3d0d690e51"
+}

@@ -30,6 +30,28 @@ struct Stream {
 struct SideData {
     rotation: Option<i32>,
 }
+// The encoder fixes Main profile, Main tier and 8-bit 4:2:0. Read the actual
+// sequence level from the confined probe rather than guessing from dimensions.
+pub(super) fn av1_level(bytes: &[u8]) -> Result<u8, Failure> {
+    #[derive(Deserialize)]
+    struct RenditionProbe {
+        streams: Vec<Rendition>,
+    }
+    #[derive(Deserialize)]
+    struct Rendition {
+        profile: String,
+        level: u8,
+        pix_fmt: String,
+    }
+    let probe: RenditionProbe = serde_json::from_slice(bytes).map_err(|_| rejected())?;
+    let [stream] = probe.streams.as_slice() else {
+        return Err(rejected());
+    };
+    if stream.profile != "Main" || stream.pix_fmt != "yuv420p" || stream.level > 23 {
+        return Err(rejected());
+    }
+    Ok(stream.level)
+}
 pub(super) fn parse(bytes: &[u8], max_duration: u32) -> Result<Info, Failure> {
     let p: Probe = serde_json::from_slice(bytes).map_err(|_| rejected())?;
     let duration: f64 = p.format.duration.parse().map_err(|_| rejected())?;
@@ -90,6 +112,22 @@ pub(super) fn parse(bytes: &[u8], max_duration: u32) -> Result<Info, Failure> {
 mod tests {
     #![allow(clippy::indexing_slicing)]
     use super::*;
+    #[test]
+    fn rendition_codec_metadata_requires_main_eight_bit_and_a_valid_level() {
+        let valid =
+            serde_json::json!({"streams":[{"profile":"Main","level":12,"pix_fmt":"yuv420p"}]});
+        assert_eq!(av1_level(valid.to_string().as_bytes()).ok(), Some(12));
+        for (field, value) in [
+            ("profile", serde_json::json!("High")),
+            ("level", serde_json::json!(24)),
+            ("pix_fmt", serde_json::json!("yuv420p10le")),
+        ] {
+            let mut invalid = valid.clone();
+            invalid["streams"][0][field] = value;
+            assert!(av1_level(invalid.to_string().as_bytes()).is_err());
+        }
+        assert!(av1_level(br#"{"streams":[]}"#).is_err());
+    }
     #[test]
     fn strict_duration_codecs_streams_dimensions_and_rotation() {
         let valid = serde_json::json!({"format":{"duration":"1.5"},"streams":[{"codec_type":"video","codec_name":"hevc","width":1920,"height":1080,"side_data_list":[{"rotation":90}]}]});

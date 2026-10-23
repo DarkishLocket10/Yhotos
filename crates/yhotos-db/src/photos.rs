@@ -650,6 +650,9 @@ pub struct PageVideo {
     pub hash: String,
     /// Positive duration in milliseconds, bounded by video ingest.
     pub duration_ms: u64,
+    /// AV1 sequence level index; absent for renditions predating level metadata.
+    #[serde(default)]
+    pub av1_level: Option<u8>,
 }
 /// Only page-relevant metadata; no grants, secrets or internal paths are rendered.
 #[derive(Clone, Debug, serde::Deserialize)]

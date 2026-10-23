@@ -46,6 +46,7 @@ struct Output {
     blake3: String,
     width: u32,
     height: u32,
+    av1_level: Option<u8>,
 }
 #[derive(Deserialize)]
 struct Report {
@@ -58,6 +59,7 @@ pub(crate) struct Rendition {
     pub bytes: i64,
     pub width: i32,
     pub height: i32,
+    pub av1_level: Option<i16>,
 }
 pub(crate) struct Assets {
     pub info: Info,
@@ -122,14 +124,15 @@ impl Ingest {
             for name in ["h264.mp4","av1.mp4","poster.jpeg","scrub.jpeg"] {
                 let mut matching=report.outputs.iter().filter(|o|o.name==name); let output=matching.next().ok_or_else(bad)?;
                 if matching.next().is_some() || output.width==0 || output.height==0 {return Err(bad());}
+                if name=="av1.mp4" && output.av1_level.is_none_or(|level| level>23) {return Err(bad());}
                 hashes.push(snapshot_output(dir.path(),&snapshot,name,output).await?);
             }
             let mut renditions=Vec::new();
-            for (index,codec,edge) in [(0,"h264",1080),(1,"av1",2160)] {
+            for (index,codec,long,short) in [(0,"h264",1080,1080),(1,"av1",3840,2160)] {
                 let output=report.outputs.get(index).ok_or_else(bad)?; let hash=*hashes.get(index).ok_or_else(bad)?;
-                if output.width>edge || output.height>edge {return Err(bad());}
+                if !valid_dimensions(output.width,output.height,long,short) {return Err(bad());}
                 self.store.put_video(&hash,codec,&snapshot.path().join(format!("{codec}.mp4"))).await.map_err(|_|retry("video placement failed"))?;
-                renditions.push(Rendition {codec,hash,bytes:i64::try_from(output.bytes).map_err(|_|bad())?,width:i32::try_from(output.width).map_err(|_|bad())?,height:i32::try_from(output.height).map_err(|_|bad())?});
+                renditions.push(Rendition {codec,hash,bytes:i64::try_from(output.bytes).map_err(|_|bad())?,width:i32::try_from(output.width).map_err(|_|bad())?,height:i32::try_from(output.height).map_err(|_|bad())?,av1_level:output.av1_level.map(i16::from)});
             }
             let scrub=*hashes.get(3).ok_or_else(bad)?; let scrub_output=report.outputs.get(3).ok_or_else(bad)?;
             if (scrub_output.width,scrub_output.height)!=(1600,1600) {return Err(bad());}
@@ -218,6 +221,10 @@ impl Ingest {
         Ok(true)
     }
 }
+fn valid_dimensions(width: u32, height: u32, long: u32, short: u32) -> bool {
+    width > 0 && height > 0 && width.max(height) <= long && width.min(height) <= short
+}
+
 async fn snapshot_output(
     dir: &Path,
     snapshot: &TempDir,
@@ -285,4 +292,21 @@ async fn snapshot_output(
         return Err(bad());
     }
     Ok(hash)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_dimensions;
+
+    #[test]
+    fn rendition_bounds_accept_both_four_k_orientations_and_reject_oversize() {
+        for (width, height) in [(3840, 2160), (2160, 3840), (1920, 1080)] {
+            assert!(valid_dimensions(width, height, 3840, 2160));
+        }
+        for (width, height) in [(3842, 2160), (2160, 3842), (2162, 2162), (0, 1080)] {
+            assert!(!valid_dimensions(width, height, 3840, 2160));
+        }
+        assert!(valid_dimensions(1080, 608, 1080, 1080));
+        assert!(!valid_dimensions(1920, 1080, 1080, 1080));
+    }
 }

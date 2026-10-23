@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "ANALYZE video_renditions",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "e74ff98f0e1a4842764af6d61120180c023e837c6b0962d9870a8a0c4af9962a"
+}

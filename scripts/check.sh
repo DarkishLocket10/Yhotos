@@ -30,6 +30,7 @@ run_step video-tools deploy/dev/video-tools.sh
 export YHOTOS_TEST_VIDEO_BIN_DIR="$PWD/target/video-tools"
 
 run_step web npm --prefix web run check
+run_step video-browser npm --prefix web run e2e -- video.spec.ts
 run_step fmt cargo fmt --all --check
 run_step clippy cargo clippy --workspace --all-targets --all-features -- -D warnings
 run_step test cargo test --workspace --all-features

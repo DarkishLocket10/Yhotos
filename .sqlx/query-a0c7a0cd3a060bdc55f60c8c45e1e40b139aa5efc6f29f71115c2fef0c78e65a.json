@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO photos(id,short_id,album_id,title,original_hash,original_name,original_bytes,mime,kind,sort_order)\n      SELECT id,short,$3,'Video',$4,'fixture.mov',1,'video/quicktime','video',n::int\n      FROM unnest($1::uuid[],$2::text[]) WITH ORDINALITY t(id,short,n)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "TextArray",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a0c7a0cd3a060bdc55f60c8c45e1e40b139aa5efc6f29f71115c2fef0c78e65a"
+}

@@ -268,7 +268,7 @@ impl Ingest {
                 .await
                 .map_err(|_| retry("video cleanup failed"))?;
             for r in &video.renditions {
-                sqlx::query!("INSERT INTO video_renditions(id,photo_id,codec,hash,width,height,bytes,duration_ms,hls) VALUES($1,$2,$3,$4,$5,$6,$7,$8,false)",uuid::Uuid::now_v7(),photo.0,r.codec,r.hash.to_string(),r.width,r.height,r.bytes,i64::try_from(video.info.duration_ms).map_err(|_|JobError::Fatal("invalid video duration".into()))?).execute(&mut *tx).await.map_err(|_|retry("video publication failed"))?;
+                sqlx::query!("INSERT INTO video_renditions(id,photo_id,codec,hash,width,height,bytes,duration_ms,hls,av1_level) VALUES($1,$2,$3,$4,$5,$6,$7,$8,false,$9)",uuid::Uuid::now_v7(),photo.0,r.codec,r.hash.to_string(),r.width,r.height,r.bytes,i64::try_from(video.info.duration_ms).map_err(|_|JobError::Fatal("invalid video duration".into()))?,r.av1_level).execute(&mut *tx).await.map_err(|_|retry("video publication failed"))?;
             }
         }
         let mut followups = vec![

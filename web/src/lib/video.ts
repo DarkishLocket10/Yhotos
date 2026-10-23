@@ -1,5 +1,5 @@
 import {safeMediaUrl} from "./media.js";
-export interface VideoData { av1: string; h264: string; duration_ms: number; scrub: string; vtt: string }
+export interface VideoData { av1: string; av1_type: string; h264: string; duration_ms: number; scrub: string; vtt: string }
 /** The sprite and VTT share 100 evenly spaced cells, clamped at the final frame. */
 export function scrubCell(seconds: number, durationMs: number): {x: number; y: number} {
   const index = Math.max(0, Math.min(99, Math.floor(seconds * 100000 / durationMs)));
@@ -23,9 +23,10 @@ export function enhanceVideo(video: HTMLVideoElement, scrub: string, durationMs:
 export function createVideo(data: VideoData, poster: string, width: number, height: number, signal: AbortSignal): HTMLDivElement | null {
   const av1 = safeMediaUrl(data.av1), h264 = safeMediaUrl(data.h264), image = safeMediaUrl(poster), vtt = safeMediaUrl(data.vtt);
   if (!av1 || !h264 || !image || !vtt) return null;
+  if (!/^video\/mp4(?:; codecs="av01\.0\.(?:[01][0-9]|2[0-3])M\.08")?$/.test(data.av1_type)) return null;
   const wrapper = document.createElement("div"); wrapper.className = "video-player";
   const video = document.createElement("video"); video.controls = true; video.preload = "metadata"; video.playsInline = true; video.poster = image; video.width = width; video.height = height;
-  for (const [src, type] of [[av1, 'video/mp4; codecs="av01"'], [h264, 'video/mp4; codecs="avc1.640028"']]) { const source = document.createElement("source"); source.src = src; source.type = type; video.append(source); }
+  for (const [src, type] of [[av1, data.av1_type], [h264, 'video/mp4; codecs="avc1.640028"']]) { const source = document.createElement("source"); source.src = src; source.type = type; video.append(source); }
   const track = document.createElement("track"); track.kind = "metadata"; track.src = vtt; track.label = "Scrub previews"; video.append(track); wrapper.append(video);
   enhanceVideo(video, data.scrub, data.duration_ms, signal);
   signal.addEventListener("abort", () => { video.pause(); video.removeAttribute("src"); video.replaceChildren(); video.load(); wrapper.remove(); }, {once: true});

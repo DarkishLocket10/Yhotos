@@ -245,11 +245,12 @@ pub async fn home_for(
         SELECT a.id,a.title,a.description,a.path,a.sort_order,
           (SELECT count(*) FROM visible_photos p WHERE p.album_id=a.id) AS count,
           (SELECT to_jsonb(p) || jsonb_build_object('thumbhash',encode(p.placeholder,'base64'),
+          'video',CASE WHEN p.kind='video' THEN coalesce((SELECT jsonb_agg(jsonb_build_object('codec',v.codec,'hash',v.hash,'duration_ms',v.duration_ms,'av1_level',v.av1_level) ORDER BY v.codec) FROM video_renditions v WHERE v.photo_id=p.id AND NOT v.hls),'[]'::jsonb) ELSE '[]'::jsonb END,
             'derivatives',coalesce((SELECT jsonb_agg(jsonb_build_object(
              'variant',d.variant,'format',d.format,'hdr',d.hdr,'hash',d.hash,'w',d.width,'h',d.height)
              ORDER BY d.width,d.format,d.hdr) FROM derivatives d WHERE d.photo_id=p.id),'[]'::jsonb))
-           FROM visible_photos p WHERE p.album_id=a.id OR p.id=a.cover_photo_id
-           ORDER BY (p.id=a.cover_photo_id) DESC NULLS LAST,p.sort_order,p.id LIMIT 1) AS cover
+           FROM (SELECT * FROM visible_photos p WHERE p.album_id=a.id OR p.id=a.cover_photo_id
+           ORDER BY (p.id=a.cover_photo_id) DESC NULLS LAST,p.sort_order,p.id LIMIT 1) p) AS cover
         FROM visible_albums a WHERE a.parent_id IS NULL
       ) SELECT coalesce(jsonb_agg(to_jsonb(s) ORDER BY sort_order,id),'[]'::jsonb) AS "payload!" FROM summaries s
     "#, bindings).fetch_one(conn).await?;

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO derivatives(id,photo_id,variant,format,hash,width,height,bytes)\n              SELECT gen_random_uuid(),p.id,d.variant,'jpeg',$1,d.width,d.width*9/16,1000\n              FROM photos p CROSS JOIN (VALUES ('small',640),('medium',1280),('large',2048)) d(variant,width)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2943e97ec994cd86cd61006d0817330e168383f0167f9ee73056730f2e6aff63"
+}

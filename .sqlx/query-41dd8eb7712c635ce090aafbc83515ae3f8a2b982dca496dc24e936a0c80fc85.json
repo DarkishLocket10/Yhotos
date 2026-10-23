@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "CREATE TEMP TABLE video_renditions (LIKE public.video_renditions INCLUDING ALL)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "41dd8eb7712c635ce090aafbc83515ae3f8a2b982dca496dc24e936a0c80fc85"
+}

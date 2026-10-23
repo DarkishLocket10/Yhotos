@@ -1034,6 +1034,7 @@ fn grid_island(
 #[derive(serde::Serialize)]
 struct Video {
     av1: String,
+    av1_type: String,
     h264: String,
     duration_ms: u64,
     scrub: String,
@@ -1064,6 +1065,13 @@ fn video(p: &PagePhoto) -> Option<Video> {
     let scrub = format!("/i/{}/scrub.jpeg", scrub.hash);
     Some(Video {
         av1: format!("/v/{}/av1.mp4", av1.hash),
+        // Main profile, Main tier, 8-bit 4:2:0 are fixed by the encoder. The
+        // sequence level comes from its output, not from the source dimensions.
+        av1_type: match av1.av1_level {
+            Some(level @ 0..=23) => format!("video/mp4; codecs=\"av01.0.{level:02}M.08\""),
+            None => "video/mp4".into(),
+            _ => return None,
+        },
         h264: format!("/v/{}/h264.mp4", h264.hash),
         duration_ms: h264.duration_ms,
         scrub,

@@ -65,6 +65,18 @@ Check the network audit for distinct image URLs rather than a shared image fetch
 Reports and screenshots must remain local under the ignored `reports/` directory.
 These are local lab measurements, not measurements on the production tower.
 
+`scripts/check.sh` also runs task 021's standalone video source-selection browser
+tests, without the fixture server. Install the Chromium version supplied by the
+pinned Playwright package (`cd web && npx playwright install chromium`), or set
+`CHROME_PATH` to an existing Chromium executable. In a restricted workspace, set
+`PLAYWRIGHT_BROWSERS_PATH` to an absolute path under `target/` for both installation
+and checks. If the home directory is read-only, also point `XDG_CONFIG_HOME` and
+`XDG_CACHE_HOME` at writable directories. The tests generate a small AV1 clip
+locally with the pinned static ffmpeg extracted by `deploy/dev/video-tools.sh`,
+and verify actual AV1 selection
+and playback through the photo template and lightbox island. CI installs Chromium
+and runs the same regression tests.
+
 The mobile network regression check opens all three fixture albums in headless
 Chromium at 390×844 with DPR 2 and JavaScript disabled. It records actual image
 responses and rejects requests for any candidate above 640w, including child

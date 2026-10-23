@@ -213,6 +213,11 @@ fn timeout_kills_the_real_ffmpeg_process_group() {
                     {
                         parser = Some(pid.to_owned());
                         if let Some(signal) = signal.take() {
+                            if signal == nix::sys::signal::Signal::SIGXCPU {
+                                // Exercise ffmpeg's installed handler, which exits
+                                // 255, as well as the immediate SIGKILL path below.
+                                std::thread::sleep(Duration::from_millis(150));
+                            }
                             nix::sys::signal::kill(
                                 nix::unistd::Pid::from_raw(pid.parse().unwrap()),
                                 signal,
@@ -240,23 +245,31 @@ fn timeout_kills_the_real_ffmpeg_process_group() {
 
 #[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
 async fn video_job_publishes_sources_poster_sprite_ready_and_inline_playback(pool: sqlx::PgPool) {
+    for (name, width, height) in [
+        ("rotated.mov", 96, 128),
+        ("4k-landscape.mov", 3840, 2160),
+        ("4k-portrait.mov", 2160, 3840),
+    ] {
+        publish_fixture(&pool, name, width, height).await;
+    }
+}
+
+#[allow(clippy::too_many_lines)] // Exercise the complete publication contract for each orientation.
+async fn publish_fixture(pool: &sqlx::PgPool, name: &str, width: i32, height: i32) {
     use yhotos_core::{Slug, access::Visibility};
     use yhotos_db::{albums, photos};
     use yhotos_storage::Store;
     let dir = tempfile::tempdir().unwrap();
     let store = Store::open(dir.path()).unwrap();
     let original = store
-        .put_original(
-            tokio::fs::File::open(fixture("rotated.mov")).await.unwrap(),
-            300_000,
-        )
+        .put_original(tokio::fs::File::open(fixture(name)).await.unwrap(), 300_000)
         .await
         .unwrap();
     let mut conn = pool.acquire().await.unwrap();
     let album = albums::create(
         &mut conn,
         None,
-        &Slug::new("video").unwrap(),
+        &Slug::new(&format!("video-{width}")).unwrap(),
         "Video",
         Visibility::Public,
     )
@@ -268,7 +281,7 @@ async fn video_job_publishes_sources_poster_sprite_ready_and_inline_playback(poo
             album_id: album.id,
             title: "Video fixture".into(),
             original_hash: original.hash.to_string(),
-            original_name: "rotated.mov".into(),
+            original_name: name.into(),
             original_bytes: i64::try_from(original.bytes).unwrap(),
             mime: "video/quicktime".into(),
             kind: photos::MediaKind::Video,
@@ -286,28 +299,37 @@ async fn video_job_publishes_sources_poster_sprite_ready_and_inline_playback(poo
     ingest.video.ffprobe = video_binary("ffprobe");
     ingest.ingest(photo.id).await.unwrap();
     let row = sqlx::query!("SELECT priority FROM jobs WHERE kind='video.transcode'")
-        .fetch_one(&pool)
+        .fetch_one(pool)
         .await
         .unwrap();
     assert!(row.priority < 0);
-    ingest.transcode_video(photo.id, 1).await.unwrap();
+    ingest
+        .transcode_video(photo.id, 1)
+        .await
+        .unwrap_or_else(|error| panic!("{name}: {error:?}"));
     let row = sqlx::query!(
         "SELECT status::text AS \"status!\",width,height FROM photos WHERE id=$1",
         photo.id.0
     )
-    .fetch_one(&pool)
+    .fetch_one(pool)
     .await
     .unwrap();
     assert_eq!(row.status, "ready");
-    assert_eq!((row.width, row.height), (Some(96), Some(128)));
+    assert_eq!((row.width, row.height), (Some(width), Some(height)));
     let rows = sqlx::query!(
-        "SELECT hash,codec,bytes,duration_ms FROM video_renditions WHERE photo_id=$1",
+        "SELECT hash,codec,bytes,duration_ms,width,height,av1_level FROM video_renditions WHERE photo_id=$1",
         photo.id.0
     )
-    .fetch_all(&pool)
+    .fetch_all(pool)
     .await
     .unwrap();
     assert_eq!(rows.len(), 2);
+    let level = rows
+        .iter()
+        .find(|r| r.codec == "av1")
+        .unwrap()
+        .av1_level
+        .unwrap();
     for row in rows {
         let hash = row.hash.parse().unwrap();
         let file = ingest
@@ -328,7 +350,40 @@ async fn video_job_publishes_sources_poster_sprite_ready_and_inline_playback(poo
             file.metadata().await.unwrap().len(),
             u64::try_from(row.bytes).unwrap()
         );
-        assert_eq!(row.duration_ms, 1200);
+        assert_eq!(
+            row.duration_ms,
+            if name.starts_with("4k-") { 1000 } else { 1200 }
+        );
+        let path = dir.path().join(format!("published-{}.mp4", row.codec));
+        let mut file = file;
+        let mut copy = tokio::fs::File::create(&path).await.unwrap();
+        tokio::io::copy(&mut file, &mut copy).await.unwrap();
+        drop(copy);
+        let probe = Command::new(video_binary("ffprobe"))
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_streams",
+                "-of",
+                "json",
+            ])
+            .arg(path)
+            .output()
+            .unwrap();
+        assert!(probe.status.success());
+        let probe: Value = serde_json::from_slice(&probe.stdout).unwrap();
+        assert_eq!(probe["streams"][0]["width"], row.width);
+        assert_eq!(probe["streams"][0]["height"], row.height);
+        if row.codec == "av1" {
+            assert_eq!((row.width, row.height), (width, height));
+            assert_eq!(probe["streams"][0]["level"], level);
+            assert_eq!(probe["streams"][0]["profile"], "Main");
+            assert_eq!(probe["streams"][0]["pix_fmt"], "yuv420p");
+        } else {
+            assert!(row.width.max(row.height) <= 1080);
+        }
     }
     let mut conn = pool.acquire().await.unwrap();
     let page = photos::page(
@@ -354,6 +409,7 @@ async fn video_job_publishes_sources_poster_sprite_ready_and_inline_playback(poo
     .unwrap();
     assert!(html.contains("<video controls preload=\"metadata\" playsinline poster="));
     assert!(html.find("/av1.mp4").unwrap() < html.find("/h264.mp4").unwrap());
+    assert!(html.contains(&format!("av01.0.{level:02}M.08")));
     assert!(html.contains("/scrub.vtt"));
     assert!(page.photo.derivatives.iter().any(|d| d.variant == "scrub"));
     assert!(page.photo.derivatives.iter().any(|d| d.format == "avif"));
@@ -363,7 +419,7 @@ async fn video_job_publishes_sources_poster_sprite_ready_and_inline_playback(poo
         "SELECT count(*) AS \"count!\" FROM video_renditions WHERE photo_id=$1",
         photo.id.0
     )
-    .fetch_one(&pool)
+    .fetch_one(pool)
     .await
     .unwrap();
     assert_eq!(count.count, 2);

@@ -53,6 +53,7 @@ struct Invocation {
 #[derive(Clone, Copy, Deserialize, Serialize)]
 enum Stage {
     Probe,
+    Av1Probe,
     H264,
     Av1,
     Poster,
@@ -65,6 +66,7 @@ struct Output {
     blake3: String,
     width: u32,
     height: u32,
+    av1_level: Option<u8>,
 }
 #[derive(Serialize)]
 struct Report {
@@ -222,11 +224,13 @@ fn bounded(
         return Err(rejected());
     }
     // RLIMIT_CPU can terminate the parser before the wall watchdog fires.
-    // Preserve the same retryable timeout contract for either CPU-limit signal.
+    // ffmpeg may catch SIGXCPU and exit 255 instead of reporting a signal.
+    // Both forms of interruption must preserve the retryable timeout contract.
     if matches!(
         status.signal(),
         Some(nix::libc::SIGXCPU | nix::libc::SIGKILL)
-    ) {
+    ) || status.code() == Some(255)
+    {
         return Err(Failure(4, "video timeout"));
     }
     if !status.success() {
@@ -258,7 +262,7 @@ pub(super) fn run() -> Result<(), Failure> {
             .ok_or(Failure(4, "video timeout"))?;
         bounded(
             cmd,
-            if matches!(stage, Stage::Probe) {
+            if matches!(stage, Stage::Probe | Stage::Av1Probe) {
                 remaining.min(Duration::from_secs(20))
             } else {
                 remaining
@@ -305,6 +309,11 @@ pub(super) fn run() -> Result<(), Failure> {
                 blake3: hash.finalize().to_hex().to_string(),
                 width: dimensions.0,
                 height: dimensions.1,
+                av1_level: if matches!(stage, Stage::Av1) {
+                    Some(probe::av1_level(&call(Stage::Av1Probe, None)?)?)
+                } else {
+                    None
+                },
             });
         }
     }

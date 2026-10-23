@@ -180,6 +180,7 @@ pub async fn page_for(
         UNION SELECT id FROM (SELECT id FROM selected WHERE $9::bool ORDER BY date DESC,id LIMIT 60 OFFSET $10) t
       ), decorated AS (
         SELECT s.id,jsonb_build_object('photo',to_jsonb(s)||jsonb_build_object('thumbhash',encode(s.placeholder,'base64'),
+          'video',CASE WHEN s.kind='video' THEN coalesce((SELECT jsonb_agg(jsonb_build_object('codec',v.codec,'hash',v.hash,'duration_ms',v.duration_ms,'av1_level',v.av1_level) ORDER BY v.codec) FROM video_renditions v WHERE v.photo_id=s.id AND NOT v.hls),'[]'::jsonb) ELSE '[]'::jsonb END,
           'derivatives',coalesce((SELECT jsonb_agg(jsonb_build_object('variant',d.variant,'format',d.format,'hdr',d.hdr,'hash',d.hash,'w',d.width,'h',d.height) ORDER BY d.width,d.format,d.hdr)
             FROM derivatives d WHERE d.photo_id=s.id),'[]'::jsonb)), 'posted',s.taken_at IS NULL) AS value
         FROM selected s JOIN wanted w ON w.id=s.id

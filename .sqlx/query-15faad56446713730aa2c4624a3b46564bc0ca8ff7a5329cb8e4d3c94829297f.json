@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE photos SET kind='image' WHERE album_id=$1 AND id<>$2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "15faad56446713730aa2c4624a3b46564bc0ca8ff7a5329cb8e4d3c94829297f"
+}

@@ -43,6 +43,12 @@ jobs:
           npm run check
       - name: Test offline gazetteer importer
         run: python3 -m unittest discover -s deploy/geo -p 'test_*.py'
+      - name: Test browser video source selection
+        run: |
+          deploy/dev/video-tools.sh
+          cd web
+          npx playwright install --with-deps chromium
+          npm run e2e -- video.spec.ts
       - name: Test bundled islands
         run: node --test crates/yhotos-http/tests/passkey_redirect.mjs crates/yhotos-http/tests/upload.mjs
 

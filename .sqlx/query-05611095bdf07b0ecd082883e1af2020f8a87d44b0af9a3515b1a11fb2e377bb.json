@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT hash,codec,bytes,duration_ms FROM video_renditions WHERE photo_id=$1",
+  "query": "SELECT hash,codec,bytes,duration_ms,width,height,av1_level FROM video_renditions WHERE photo_id=$1",
   "describe": {
     "columns": [
       {
@@ -46,6 +46,39 @@
             "name": "duration_ms"
           }
         }
+      },
+      {
+        "ordinal": 4,
+        "name": "width",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "video_renditions",
+            "name": "width"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "height",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "video_renditions",
+            "name": "height"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "av1_level",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "video_renditions",
+            "name": "av1_level"
+          }
+        }
       }
     ],
     "parameters": {
@@ -57,8 +90,11 @@
       false,
       false,
       false,
-      false
+      false,
+      false,
+      false,
+      true
     ]
   },
-  "hash": "b430dfd47603763a744732dd5b6bbf0af59b3b8b713b6cd8655fb1e17987d411"
+  "hash": "05611095bdf07b0ecd082883e1af2020f8a87d44b0af9a3515b1a11fb2e377bb"
 }

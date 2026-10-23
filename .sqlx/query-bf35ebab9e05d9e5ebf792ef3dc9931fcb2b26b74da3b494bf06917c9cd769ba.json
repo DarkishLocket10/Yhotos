@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "CREATE TEMP VIEW video_renditions AS\n      SELECT id,created_at,photo_id,codec,hash,width,height,bytes,hls,av1_level,\n        duration_ms + 0*nextval('pg_temp.video_payload_reads') AS duration_ms\n      FROM public.video_renditions",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "bf35ebab9e05d9e5ebf792ef3dc9931fcb2b26b74da3b494bf06917c9cd769ba"
+}

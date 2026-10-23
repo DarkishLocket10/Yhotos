@@ -15,7 +15,7 @@ pub(super) fn av1_dimensions(info: &Info) -> (u32, u32) {
 }
 #[allow(clippy::too_many_lines)] // Keep the complete parser command policy together for review.
 pub(super) fn build(job: &Job, stage: Stage, info: Option<&Info>) -> Result<Command, Failure> {
-    let probe = matches!(stage, Stage::Probe);
+    let probe = matches!(stage, Stage::Probe | Stage::Av1Probe);
     let mut cmd = Command::new(if probe {
         &job.settings.ffprobe
     } else {
@@ -41,7 +41,11 @@ pub(super) fn build(job: &Job, stage: Stage, info: Option<&Info>) -> Result<Comm
         "-format_whitelist",
         "mov",
         "-codec_whitelist",
-        "h264,hevc,aac,pcm_s16le,pcm_s24le,alac",
+        if matches!(stage, Stage::Av1Probe) {
+            "av1,libdav1d,aac"
+        } else {
+            "h264,hevc,aac,pcm_s16le,pcm_s24le,alac"
+        },
         "-probesize",
         "5000000",
         "-analyzeduration",
@@ -50,7 +54,18 @@ pub(super) fn build(job: &Job, stage: Stage, info: Option<&Info>) -> Result<Comm
         "mov",
     ]);
     if probe {
-        cmd.arg(&job.input).args(["-show_entries", "format=duration:stream=codec_type,codec_name,width,height,color_transfer:stream_side_data=rotation", "-of", "json"]);
+        if matches!(stage, Stage::Av1Probe) {
+            cmd.arg(job.out_dir.join("av1.mp4")).args([
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=profile,level,pix_fmt",
+                "-of",
+                "json",
+            ]);
+        } else {
+            cmd.arg(&job.input).args(["-show_entries", "format=duration:stream=codec_type,codec_name,width,height,color_transfer:stream_side_data=rotation", "-of", "json"]);
+        }
         return Ok(cmd);
     }
     let info = info.ok_or_else(rejected)?;
@@ -108,7 +123,7 @@ pub(super) fn build(job: &Job, stage: Stage, info: Option<&Info>) -> Result<Comm
                     "-preset",
                     "8",
                     "-svtav1-params",
-                    &format!("lp={}", job.settings.threads),
+                    &format!("lp={}:tier=0", job.settings.threads),
                 ]);
             }
             cmd.args([
@@ -149,7 +164,7 @@ pub(super) fn build(job: &Job, stage: Stage, info: Option<&Info>) -> Result<Comm
             cmd.args(["-an", "-vf", &format!("fps=100000/{}:start_time=0,{tone}scale=160:160:force_original_aspect_ratio=decrease,pad=160:160:(ow-iw)/2:(oh-ih)/2,tile=10x10:nb_frames=100:padding=0:margin=0", info.duration_ms), "-frames:v", "1", "-c:v", "mjpeg", "-f", "image2", "-update", "1"]);
             "scrub.jpeg"
         }
-        Stage::Probe => return Err(rejected()),
+        Stage::Probe | Stage::Av1Probe => return Err(rejected()),
     };
     cmd.arg(job.out_dir.join(name));
     Ok(cmd)

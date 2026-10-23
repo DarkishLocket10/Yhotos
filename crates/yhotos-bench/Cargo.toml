@@ -99,3 +99,7 @@ harness = false
 [[bench]]
 name = "video"
 harness = false
+
+[[bench]]
+name = "album_pagination"
+harness = false
