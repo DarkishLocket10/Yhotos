@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE derivatives SET hash=$2 WHERE photo_id=$1 AND variant='medium'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c0611eeb16bd2cecf3ac3201a9049772d649ca87e28930586dbe7af78c27e6ff"
+}

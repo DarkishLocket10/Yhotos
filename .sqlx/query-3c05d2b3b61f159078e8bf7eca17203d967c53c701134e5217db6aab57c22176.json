@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO photos(id,short_id,album_id,title,original_hash,original_name,original_bytes,mime,kind,status) SELECT id,short_id,$3,'sunset photo '||n,repeat('a',64),'fixture.jpg',1,'image/jpeg','image','ready' FROM unnest($1::uuid[],$2::text[]) WITH ORDINALITY AS fixture(id,short_id,n)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "TextArray",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3c05d2b3b61f159078e8bf7eca17203d967c53c701134e5217db6aab57c22176"
+}

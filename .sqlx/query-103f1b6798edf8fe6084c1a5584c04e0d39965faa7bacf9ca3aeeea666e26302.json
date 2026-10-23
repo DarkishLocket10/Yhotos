@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO faces(id,photo_id,bbox,quality,person_id,model) VALUES($1,$2,ARRAY[0.1,0.1,0.5,0.5],0.9,$3,'fixture')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "103f1b6798edf8fe6084c1a5584c04e0d39965faa7bacf9ca3aeeea666e26302"
+}

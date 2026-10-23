@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO places(id,name,country,lat,lon) SELECT id,name,'CA',0,0 FROM unnest($1::uuid[],$2::text[]) f(id,name)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c141b180e0fc8edf1904e2be8d83a25851963f4d31b91aea9e9af988c180dfb4"
+}

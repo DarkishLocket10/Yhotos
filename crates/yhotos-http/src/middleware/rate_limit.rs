@@ -43,7 +43,7 @@ fn class(path: &str) -> Class {
         || (path.starts_with("/s/") && !path.starts_with("/s/photos/"))
     {
         Class::Auth
-    } else if matches!(path, "/search" | "/zip")
+    } else if matches!(path, "/search" | "/api/v1/search" | "/zip")
         || path.starts_with("/o/")
         || path.starts_with("/v/")
     {
