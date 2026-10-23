@@ -57,6 +57,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             .connect_with(options),
     )?;
     let album = AlbumId::new();
+    let person = uuid::Uuid::now_v7();
     let photo_ids: Vec<_> = (0..10_000).map(|_| PhotoId::new()).collect();
     let short_ids: Vec<_> = photo_ids
         .iter()
@@ -67,7 +68,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         sqlx::query!("INSERT INTO albums(id,slug,title) VALUES($1,$2,'Synthetic search benchmark')",album.0,format!("search-bench-{}",album.0)).execute(&pool).await?;
         sqlx::query!("INSERT INTO photos(id,short_id,album_id,title,original_hash,original_name,original_bytes,mime,kind,status) SELECT id,short_id,$3,'sunset photo '||n,repeat('a',64),'fixture.jpg',1,'image/jpeg','image','ready' FROM unnest($1::uuid[],$2::text[]) WITH ORDINALITY AS fixture(id,short_id,n)",&photo_ids,&short_ids,album.0).execute(&pool).await?;
         sqlx::query!("INSERT INTO embeddings(photo_id,model,vector) SELECT p.id,$2,ARRAY(SELECT random()::real FROM generate_series(1,768) g WHERE p.id IS NOT NULL)::vector FROM photos p WHERE p.album_id=$1",album.0,search::EMBED_MODEL).execute(&pool).await?;
-        sqlx::query!("ANALYZE photos,embeddings,albums,ocr_text,tags,photo_tags").execute(&pool).await?;
+        sqlx::query!("INSERT INTO persons(id,name) VALUES($1,'Search benchmark person')",person).execute(&pool).await?;
+        sqlx::query!("INSERT INTO faces(id,photo_id,bbox,quality,person_id,model) SELECT id,id,ARRAY[0.1,0.1,0.5,0.5],0.9,$2,'fixture' FROM unnest($1::uuid[]) id",&photo_ids,person).execute(&pool).await?;
+        sqlx::query!("ANALYZE photos,embeddings,albums,ocr_text,tags,photo_tags,faces,persons").execute(&pool).await?;
         Ok::<_,sqlx::Error>(())
     })?;
     let vector = format!("[1,{}]", vec!["0"; 767].join(","));
@@ -86,6 +89,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     criterion.bench_function("search/10k/fused", |b| {
         b.iter(|| black_box(runtime.block_on(fused(&pool, &vector))));
     });
+    let mut conn = runtime.block_on(pool.acquire())?;
+    let first = runtime.block_on(yhotos_db::faces::photos(&mut conn, person, 1))?;
+    if first.photos.len() != 60 || first.total != photo_ids.len() {
+        return Err("person benchmark returned incomplete results".into());
+    }
+    criterion.bench_function("search/person/10k/first_page", |b| {
+        b.iter(|| black_box(runtime.block_on(yhotos_db::faces::photos(&mut conn, person, 1))));
+    });
+    criterion.bench_function("search/person/10k/page_100", |b| {
+        b.iter(|| black_box(runtime.block_on(yhotos_db::faces::photos(&mut conn, person, 100))));
+    });
+    runtime.block_on(async { drop(conn) });
     let plan=runtime.block_on(async {
         sqlx::query_scalar!(r#"EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) SELECT photo_id FROM embeddings ORDER BY vector <=> $1::text::vector LIMIT 200"#,vector).fetch_one(&pool).await
     })?;
@@ -95,6 +110,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             .execute(&pool)
             .await?;
         sqlx::query!("DELETE FROM albums WHERE id=$1", album.0)
+            .execute(&pool)
+            .await?;
+        sqlx::query!("DELETE FROM persons WHERE id=$1", person)
             .execute(&pool)
             .await?;
         Ok::<_, sqlx::Error>(())

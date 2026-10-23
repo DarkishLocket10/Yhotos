@@ -42,5 +42,37 @@
   "pre_merge_criterion_fused": "20.095 ms 20.769 ms 21.951 ms",
   "post_merge_loaded_p99_ms": 63.424266,
   "post_merge_benchmark_context": "Measured after repository, public-feature, Python and fuzz checks completed, with VACUUM ANALYZE before seeding 10k ready photos. The separate loaded measurement overlapped validation runs and is recorded for comparison only.",
-  "post_merge_benchmark_command": "SQLX_OFFLINE=true CARGO_BUILD_JOBS=2 cargo bench -p yhotos-bench --bench search -- --sample-size 10 --measurement-time 1 --warm-up-time 1"
+  "post_merge_benchmark_command": "SQLX_OFFLINE=true CARGO_BUILD_JOBS=2 cargo bench -p yhotos-bench --bench search -- --sample-size 10 --measurement-time 1 --warm-up-time 1",
+  "review_revision": {
+    "fixture": "10000 ready photos with random 768-dimensional embeddings and one assigned face per photo; one non-hidden person; no derivative or OCR rows.",
+    "command": "SQLX_OFFLINE=true CARGO_BUILD_JOBS=2 cargo bench -p yhotos-bench --bench search -- --sample-size 10 --measurement-time 1 --warm-up-time 1",
+    "fused_p99_before_ms": 28.667231,
+    "fused_p99_after_ms": 28.155814,
+    "fused_warm_samples": 1000,
+    "fused_criterion_after_ms": [
+      14.988,
+      15.356,
+      15.684
+    ],
+    "person_first_page_before_ms": [
+      3.4444,
+      3.455,
+      3.4723
+    ],
+    "person_first_page_after_ms": [
+      10.076,
+      10.29,
+      10.597
+    ],
+    "person_page_100_after_ms": [
+      11.663,
+      11.953,
+      12.264
+    ],
+    "person_scope": "One database round trip and deserialization. After includes the exact 10000-photo total, with metadata limited to 60 photos per page; before permanently stopped at 60 without a total.",
+    "fused_scope": "Three concurrent candidate queries and reciprocal rank fusion; query embedding and HTML rendering excluded.",
+    "hnsw_distance_scan_index": "embeddings_vector",
+    "hnsw_distance_scan_rows": 200,
+    "hnsw_distance_scan_execution_ms": 4.385
+  }
 }

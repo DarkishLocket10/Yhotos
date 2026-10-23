@@ -2792,3 +2792,197 @@ async fn face_previews_require_admin_and_exclude_hidden_cached_faces(pool: PgPoo
             .await
     );
 }
+
+#[cfg(feature = "admin")]
+async fn seed_admin_gallery(pool: &PgPool, count: usize) -> Vec<yhotos_core::PhotoId> {
+    use yhotos_core::{PhotoId, ShortId};
+    let album = Uuid::now_v7();
+    sqlx::query!(
+        "INSERT INTO albums(id,slug,title,visibility) VALUES($1,$2,'Admin gallery','restricted')",
+        album,
+        format!("admin-gallery-{album}")
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    let mut photos: Vec<_> = (0..count).map(|_| PhotoId::new()).collect();
+    photos.sort_unstable();
+    let ids: Vec<_> = photos.iter().map(|id| id.0).collect();
+    let shorts: Vec<_> = photos
+        .iter()
+        .map(|id| ShortId::from_photo_id(*id).to_string())
+        .collect();
+    sqlx::query!("INSERT INTO photos(id,short_id,album_id,title,original_hash,original_name,original_bytes,mime,kind,status,visibility,width,height) SELECT id,short,$3,'Person photo',repeat('a',64),'fixture.jpg',1,'image/jpeg','image','ready','restricted',640,480 FROM unnest($1::uuid[],$2::text[]) AS p(id,short)",&ids,&shorts,album).execute(pool).await.unwrap();
+    photos
+}
+
+#[cfg(feature = "admin")]
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn admin_gallery_mutations_require_header_and_admin_origin(pool: PgPool) {
+    let mut client = Client::new(pool.clone(), true).await;
+    let (_, name, password) = client.seed(false, true).await;
+    client.login(&name, &password, true).await;
+    client.enroll_totp().await;
+    let photo = seed_admin_gallery(&pool, 1).await[0];
+    let short = yhotos_core::ShortId::from_photo_id(photo);
+    let cookie = client
+        .jar
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    // All state-changing gallery API routes use the same listener-bound proof.
+    for (method, action, liked, flagged) in [
+        ("POST", "like", true, false),
+        ("DELETE", "like", false, false),
+        ("POST", "flag", false, true),
+    ] {
+        let path = format!("/api/v1/photos/{short}/{action}");
+        let request = || {
+            Request::builder()
+                .method(method)
+                .uri(&path)
+                .header(header::COOKIE, &cookie)
+                .header(header::ORIGIN, &client.origin)
+                .header("sec-fetch-site", "same-origin")
+                .header("x-requested-with", "yhotos")
+                .body(Body::empty())
+                .unwrap()
+        };
+        for invalid in [
+            "missing header",
+            "wrong header",
+            "public origin",
+            "foreign origin",
+            "cross-site",
+            "same-site",
+            "duplicate origin",
+            "duplicate site",
+            "duplicate header",
+        ] {
+            let mut req = request();
+            match invalid {
+                "missing header" => {
+                    req.headers_mut().remove("x-requested-with");
+                }
+                "wrong header" => {
+                    req.headers_mut()
+                        .insert("x-requested-with", "other".parse().unwrap());
+                }
+                "public origin" | "foreign origin" => {
+                    let origin = if invalid == "public origin" {
+                        "https://example.test"
+                    } else {
+                        "https://evil.test"
+                    };
+                    req.headers_mut()
+                        .insert(header::ORIGIN, origin.parse().unwrap());
+                }
+                "cross-site" | "same-site" => {
+                    req.headers_mut()
+                        .insert("sec-fetch-site", invalid.parse().unwrap());
+                }
+                "duplicate origin" => {
+                    req.headers_mut()
+                        .append(header::ORIGIN, client.origin.parse().unwrap());
+                }
+                "duplicate site" => {
+                    req.headers_mut()
+                        .append("sec-fetch-site", "same-origin".parse().unwrap());
+                }
+                _ => {
+                    req.headers_mut()
+                        .append("x-requested-with", "yhotos".parse().unwrap());
+                }
+            }
+            req.extensions_mut().insert(ConnectInfo(client.network));
+            let response = client.app.clone().oneshot(req).await.unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::FORBIDDEN,
+                "{method} {path}: {invalid}"
+            );
+        }
+        let mut req = request();
+        req.extensions_mut().insert(ConnectInfo(client.network));
+        let response = client.app.clone().oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{method} {path}");
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["liked"], liked);
+        assert_eq!(value["flagged"], flagged);
+    }
+}
+
+#[cfg(feature = "admin")]
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn admin_person_search_paginates_all_matching_photos(pool: PgPool) {
+    let mut client = Client::new(pool.clone(), true).await;
+    let (_, name, password) = client.seed(false, true).await;
+    client.login(&name, &password, true).await;
+    client.enroll_totp().await;
+    let photos = seed_admin_gallery(&pool, 65).await;
+    let person = Uuid::now_v7();
+    sqlx::query!(
+        "INSERT INTO persons(id,name) VALUES($1,'Pagination person')",
+        person
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let ids: Vec<_> = photos.iter().map(|p| p.0).collect();
+    // Multiple matching faces in a photo must not duplicate it across pages.
+    for _ in 0..2 {
+        sqlx::query!("INSERT INTO faces(id,photo_id,bbox,quality,person_id,model) SELECT gen_random_uuid(),id,ARRAY[0.1,0.1,0.5,0.5],0.9,$2,'fixture' FROM unnest($1::uuid[]) id",&ids,person).execute(&pool).await.unwrap();
+    }
+    let photo_links = |body: &str| {
+        body.split("href=\"/p/")
+            .skip(1)
+            .map(|s| s.split(['"', '?']).next().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let expected: Vec<_> = photos
+        .iter()
+        .map(|p| yhotos_core::ShortId::from_photo_id(*p).to_string())
+        .collect();
+    for base in [
+        "/admin/people/search?q=person:%22Pagination%20person%22".to_owned(),
+        format!("/admin/people/search?q=person:{person}"),
+        format!("/admin/people/{person}"),
+    ] {
+        let first = client.get(&base).await;
+        assert_eq!(first.status, StatusCode::OK, "{base}");
+        assert_eq!(first.headers[header::CACHE_CONTROL], "no-store");
+        assert!(first.body.contains("Top 65 matches"));
+        assert_eq!(photo_links(&first.body), expected[..60]);
+        assert!(!first.body.contains("rel=\"prev\""));
+        let next = first.body.split_once("rel=\"next\" href=\"").unwrap().1;
+        let next = next.split_once('"').unwrap().0;
+        assert!(next.starts_with("/admin/people/search?q=person%3A"));
+        let next = next.replace("&amp;", "&").replace("&#38;", "&");
+        assert!(next.ends_with("&page=2"));
+        let second = client.get(&next).await;
+        assert_eq!(second.status, StatusCode::OK);
+        assert_eq!(photo_links(&second.body), expected[60..]);
+        assert!(!second.body.contains("rel=\"next\""));
+        let previous = second.body.split_once("rel=\"prev\" href=\"").unwrap().1;
+        let previous = previous.split_once('"').unwrap().0;
+        let previous = previous.replace("&amp;", "&").replace("&#38;", "&");
+        let back = client.get(&previous).await;
+        assert_eq!(back.status, StatusCode::OK);
+        assert_eq!(photo_links(&back.body), expected[..60]);
+        let separator = if base.contains('?') { '&' } else { '?' };
+        for page in [0_u32, 3, u32::MAX] {
+            assert_eq!(
+                client
+                    .get(&format!("{base}{separator}page={page}"))
+                    .await
+                    .status,
+                StatusCode::NOT_FOUND
+            );
+        }
+        let second_direct = client.get(&format!("{base}{separator}page=2")).await;
+        assert_eq!(second_direct.status, StatusCode::OK);
+        assert_eq!(photo_links(&second_direct.body), expected[60..]);
+    }
+}

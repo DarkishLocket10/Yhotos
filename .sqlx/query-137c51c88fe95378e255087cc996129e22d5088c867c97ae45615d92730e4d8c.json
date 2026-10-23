@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH matches AS MATERIALIZED (\n      SELECT p.id FROM photos p WHERE p.deleted_at IS NULL AND p.status='ready' AND EXISTS (\n        SELECT FROM faces f JOIN persons person ON person.id=f.person_id\n        WHERE f.photo_id=p.id AND NOT person.hidden AND (person.id=$1 OR lower(person.name)=lower($2)))\n      ), photo_page AS (\n        SELECT p.* FROM photos p JOIN matches m ON m.id=p.id ORDER BY p.id LIMIT 60 OFFSET $3\n      ) SELECT (SELECT count(*) FROM matches) AS \"total!\",\n      coalesce(jsonb_agg(to_jsonb(p) || jsonb_build_object('thumbhash',encode(p.placeholder,'base64'),\n      'derivatives',coalesce((SELECT jsonb_agg(jsonb_build_object('variant',d.variant,'format',d.format,\n      'hdr',d.hdr,'hash',d.hash,'w',d.width,'h',d.height) ORDER BY d.width,d.format,d.hdr)\n      FROM derivatives d WHERE d.photo_id=p.id),'[]'::jsonb)) ORDER BY p.id),'[]'::jsonb) AS \"photos!\"\n      FROM photo_page p",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "total!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "photos!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "137c51c88fe95378e255087cc996129e22d5088c867c97ae45615d92730e4d8c"
+}

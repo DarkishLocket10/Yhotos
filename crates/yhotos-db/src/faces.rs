@@ -86,46 +86,64 @@ pub async fn merge(conn: &mut PgConnection, source: Uuid, target: Uuid) -> Resul
         .await?;
     Ok(())
 }
-/// Returns up to sixty ready private photos for a non-hidden cluster.
+/// A stable page of up to sixty distinct ready photos, with the full match count.
+pub struct PhotoPage {
+    /// Matching photos in identifier order, after pagination.
+    pub photos: Vec<crate::photos::PagePhoto>,
+    /// Count before pagination, excluding hidden identities and deleted photos.
+    pub total: usize,
+}
+
+/// Returns a sixty-photo page for a non-hidden cluster.
 ///
 /// # Errors
-/// Returns database failures.
+/// Rejects page zero and returns malformed metadata or database failures.
 pub async fn photos(
     conn: &mut PgConnection,
     person: Uuid,
-) -> Result<Vec<crate::photos::PagePhoto>, DbError> {
-    find(conn, Some(person), None).await
+    page: u32,
+) -> Result<PhotoPage, DbError> {
+    find(conn, Some(person), None, page).await
 }
 
 /// Finds a named person only on the admin listener; hidden people never match.
 ///
 /// # Errors
-/// Returns invalid names or database failures.
+/// Rejects invalid names or page zero and returns malformed metadata or database failures.
 pub async fn named_photos(
     conn: &mut PgConnection,
     name: &str,
-) -> Result<Vec<crate::photos::PagePhoto>, DbError> {
+    page: u32,
+) -> Result<PhotoPage, DbError> {
     if name.is_empty() || name.chars().count() > 80 || name.chars().any(char::is_control) {
         return Err(DbError::InvalidInput);
     }
-    find(conn, None, Some(name)).await
+    find(conn, None, Some(name), page).await
 }
 async fn find(
     conn: &mut PgConnection,
     id: Option<Uuid>,
     name: Option<&str>,
-) -> Result<Vec<crate::photos::PagePhoto>, DbError> {
-    let rows=sqlx::query!(r#"SELECT to_jsonb(p) || jsonb_build_object('thumbhash',encode(p.placeholder,'base64'),
-      'derivatives',coalesce((SELECT jsonb_agg(jsonb_build_object('variant',d.variant,'format',d.format,
-      'hdr',d.hdr,'hash',d.hash,'w',d.width,'h',d.height) ORDER BY d.width,d.format,d.hdr)
-      FROM derivatives d WHERE d.photo_id=p.id),'[]'::jsonb)) AS "payload!"
-      FROM photos p WHERE p.deleted_at IS NULL AND p.status='ready' AND EXISTS (
+    page: u32,
+) -> Result<PhotoPage, DbError> {
+    let offset = i64::from(page.checked_sub(1).ok_or(DbError::InvalidInput)?) * 60;
+    let row=sqlx::query!(r#"WITH matches AS MATERIALIZED (
+      SELECT p.id FROM photos p WHERE p.deleted_at IS NULL AND p.status='ready' AND EXISTS (
         SELECT FROM faces f JOIN persons person ON person.id=f.person_id
         WHERE f.photo_id=p.id AND NOT person.hidden AND (person.id=$1 OR lower(person.name)=lower($2)))
-      ORDER BY p.id LIMIT 60"#,id,name).fetch_all(conn).await?;
-    rows.into_iter()
-        .map(|r| serde_json::from_value(r.payload).map_err(|_| DbError::InvalidInput))
-        .collect()
+      ), photo_page AS (
+        SELECT p.* FROM photos p JOIN matches m ON m.id=p.id ORDER BY p.id LIMIT 60 OFFSET $3
+      ) SELECT (SELECT count(*) FROM matches) AS "total!",
+      coalesce(jsonb_agg(to_jsonb(p) || jsonb_build_object('thumbhash',encode(p.placeholder,'base64'),
+      'derivatives',coalesce((SELECT jsonb_agg(jsonb_build_object('variant',d.variant,'format',d.format,
+      'hdr',d.hdr,'hash',d.hash,'w',d.width,'h',d.height) ORDER BY d.width,d.format,d.hdr)
+      FROM derivatives d WHERE d.photo_id=p.id),'[]'::jsonb)) ORDER BY p.id),'[]'::jsonb) AS "photos!"
+      FROM photo_page p"#,
+        id,name,offset).fetch_one(conn).await?;
+    Ok(PhotoPage {
+        photos: serde_json::from_value(row.photos).map_err(|_| DbError::InvalidInput)?,
+        total: usize::try_from(row.total).map_err(|_| DbError::InvalidInput)?,
+    })
 }
 
 /// Current non-hidden face, its medium input, and an optional matching private cache.

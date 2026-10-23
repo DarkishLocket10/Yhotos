@@ -41,6 +41,7 @@ pub(crate) fn routes() -> Router<AppState> {
 #[derive(serde::Deserialize)]
 struct PersonQuery {
     q: String,
+    page: Option<u32>,
 }
 async fn search(
     State(state): State<AppState>,
@@ -49,6 +50,7 @@ async fn search(
     Extension(nonce): Extension<Nonce>,
 ) -> Result<Response, HttpError> {
     guard(&current)?;
+    let page = page_number(query.page)?;
     let name = query
         .q
         .strip_prefix("person:")
@@ -63,11 +65,11 @@ async fn search(
         .acquire()
         .await?;
     let photos = if let Ok(id) = name.parse::<Uuid>() {
-        faces::photos(&mut conn, id).await?
+        faces::photos(&mut conn, id, page).await?
     } else {
-        faces::named_photos(&mut conn, name).await?
+        faces::named_photos(&mut conn, name, page).await?
     };
-    render(&state, &nonce.to_string(), &query.q, photos)
+    render(&state, &nonce.to_string(), &query.q, photos, page)
 }
 #[derive(Template)]
 #[template(path = "default/people.html")]
@@ -185,9 +187,11 @@ async fn person(
     State(state): State<AppState>,
     current: Current,
     Path(id): Path<Uuid>,
+    Query(options): Query<super::Options>,
     Extension(nonce): Extension<Nonce>,
 ) -> Result<Response, HttpError> {
     guard(&current)?;
+    let page = page_number(options.page)?;
     let mut conn = auth::required(&state)?
         .db(Audience(true))?
         .pool()
@@ -197,21 +201,34 @@ async fn person(
         &state,
         &nonce.to_string(),
         &format!("person:{id}"),
-        faces::photos(&mut conn, id).await?,
+        faces::photos(&mut conn, id, page).await?,
+        page,
     )
+}
+
+fn page_number(page: Option<u32>) -> Result<u32, HttpError> {
+    match page.unwrap_or(1) {
+        0 => Err(HttpError::NotFound),
+        page => Ok(page),
+    }
 }
 
 fn render(
     state: &AppState,
     nonce: &str,
     query: &str,
-    photos: Vec<yhotos_db::photos::PagePhoto>,
+    photos: faces::PhotoPage,
+    page: u32,
 ) -> Result<Response, HttpError> {
+    if page > 1 && photos.photos.is_empty() {
+        return Err(HttpError::NotFound);
+    }
     let results = super::Results {
-        total: photos.len(),
-        page: 1,
+        total: photos.total,
+        page,
         parsed: super::query::Query::default(),
         rows: photos
+            .photos
             .into_iter()
             .map(|photo| super::Ranked {
                 score: 0.0,
@@ -244,7 +261,11 @@ mod tests {
             &state,
             "nonce",
             "person:<script>",
-            vec![crate::search::tests::candidate(1).photo],
+            faces::PhotoPage {
+                photos: vec![crate::search::tests::candidate(1).photo],
+                total: 1,
+            },
+            1,
         )
         .unwrap();
         assert_eq!(

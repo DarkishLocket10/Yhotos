@@ -284,9 +284,10 @@ async fn hidden_people_never_appear_in_admin_search(pool: PgPool) {
     sqlx::query!("INSERT INTO faces(id,photo_id,bbox,embedding,person_id,quality,model) VALUES($1,$2,ARRAY[0.1,0.1,0.5,0.5],$3::text::vector,$4,0.9,'fixture')",uuid::Uuid::now_v7(),uuid::Uuid::from_u128(1),vector,id).execute(&pool).await.unwrap();
     let mut conn = pool.acquire().await.unwrap();
     assert_eq!(
-        yhotos_db::faces::named_photos(&mut conn, "Fixture person")
+        yhotos_db::faces::named_photos(&mut conn, "Fixture person", 1)
             .await
             .unwrap()
+            .photos
             .len(),
         1
     );
@@ -296,9 +297,10 @@ async fn hidden_people_never_appear_in_admin_search(pool: PgPool) {
             .unwrap()
     );
     assert!(
-        yhotos_db::faces::named_photos(&mut conn, "Fixture person")
+        yhotos_db::faces::named_photos(&mut conn, "Fixture person", 1)
             .await
             .unwrap()
+            .photos
             .is_empty()
     );
     assert!(
