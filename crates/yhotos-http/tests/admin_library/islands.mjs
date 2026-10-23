@@ -22,3 +22,17 @@ test('keyboard photo reorder preserves identity and handles both edges',()=>{
   assert.deepEqual(Array.from(helpers.keyboardMove(['a','b'],0,false)),['a','b']);
   assert.deepEqual(Array.from(helpers.keyboardMove(['a','b'],1,true)),['a','b']);
 });
+
+test('orders above 1,000 photos save in bounded subset permutations',()=>{
+  const original=Array.from({length:2101},(_,i)=>String(i));
+  for (const desired of [[...original].reverse(),[...original.slice(1),original[0]]]) {
+    const current=[...original];
+    for (const batch of helpers.reorderBatches(original,desired)) {
+      assert.ok(batch.length>0 && batch.length<=1000);
+      assert.equal(new Set(batch).size,batch.length);
+      const selected=new Set(batch),slots=current.flatMap((id,i)=>selected.has(id)?[i]:[]);
+      slots.forEach((slot,i)=>{current[slot]=batch[i];});
+    }
+    assert.deepEqual(current,desired);
+  }
+});

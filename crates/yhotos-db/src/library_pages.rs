@@ -15,6 +15,11 @@ pub async fn page(
     filter: &str,
     offset: i64,
 ) -> Result<Value, DbError> {
+    if offset < 0
+        || (name == "jobs" && !["", "pending", "running", "failed", "complete"].contains(&filter))
+    {
+        return Err(DbError::InvalidInput);
+    }
     let value=match name{
         "dashboard"=>sqlx::query_scalar!(r#"SELECT jsonb_build_object(
           'photos',(SELECT count(*) FROM photos WHERE deleted_at IS NULL),'albums',(SELECT count(*) FROM albums WHERE deleted_at IS NULL),
@@ -30,7 +35,12 @@ pub async fn page(
         "users"=>sqlx::query_scalar!(r#"SELECT coalesce(jsonb_agg(jsonb_build_object('id',u.id,'username',u.username,'disabled_at',u.disabled_at,'deleted_at',u.deleted_at,'is_admin',u.is_admin,'must_change_password',u.must_change_password,'mfa',(SELECT coalesce(jsonb_agg(jsonb_build_object('kind',kind,'label',label,'enabled_at',enabled_at)),'[]') FROM user_mfa WHERE user_id=u.id),'groups',(SELECT coalesce(jsonb_agg(group_id),'[]') FROM user_groups WHERE user_id=u.id),'sessions',(SELECT coalesce(jsonb_agg(jsonb_build_object('id',id,'last_seen_at',last_seen_at,'expires_at',expires_at,'admin',admin,'ua_class',ua_class)),'[]') FROM sessions WHERE user_id=u.id)) ORDER BY u.username),'[]') AS "page!" FROM users u"#).fetch_one(c).await?,
         "groups"=>sqlx::query_scalar!(r#"SELECT coalesce(jsonb_agg(to_jsonb(g)||jsonb_build_object('members',(SELECT coalesce(jsonb_agg(user_id),'[]') FROM user_groups WHERE group_id=g.id)) ORDER BY g.name),'[]') AS "page!" FROM groups g"#).fetch_one(c).await?,
         "links"=>sqlx::query_scalar!(r#"SELECT coalesce(jsonb_agg(jsonb_build_object('id',l.id,'target_kind',l.target_kind,'target_id',l.target_id,'allow_view',l.allow_view,'allow_download',l.allow_download,'allow_like',l.allow_like,'allow_flag',l.allow_flag,'expires_at',l.expires_at,'revoked_at',l.revoked_at,'passphrase',l.passphrase_hash IS NOT NULL,'opens',(SELECT count(*) FROM share_link_opens WHERE share_link_id=l.id),'unique_visitors',(SELECT count(DISTINCT visitor_hash) FROM share_link_opens WHERE share_link_id=l.id),'last_open',(SELECT max(opened_at) FROM share_link_opens WHERE share_link_id=l.id)) ORDER BY l.created_at DESC),'[]') AS "page!" FROM share_links l"#).fetch_one(c).await?,
-        "jobs"=>sqlx::query_scalar!(r#"SELECT jsonb_build_object('depth',(SELECT coalesce(jsonb_agg(to_jsonb(x)),'[]') FROM (SELECT kind,count(*) FROM jobs WHERE finished_at IS NULL GROUP BY kind) x),'jobs',(SELECT coalesce(jsonb_agg(to_jsonb(x)),'[]') FROM (SELECT id,kind,attempts,max_attempts,locked_at,locked_by,finished_at,error,run_after FROM jobs ORDER BY created_at DESC LIMIT 200) x)) AS "page!""#).fetch_one(c).await?,
+        "jobs"=>sqlx::query_scalar!(r#"SELECT jsonb_build_object('depth',(SELECT coalesce(jsonb_agg(to_jsonb(x)),'[]') FROM (SELECT kind,count(*) FROM jobs WHERE finished_at IS NULL GROUP BY kind) x),'jobs',(SELECT coalesce(jsonb_agg(to_jsonb(x)),'[]') FROM (SELECT id,kind,attempts,max_attempts,locked_at,locked_by,finished_at,error,run_after FROM jobs WHERE CASE $1::text
+            WHEN 'running' THEN finished_at IS NULL AND locked_at IS NOT NULL
+            WHEN 'failed' THEN finished_at IS NOT NULL AND error IS NOT NULL
+            WHEN 'complete' THEN finished_at IS NOT NULL AND error IS NULL
+            WHEN 'pending' THEN finished_at IS NULL AND locked_at IS NULL
+            ELSE true END ORDER BY created_at DESC,id DESC LIMIT 100 OFFSET $2) x)) AS "page!""#,filter,offset).fetch_one(c).await?,
         "audit"=>sqlx::query_scalar!(r#"SELECT coalesce(jsonb_agg(to_jsonb(a)),'[]') AS "page!" FROM (SELECT at,user_id,action,target_kind,target_id,detail FROM audit_log WHERE action ILIKE '%'||$1||'%' OR target_id::text=$1 OR user_id::text=$1 ORDER BY at DESC,id DESC LIMIT 100 OFFSET $2) a"#,filter,offset).fetch_one(c).await?,
         _=>return Err(DbError::InvalidInput)
     };

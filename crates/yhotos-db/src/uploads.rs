@@ -76,7 +76,9 @@ pub async fn lock(
     Ok(sqlx::query_as!(Upload,r#"SELECT id,user_id AS "user_id: _",album_id AS "album_id: _",filename,declared_bytes,received_bytes,mime_hint,tmp_path,metadata,expires_at,created_at FROM uploads WHERE id=$1 AND user_id=$2 AND expires_at>now() FOR UPDATE"#,id,user.0).fetch_optional(conn).await?)
 }
 /// Locks an owned, unexpired upload and its live destination until transaction end.
-/// The album share lock prevents both soft and hard deletion during PATCH or completion.
+/// Replacements take the tree advisory lock before upload and album rows, matching album edits.
+/// The materialized CTE is consumed before `FOR UPDATE` locks an upload row; ordinary uploads
+/// take no advisory lock and require no extra round trip. The album share lock prevents deletion.
 /// # Errors
 /// Returns database errors; unavailable albums and uploads all return None.
 pub async fn lock_for_write(
@@ -84,12 +86,17 @@ pub async fn lock_for_write(
     id: Uuid,
     user: UserId,
 ) -> Result<Option<Upload>, DbError> {
-    let Some(row) = lock(conn, id, user).await? else {
+    let Some(row) = sqlx::query_as!(Upload,r#"WITH tree_lock AS MATERIALIZED (
+        SELECT pg_advisory_xact_lock(20) FROM uploads
+        WHERE id=$1 AND user_id=$2 AND expires_at>now() AND replace_photo_id IS NOT NULL
+    ) SELECT id,user_id AS "user_id: _",album_id AS "album_id: _",filename,declared_bytes,received_bytes,mime_hint,tmp_path,metadata,expires_at,created_at
+    FROM uploads WHERE id=$1 AND user_id=$2 AND expires_at>now()
+        AND (SELECT count(*) FROM tree_lock)>=0 FOR UPDATE"#,id,user.0).fetch_optional(&mut *conn).await? else {
         return Ok(None);
     };
     lock_live_album(conn, row).await
 }
-/// Locks an owned, unexpired upload without waiting, then locks its live destination.
+/// Uses the same tree-before-row ordering as `lock_for_write`, with NOWAIT on the upload row.
 /// A missing row may have completed; callers must check `was_completed` before returning 404.
 /// # Errors
 /// Returns SQLSTATE 55P03 on upload lock contention, or other database errors.
@@ -98,7 +105,12 @@ pub async fn lock_for_patch(
     id: Uuid,
     user: UserId,
 ) -> Result<Option<Upload>, DbError> {
-    let Some(row) = sqlx::query_as!(Upload,r#"SELECT id,user_id AS "user_id: _",album_id AS "album_id: _",filename,declared_bytes,received_bytes,mime_hint,tmp_path,metadata,expires_at,created_at FROM uploads WHERE id=$1 AND user_id=$2 AND expires_at>now() FOR UPDATE NOWAIT"#,id,user.0).fetch_optional(&mut *conn).await? else {
+    let Some(row) = sqlx::query_as!(Upload,r#"WITH tree_lock AS MATERIALIZED (
+        SELECT pg_advisory_xact_lock(20) FROM uploads
+        WHERE id=$1 AND user_id=$2 AND expires_at>now() AND replace_photo_id IS NOT NULL
+    ) SELECT id,user_id AS "user_id: _",album_id AS "album_id: _",filename,declared_bytes,received_bytes,mime_hint,tmp_path,metadata,expires_at,created_at
+    FROM uploads WHERE id=$1 AND user_id=$2 AND expires_at>now()
+        AND (SELECT count(*) FROM tree_lock)>=0 FOR UPDATE NOWAIT"#,id,user.0).fetch_optional(&mut *conn).await? else {
         return Ok(None);
     };
     lock_live_album(conn, row).await

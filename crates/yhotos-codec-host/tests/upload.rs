@@ -1427,3 +1427,83 @@ async fn admin_purge_gc_retains_shared_original_then_collects_final_reference(po
         );
     }
 }
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn final_replacement_patch_and_album_edit_share_tree_first_lock_order(pool: PgPool) {
+    let c = Arc::new(Client::new(pool.clone()).await);
+    assert_eq!(
+        c.upload(&fixture("tiny-1x1.jpg"), "first.jpg")
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    let photo = sqlx::query_scalar!("SELECT id FROM photos")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let bytes = fixture("gray.jpg");
+    let created = c
+        .send(
+            "POST",
+            "/admin/upload",
+            &[
+                ("upload-length", bytes.len().to_string()),
+                ("upload-replace-photo", photo.to_string()),
+                (
+                    "upload-metadata",
+                    format!(
+                        "filename {},album {},filetype {}",
+                        STANDARD.encode("replacement.jpg"),
+                        STANDARD.encode(c.album.to_string()),
+                        STANDARD.encode("image/jpeg")
+                    ),
+                ),
+            ],
+            Body::empty(),
+        )
+        .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let path = created.headers()["location"].to_str().unwrap().to_owned();
+    let mut edit = pool.begin().await.unwrap();
+    let pid = sqlx::query_scalar!("SELECT pg_backend_pid()")
+        .fetch_one(&mut *edit)
+        .await
+        .unwrap()
+        .unwrap();
+    sqlx::query!("SELECT pg_advisory_xact_lock(20)")
+        .execute(&mut *edit)
+        .await
+        .unwrap();
+    let patch_client = c.clone();
+    let patch = tokio::spawn(async move { patch_client.patch(&path, 0, &bytes).await });
+    tokio::time::timeout(std::time::Duration::from_secs(10),async {
+        loop {
+            let waiting=sqlx::query_scalar!(r#"SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)) AND wait_event='advisory') AS "waiting!""#,pid).fetch_one(&pool).await.unwrap();
+            if waiting {break;}
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }).await.unwrap();
+    // The final PATCH has reached the tree lock. It must not already hold the album row.
+    let command: yhotos_db::library::Command=serde_json::from_value(serde_json::json!({"op":"album_edit","id":c.album,"title":"Edited during replacement","description":"","visibility":"public","manual_order":false,"grants":[]})).unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        yhotos_db::library::execute_in(&mut edit, c.user, &command),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    edit.commit().await.unwrap();
+    let response = tokio::time::timeout(std::time::Duration::from_secs(10), patch)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(response.headers()["upload-result"], "replaced");
+    assert_eq!(
+        sqlx::query_scalar!("SELECT title FROM albums WHERE id=$1", c.album.0)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        "Edited during replacement"
+    );
+}

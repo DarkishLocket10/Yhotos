@@ -102,11 +102,19 @@ fn cached(
     identity: &SessionIdentity,
     tags: &str,
 ) -> Result<Response, HttpError> {
+    // Every gallery page can embed covers or metadata from another album.
+    let tags = if tags.split(',').any(|tag| tag == "visibility") {
+        tags.to_owned()
+    } else if tags.is_empty() {
+        "visibility".to_owned()
+    } else {
+        format!("{tags},visibility")
+    };
     cache_response(
         Html(html).into_response(),
         headers,
         identity,
-        tags,
+        &tags,
         "public, max-age=60, stale-while-revalidate=600",
     )
 }

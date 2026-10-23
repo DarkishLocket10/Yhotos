@@ -53,6 +53,12 @@ fn admin(c: &mut Criterion) {
         .collect();
     let hash = blake3_hash();
     runtime.block_on(sqlx::query!("INSERT INTO photos(id,short_id,album_id,title,original_hash,original_name,original_bytes,mime,kind) SELECT id,short,$3,'Fixture',$4,'fixture.jpeg',1,'image/jpeg','image' FROM unnest($1::uuid[],$2::text[]) p(id,short)",&ids,&shorts,a.id.0,hash).execute(&mut *tx)).unwrap();
+    runtime
+        .block_on(
+            sqlx::query!("UPDATE albums SET manual_order=true WHERE id=$1", a.id.0)
+                .execute(&mut *tx),
+        )
+        .unwrap();
     let csrf = yhotos_http::middleware::csrf::CsrfToken::generate().unwrap();
     let data = runtime
         .block_on(library_pages::page(&mut tx, "album", Some(a.id.0), "", 0))
@@ -89,8 +95,8 @@ fn admin(c: &mut Criterion) {
             });
         });
     });
-    for kind in ["move", "visibility", "copy"] {
-        let command:library::Command=serde_json::from_value(json!({"op":"bulk","ids":ids,"action":match kind{"move"=>json!({"kind":"move","album_id":b.id}),"copy"=>json!({"kind":"copy","album_id":b.id}),_=>json!({"kind":"visibility","visibility":"restricted","grants":[]})}})).unwrap();
+    for kind in ["move", "visibility", "copy", "reorder"] {
+        let command:library::Command=serde_json::from_value(json!({"op":"bulk","ids":ids,"action":match kind{"reorder"=>json!({"kind":"reorder","album_id":a.id}),"move"=>json!({"kind":"move","album_id":b.id}),"copy"=>json!({"kind":"copy","album_id":b.id}),_=>json!({"kind":"visibility","visibility":"restricted","grants":[]})}})).unwrap();
         group.bench_function(format!("bulk_1000_{kind}"), |b| {
             b.iter_custom(|n| {
                 let mut elapsed = Duration::ZERO;

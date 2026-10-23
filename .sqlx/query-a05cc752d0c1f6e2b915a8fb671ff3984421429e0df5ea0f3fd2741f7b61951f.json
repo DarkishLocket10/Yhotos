@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE photos SET status='ready',placeholder=$2,gps_lat=43.7,gps_lon=-79.4,taken_at='2024-01-02 12:00:00+00',taken_at_local='2024-01-02 12:00:00' WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a05cc752d0c1f6e2b915a8fb671ff3984421429e0df5ea0f3fd2741f7b61951f"
+}

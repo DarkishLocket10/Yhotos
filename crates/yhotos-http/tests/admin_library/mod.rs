@@ -891,3 +891,367 @@ async fn bulk_patterns_tags_copy_and_manual_photo_order_keep_identity_rules(pool
         order
     );
 }
+
+#[derive(Default)]
+struct CachedPages(std::sync::Mutex<BTreeMap<String, (Vec<String>, String)>>);
+impl yhotos_http::admin::cache::CachePurger for CachedPages {
+    fn purge<'a>(
+        &'a self,
+        tags: &'a [String],
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<(), yhotos_http::error::HttpError>> + Send + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            self.0
+                .lock()
+                .unwrap()
+                .retain(|_, (stored, _)| !stored.iter().any(|tag| tags.contains(tag)));
+            Ok(())
+        })
+    }
+}
+async fn cached_get(client: &mut Client, cache: &CachedPages, path: &str) -> String {
+    if let Some((_, body)) = cache.0.lock().unwrap().get(path) {
+        return body.clone();
+    }
+    let mut request = Request::builder().uri(path).body(Body::empty()).unwrap();
+    request.extensions_mut().insert(ConnectInfo(client.network));
+    let response = client.app.clone().oneshot(request).await.unwrap();
+    let response = client.receive(response).await;
+    assert_eq!(response.status, StatusCode::OK, "{path}");
+    assert!(
+        response.headers["cache-control"]
+            .to_str()
+            .unwrap()
+            .starts_with("public")
+    );
+    let tags: Vec<String> = response.headers["cache-tag"]
+        .to_str()
+        .unwrap()
+        .split(',')
+        .map(str::to_owned)
+        .collect();
+    assert!(tags.iter().any(|tag| tag == "visibility"), "{path}");
+    cache
+        .0
+        .lock()
+        .unwrap()
+        .insert(path.into(), (tags, response.body.clone()));
+    response.body
+}
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn restricted_child_cover_is_removed_from_cached_parent_and_aggregate_pages(pool: PgPool) {
+    let (mut client, _) = admin(pool.clone()).await;
+    let ancestor = album(&pool, "Ancestor").await;
+    let parent = album(&pool, "Parent").await;
+    let child = album(&pool, "Child").await;
+    sqlx::query!(
+        "UPDATE albums SET parent_id=$2 WHERE id=$1",
+        parent.0,
+        ancestor.0
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query!(
+        "UPDATE albums SET parent_id=$2 WHERE id=$1",
+        child.0,
+        parent.0
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let p = photo(&pool, child, "Private cover title").await;
+    let placeholder = STANDARD.decode("AAgCBwAAAAAAAAAAAAAAAAAAAAAAAAAA").unwrap();
+    sqlx::query!("UPDATE photos SET status='ready',placeholder=$2,gps_lat=43.7,gps_lon=-79.4,taken_at='2024-01-02 12:00:00+00',taken_at_local='2024-01-02 12:00:00' WHERE id=$1",p.id.0,&placeholder).execute(&pool).await.unwrap();
+    for a in [child, parent, ancestor] {
+        sqlx::query!(
+            "UPDATE albums SET cover_photo_id=$2 WHERE id=$1",
+            a.0,
+            p.id.0
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    sqlx::query!("INSERT INTO derivatives(id,photo_id,variant,format,hash,width,height,bytes) VALUES($1,$2,'thumb','jpeg',$3,100,100,1)",Uuid::now_v7(),p.id.0,p.original_hash).execute(&pool).await.unwrap();
+    let place = Uuid::now_v7();
+    sqlx::query!(
+        "INSERT INTO places(id,name,country,lat,lon) VALUES($1,'City','CA',43.7,-79.4)",
+        place
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    sqlx::query!("UPDATE photos SET place_id=$2 WHERE id=$1", p.id.0, place)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let cache = Arc::new(CachedPages::default());
+    client.state = AppState::from(yhotos_http::AppResources {
+        config: client.state.config,
+        auth: client.state.auth.clone(),
+        pool: pool.clone(),
+        store: client.state.store.clone(),
+        files: yhotos_http::files::FileCache::default(),
+        cache_purger: cache.clone(),
+    });
+    client.app = yhotos_http::admin_router(client.state.clone());
+    let mut public = client.listener(false);
+    let paths = [
+        "/".to_owned(),
+        "/a/ancestor".into(),
+        "/a/ancestor/parent".into(),
+        "/a/ancestor/parent/child".into(),
+        "/map".into(),
+        "/calendar".into(),
+        format!("/places/{place}"),
+        format!("/p/{}", p.short_id),
+    ];
+    for path in &paths {
+        cached_get(&mut public, &cache, path).await;
+    }
+    let before = cached_get(&mut public, &cache, "/a/ancestor/parent").await;
+    assert!(before.contains("Private cover title"));
+    assert!(before.contains(&STANDARD.encode(&placeholder)));
+    action(&mut client,json!({"op":"bulk","ids":[p.id],"action":{"kind":"visibility","visibility":"restricted","grants":[]}})).await;
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !cache.0.lock().unwrap().is_empty() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    for path in ["/", "/a/ancestor", "/a/ancestor/parent"] {
+        let after = cached_get(&mut public, &cache, path).await;
+        assert!(!after.contains("Private cover title"), "{path}");
+        assert!(!after.contains(&STANDARD.encode(&placeholder)), "{path}");
+    }
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn title_only_save_retains_automatic_date_and_gps_across_replacement(pool: PgPool) {
+    let (mut client, actor) = admin(pool.clone()).await;
+    let a = album(&pool, "Automatic metadata").await;
+    let p = photo(&pool, a, "Before").await;
+    let old_date = time::OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
+    let mut metadata = photos::PhotoMetadata {
+        taken_at: Some(old_date),
+        gps_lat: Some(43.7),
+        gps_lon: Some(-79.4),
+        ..Default::default()
+    };
+    photos::update_metadata(&mut pool.acquire().await.unwrap(), p.id, &metadata)
+        .await
+        .unwrap();
+    let editor = client.get(&format!("/admin/photos/{}", p.short_id)).await;
+    for name in ["taken_at_mode", "gps_mode", "place_mode"] {
+        assert!(editor.body.contains(&format!("name=\"{name}\"")));
+    }
+    // Submit the populated controls exactly as a title-only browser save does.
+    action(&mut client,json!({"op":"photo_edit","id":p.id,"title":"New title","description":"","taken_at_mode":"keep","gps_mode":"keep","place_mode":"keep","taken_at":old_date.format(&time::format_description::well_known::Rfc3339).unwrap(),"gps_lat":43.7,"gps_lon":-79.4,"place_id":null,"visibility":"inherit","tags":[],"grants":[]})).await;
+    let saved = sqlx::query!(
+        "SELECT taken_at_override,gps_overridden,title FROM photos WHERE id=$1",
+        p.id.0
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(saved.title, "New title");
+    assert!(saved.taken_at_override.is_none());
+    assert!(!saved.gps_overridden);
+    let original = photos::NewPhoto {
+        album_id: a,
+        title: "replacement".into(),
+        original_hash: blake3::hash(b"replacement").to_hex().to_string(),
+        original_name: "replacement.jpeg".into(),
+        original_bytes: 12,
+        mime: "image/jpeg".into(),
+        kind: photos::MediaKind::Image,
+    };
+    library::replace(&mut pool.acquire().await.unwrap(), actor, p.id.0, &original)
+        .await
+        .unwrap();
+    metadata.taken_at = Some(old_date + time::Duration::days(5));
+    metadata.gps_lat = Some(10.0);
+    metadata.gps_lon = Some(20.0);
+    photos::update_metadata(&mut pool.acquire().await.unwrap(), p.id, &metadata)
+        .await
+        .unwrap();
+    let saved = sqlx::query!(
+        "SELECT taken_at,gps_lat,gps_lon FROM photos WHERE id=$1",
+        p.id.0
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(saved.taken_at, metadata.taken_at);
+    assert_eq!(saved.gps_lat, Some(10.0));
+    assert_eq!(saved.gps_lon, Some(20.0));
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn explicit_place_and_empty_place_survive_geocoding_and_replacement(pool: PgPool) {
+    let (mut client, actor) = admin(pool.clone()).await;
+    let a = album(&pool, "Places").await;
+    let p = photo(&pool, a, "Override").await;
+    sqlx::query!("INSERT INTO gazetteer(geonameid,name,admin1,country,lat,lon,population) VALUES(1,'Automatic city','Ontario','CA',43.7,-79.4,100000)").execute(&pool).await.unwrap();
+    let place = Uuid::now_v7();
+    sqlx::query!(
+        "INSERT INTO places(id,name,country,lat,lon) VALUES($1,'Chosen city','CA',1,2)",
+        place
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    for selected in [Some(place), None] {
+        sqlx::query!(
+            "UPDATE photos SET gps_lat=43.7,gps_lon=-79.4 WHERE id=$1",
+            p.id.0
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        action(&mut client,json!({"op":"photo_edit","id":p.id,"title":"Override","description":"","place_mode":"manual","place_id":selected,"visibility":"inherit","tags":[],"grants":[]})).await;
+        yhotos_db::places::reverse(&mut pool.acquire().await.unwrap(), p.id)
+            .await
+            .unwrap();
+        let original = photos::NewPhoto {
+            album_id: a,
+            title: "replacement".into(),
+            original_hash: blake3::hash(b"new place bytes").to_hex().to_string(),
+            original_name: "replacement.jpeg".into(),
+            original_bytes: 12,
+            mime: "image/jpeg".into(),
+            kind: photos::MediaKind::Image,
+        };
+        library::replace(&mut pool.acquire().await.unwrap(), actor, p.id.0, &original)
+            .await
+            .unwrap();
+        photos::update_metadata(
+            &mut pool.acquire().await.unwrap(),
+            p.id,
+            &photos::PhotoMetadata {
+                gps_lat: Some(43.7),
+                gps_lon: Some(-79.4),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        yhotos_db::places::reverse(&mut pool.acquire().await.unwrap(), p.id)
+            .await
+            .unwrap();
+        let row = sqlx::query!(
+            "SELECT place_id,place_overridden FROM photos WHERE id=$1",
+            p.id.0
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row.place_id, selected);
+        assert!(row.place_overridden);
+    }
+    action(&mut client,json!({"op":"photo_edit","id":p.id,"title":"Override","description":"","place_mode":"automatic","visibility":"inherit","tags":[],"grants":[]})).await;
+    yhotos_db::places::reverse(&mut pool.acquire().await.unwrap(), p.id)
+        .await
+        .unwrap();
+    let row=sqlx::query!("SELECT p.place_overridden,l.name FROM photos p JOIN places l ON l.id=p.place_id WHERE p.id=$1",p.id.0).fetch_one(&pool).await.unwrap();
+    assert!(!row.place_overridden);
+    assert_eq!(row.name, "Automatic city");
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn subset_reorder_above_thousand_preserves_all_remaining_photos(pool: PgPool) {
+    let (mut client, _) = admin(pool.clone()).await;
+    let a = album(&pool, "Large manual album").await;
+    sqlx::query!("UPDATE albums SET manual_order=true WHERE id=$1", a.0)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let ids: Vec<_> = (0..1001).map(|_| PhotoId::new()).collect();
+    let uuids: Vec<_> = ids.iter().map(|id| id.0).collect();
+    let shorts: Vec<_> = ids
+        .iter()
+        .map(|id| ShortId::from_photo_id(*id).to_string())
+        .collect();
+    sqlx::query!("INSERT INTO photos(id,short_id,album_id,title,original_hash,original_name,original_bytes,mime,kind) SELECT id,short,$3,'Fixture',$4,'fixture.jpeg',1,'image/jpeg','image' FROM unnest($1::uuid[],$2::text[]) p(id,short)",&uuids,&shorts,a.0,blake3::hash(b"large order").to_hex().to_string()).execute(&pool).await.unwrap();
+    let before = sqlx::query_scalar!(
+        "SELECT id FROM photos WHERE album_id=$1 ORDER BY sort_order,id",
+        a.0
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    action(&mut client,json!({"op":"bulk","ids":[before[1000],before[0]],"action":{"kind":"reorder","album_id":a}})).await;
+    let after = sqlx::query_scalar!(
+        "SELECT id FROM photos WHERE album_id=$1 ORDER BY sort_order,id",
+        a.0
+    )
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let mut expected = before.clone();
+    expected.swap(0, 1000);
+    assert_eq!(after, expected);
+    let foreign = album(&pool, "Other album").await;
+    let other = photo(&pool, foreign, "Unrelated").await;
+    let response=client.json("/admin/api/actions",json!({"op":"bulk","ids":[before[0],other.id],"action":{"kind":"reorder","album_id":a}})).await;
+    assert_eq!(response.status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        sqlx::query_scalar!(
+            "SELECT id FROM photos WHERE album_id=$1 ORDER BY sort_order,id",
+            a.0
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap(),
+        after
+    );
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn older_failed_and_running_jobs_remain_accessible_through_filtered_pages(pool: PgPool) {
+    let (mut client, _) = admin(pool.clone()).await;
+    let failed = Uuid::now_v7();
+    let running = Uuid::now_v7();
+    sqlx::query!("INSERT INTO jobs(id,kind,payload,created_at,finished_at,error,attempts) VALUES($1,'ingest','{}',now()-interval '2 days',now(),'Older unresolved failure',5)",failed).execute(&pool).await.unwrap();
+    sqlx::query!("INSERT INTO jobs(id,kind,payload,created_at,locked_at,locked_by) VALUES($1,'ingest','{}',now()-interval '2 days',now(),'Older active worker')",running).execute(&pool).await.unwrap();
+    sqlx::query!("INSERT INTO jobs(id,kind,payload,finished_at) SELECT yhotos_uuid_v7(),'ingest','{}',now() FROM generate_series(1,205)").execute(&pool).await.unwrap();
+    let failures = client.get("/admin/jobs?q=failed").await;
+    assert_eq!(failures.status, StatusCode::OK);
+    assert!(failures.body.contains("Older unresolved failure"));
+    assert!(failures.body.contains(&failed.to_string()));
+    assert!(failures.body.contains("Retry job"));
+    assert!(failures.body.contains("Delete job"));
+    assert!(failures.body.contains("?page=1&amp;q=failed"));
+    assert!(
+        client
+            .get("/admin/jobs?q=running")
+            .await
+            .body
+            .contains("Older active worker")
+    );
+    assert!(
+        client
+            .get("/admin/jobs?page=2")
+            .await
+            .body
+            .contains(&failed.to_string())
+    );
+    assert_eq!(
+        client.get("/admin/jobs?q=invalid").await.status,
+        StatusCode::BAD_REQUEST
+    );
+    action(&mut client, json!({"op":"job","id":failed,"retry":true})).await;
+    assert!(
+        !client
+            .get("/admin/jobs?q=failed")
+            .await
+            .body
+            .contains("Older unresolved failure")
+    );
+    action(&mut client, json!({"op":"job","id":failed,"retry":false})).await;
+}

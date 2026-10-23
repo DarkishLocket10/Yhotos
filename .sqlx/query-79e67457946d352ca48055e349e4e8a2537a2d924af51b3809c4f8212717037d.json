@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE photos SET title=$2,description=$3,taken_at=$4,taken_at_override=$4,taken_at_local=$4 AT TIME ZONE 'UTC',place_id=$5,gps_lat=$6,gps_lon=$7,gps_overridden=true,visibility=$8 WHERE id=$1",
+  "query": "UPDATE photos SET title=$2,description=$3,visibility=$4 WHERE id=$1",
   "describe": {
     "columns": [],
     "parameters": {
@@ -8,10 +8,6 @@
         "Uuid",
         "Text",
         "Text",
-        "Timestamptz",
-        "Uuid",
-        "Float8",
-        "Float8",
         {
           "Custom": {
             "name": "visibility",
@@ -28,5 +24,5 @@
     },
     "nullable": []
   },
-  "hash": "c174a0011404fda20d646284a2b9d3c7fb019b2069c9f5478f384fe829bece88"
+  "hash": "79e67457946d352ca48055e349e4e8a2537a2d924af51b3809c4f8212717037d"
 }

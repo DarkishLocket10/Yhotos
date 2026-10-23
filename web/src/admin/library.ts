@@ -6,6 +6,23 @@ function message(text: string) { if (status) status.textContent = text; }
 export function selectedIds(boxes: {checked: boolean; value: string}[]) { return boxes.filter(b => b.checked).map(b => b.value); }
 export function rangeSelection(boxes: {checked: boolean}[], start: number, end: number, checked: boolean) { for (let i = Math.min(start, end); i <= Math.max(start, end); i++) if (boxes[i]) boxes[i].checked = checked; }
 export function keyboardMove<T>(items: T[], index: number, down: boolean): T[] { const next = [...items], target = index + (down ? 1 : -1); if (index >= 0 && target >= 0 && target < items.length) [next[index], next[target]] = [next[target], next[index]]; return next; }
+// Each request permutes at most 1,000 occupied slots; other photos retain their order.
+export function reorderBatches(original: string[], desired: string[]): string[][] {
+  const current = [...original], positions = new Map(current.map((id, i) => [id, i]));
+  if (desired.length !== current.length || new Set(desired).size !== current.length || desired.some(id => !positions.has(id))) throw new Error("Photo order changed. Reload the album.");
+  const batches: string[][] = [], touched = new Set<number>();
+  const flush = () => { if (touched.size) batches.push([...touched].sort((a,b) => a-b).map(i => current[i])); touched.clear(); };
+  for (let i = 0; i < desired.length; i++) {
+    if (current[i] === desired[i]) continue;
+    const j = positions.get(desired[i])!;
+    if (new Set([...touched, i, j]).size > 1000) flush();
+    touched.add(i); touched.add(j);
+    [current[i], current[j]] = [current[j], current[i]];
+    positions.set(current[i], i); positions.set(current[j], j);
+  }
+  flush();
+  return batches;
+}
 async function api(endpoint: string, body: unknown, method = "POST") {
   const response = await fetch(endpoint, {method, credentials: "same-origin", headers: {"Content-Type": "application/json", "X-CSRF-Token": csrf}, body: JSON.stringify(body)});
   if (!response.ok || response.redirected) throw new Error("The change was rejected. Check your session and entered values.");
@@ -59,7 +76,19 @@ for (const card of cards()) {
   });
   card.addEventListener("keydown", event => { if (event.altKey && ["ArrowUp", "ArrowDown"].includes(event.key) && root?.dataset.manual === "true") { event.preventDefault(); const list = keyboardMove(cards(), cards().indexOf(card), event.key === "ArrowDown"); for (const item of list) document.querySelector(".admin-cards")?.append(item); card.focus(); } });
 }
-document.querySelector("#save-photo-order")?.addEventListener("click", async () => { try { await api("/admin/api/actions", {op: "bulk", ids: cards().filter(c => c.querySelector(".photo-select")).map(c => c.dataset.id), action: {kind: "reorder", album_id: root?.dataset.album}}); message("Photo order saved."); } catch (e) { message((e as Error).message); } });
+let savedOrder = cards().filter(c => c.querySelector(".photo-select")).map(c => c.dataset.id!);
+document.querySelector("#save-photo-order")?.addEventListener("click", async event => {
+  const button = event.currentTarget as HTMLButtonElement; button.disabled = true;
+  try {
+    const desired = cards().filter(c => c.querySelector(".photo-select")).map(c => c.dataset.id!);
+    for (const ids of reorderBatches(savedOrder, desired)) {
+      await api("/admin/api/actions", {op: "bulk", ids, action: {kind: "reorder", album_id: root?.dataset.album}});
+      const selected = new Set(ids), slots = savedOrder.flatMap((id, i) => selected.has(id) ? [i] : []);
+      for (const [i, slot] of slots.entries()) savedOrder[slot] = ids[i];
+    }
+    message("Photo order saved.");
+  } catch (e) { message((e as Error).message); } finally { button.disabled = false; }
+});
 // Replacement uses the same tus protocol, streaming chunks and retaining a durable target binding.
 document.querySelector("#replace-start")?.addEventListener("click", async () => {
   const input = document.querySelector<HTMLInputElement>("#replace-file"), file = input?.files?.[0];

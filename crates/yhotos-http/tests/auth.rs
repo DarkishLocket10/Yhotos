@@ -622,7 +622,10 @@ async fn real_sessions_authorize_restricted_pages_by_group(pool: PgPool) {
     assert_eq!(allowed.status, StatusCode::OK, "{}", allowed.body);
     assert_eq!(allowed.headers[header::CACHE_CONTROL], "private, no-store");
     assert_eq!(allowed.headers[header::VARY], "Cookie");
-    assert_eq!(allowed.headers["cache-tag"], format!("album:{}", album.id));
+    assert_eq!(
+        allowed.headers["cache-tag"],
+        format!("album:{},visibility", album.id)
+    );
     assert!(allowed.body.contains("3 photos"));
     assert_eq!(allowed.body.matches("data-photo-link").count(), 3);
     for (index, path) in photo_paths.iter().enumerate() {

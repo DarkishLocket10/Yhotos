@@ -11,7 +11,7 @@ use yhotos_http::{AppState, public_router};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut criterion = Criterion::default().configure_from_args();
     let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_time()
+        .enable_all()
         .build()?;
     let dir = tempfile::tempdir()?;
     let peer: SocketAddr = "127.0.0.1:1".parse()?;
@@ -25,7 +25,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         database_url_admin: None,
         database_url_worker: None,
         admin_base_url: None,
-        database_url_public: format!("postgres://{}@localhost/test", uuid::Uuid::now_v7()).into(),
+        database_url_public: std::env::var("DATABASE_URL")
+            .unwrap_or_else(|_| format!("postgres://{}@localhost/test", uuid::Uuid::now_v7()))
+            .into(),
         data_dir: dir.path().to_owned(),
         public_base_url: "https://example.test".parse()?,
         // Sixty-four generated hex digits are also valid base64 (48 bytes).
@@ -57,7 +59,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &config.database_url_public,
             yhotos_db::Role::Public,
             2,
-            yhotos_db::DatabaseTls::Require,
+            if std::env::var_os("DATABASE_URL").is_some() {
+                yhotos_db::DatabaseTls::Disable
+            } else {
+                yhotos_db::DatabaseTls::Require
+            },
         )?
         .pool()
         .clone(),
@@ -72,6 +78,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             black_box(runtime.block_on(app.clone().oneshot(request)))
         });
     });
+    if std::env::var_os("DATABASE_URL").is_some() {
+        criterion.bench_function("http/home/cache_tags", |b| {
+            b.iter(|| {
+                let mut request = Request::new(Body::empty());
+                *request.uri_mut() = axum::http::Uri::from_static("/");
+                request.extensions_mut().insert(ConnectInfo(peer));
+                let response = runtime.block_on(app.clone().oneshot(request));
+                if let Ok(response) = &response {
+                    assert_eq!(response.status(), axum::http::StatusCode::OK);
+                }
+                black_box(response)
+            });
+        });
+    }
     criterion.final_summary();
     Ok(())
 }

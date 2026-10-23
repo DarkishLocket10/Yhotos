@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH ranked AS MATERIALIZED (SELECT id,(row_number() OVER (ORDER BY sort_order,id)-1)::int AS new_order FROM photos WHERE album_id=$2 AND deleted_at IS NULL), desired AS MATERIALIZED (SELECT * FROM unnest($1::uuid[],ARRAY(SELECT new_order FROM ranked WHERE id=ANY($1) ORDER BY new_order)) AS m(id,new_order)) UPDATE photos p SET sort_order=coalesce(d.new_order,r.new_order) FROM ranked r LEFT JOIN desired d ON d.id=r.id WHERE p.id=r.id AND p.sort_order IS DISTINCT FROM coalesce(d.new_order,r.new_order)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9f95e55a7322fb32fe3872b4fc191a151cbf5c867a199e4b41392cedf73479b7"
+}

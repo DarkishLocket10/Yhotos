@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE photos SET taken_at=$2,taken_at_override=$2,taken_at_local=$2 AT TIME ZONE 'UTC' WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "de239207edbb45e063e9c86fa1b6cd6a0648707c74ed260673966dc1a24a6d36"
+}

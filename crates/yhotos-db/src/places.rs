@@ -12,7 +12,7 @@ use yhotos_core::PhotoId;
 pub async fn reverse(conn: &mut PgConnection, photo: PhotoId) -> Result<(), DbError> {
     let mut tx = conn.begin().await?;
     let row = sqlx::query!(
-        "SELECT gps_lat,gps_lon FROM photos WHERE id=$1 AND deleted_at IS NULL FOR UPDATE",
+        "SELECT gps_lat,gps_lon FROM photos WHERE id=$1 AND deleted_at IS NULL AND NOT place_overridden FOR UPDATE",
         photo as _
     )
     .fetch_optional(&mut *tx)

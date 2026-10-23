@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT count(*) AS \"count!\" FROM photos WHERE album_id=$1 AND deleted_at IS NULL",
+  "query": "SELECT count(*) AS \"count!\" FROM photos WHERE album_id=$1 AND deleted_at IS NULL AND id=ANY($2)",
   "describe": {
     "columns": [
       {
@@ -12,12 +12,13 @@
     ],
     "parameters": {
       "Left": [
-        "Uuid"
+        "Uuid",
+        "UuidArray"
       ]
     },
     "nullable": [
       null
     ]
   },
-  "hash": "1068773dae881de46e50d4de495026968e57e3dc3f5d5684769268a825b139da"
+  "hash": "cf165d8689ffecc3f6dc8627dc4bcc002d0e56644232ec039bb095e5657b516f"
 }

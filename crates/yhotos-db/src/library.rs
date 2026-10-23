@@ -44,6 +44,12 @@ pub enum Command {
         id: Uuid,
         title: String,
         description: String,
+        #[serde(default)]
+        taken_at_mode: OverrideMode,
+        #[serde(default)]
+        gps_mode: OverrideMode,
+        #[serde(default)]
+        place_mode: OverrideMode,
         taken_at: Option<String>,
         place_id: Option<Uuid>,
         gps_lat: Option<f64>,
@@ -95,6 +101,18 @@ pub enum Command {
         id: Uuid,
         retry: bool,
     },
+}
+/// Explicit intent prevents ordinary saves from freezing extracted metadata.
+#[derive(Default, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum OverrideMode {
+    /// Preserve both the value and its current source.
+    #[default]
+    Keep,
+    /// Use extracted metadata or offline geocoding on the next job.
+    Automatic,
+    /// Persist the supplied value, including an intentionally empty GPS or place.
+    Manual,
 }
 /// User and group identities are checked against their tables before grants are written.
 #[derive(Deserialize, Serialize)]
@@ -440,6 +458,9 @@ pub async fn execute_in(
             title,
             description,
             taken_at,
+            taken_at_mode,
+            gps_mode,
+            place_mode,
             place_id,
             gps_lat,
             gps_lon,
@@ -466,7 +487,55 @@ pub async fn execute_in(
             {
                 return Err(DbError::InvalidInput);
             }
-            sqlx::query!("UPDATE photos SET title=$2,description=$3,taken_at=$4,taken_at_override=$4,taken_at_local=$4 AT TIME ZONE 'UTC',place_id=$5,gps_lat=$6,gps_lon=$7,gps_overridden=true,visibility=$8 WHERE id=$1",id,title,description,at,*place_id,*gps_lat,*gps_lon,visibility(vis,false)? as _).execute(&mut *tx).await?;
+            if *taken_at_mode == OverrideMode::Manual && at.is_none() {
+                return Err(DbError::InvalidInput);
+            }
+            sqlx::query!(
+                "UPDATE photos SET title=$2,description=$3,visibility=$4 WHERE id=$1",
+                id,
+                title,
+                description,
+                visibility(vis, false)? as _
+            )
+            .execute(&mut *tx)
+            .await?;
+            if *taken_at_mode != OverrideMode::Keep {
+                let at = if *taken_at_mode == OverrideMode::Manual {
+                    at
+                } else {
+                    None
+                };
+                sqlx::query!("UPDATE photos SET taken_at=$2,taken_at_override=$2,taken_at_local=$2 AT TIME ZONE 'UTC' WHERE id=$1",id,at).execute(&mut *tx).await?;
+            }
+            if *gps_mode != OverrideMode::Keep {
+                let manual = *gps_mode == OverrideMode::Manual;
+                sqlx::query!(
+                    "UPDATE photos SET gps_lat=$2,gps_lon=$3,gps_overridden=$4 WHERE id=$1",
+                    id,
+                    if manual { *gps_lat } else { None },
+                    if manual { *gps_lon } else { None },
+                    manual
+                )
+                .execute(&mut *tx)
+                .await?;
+            }
+            if *place_mode != OverrideMode::Keep {
+                let manual = *place_mode == OverrideMode::Manual;
+                sqlx::query!(
+                    "UPDATE photos SET place_id=$2,place_overridden=$3 WHERE id=$1",
+                    id,
+                    if manual { *place_id } else { None },
+                    manual
+                )
+                .execute(&mut *tx)
+                .await?;
+            }
+            if *taken_at_mode == OverrideMode::Automatic || *gps_mode == OverrideMode::Automatic {
+                retry_ingest(&mut tx, *id).await?;
+            } else if *place_mode == OverrideMode::Automatic || *gps_mode == OverrideMode::Manual {
+                jobs::enqueue_unique(&mut tx, "geo.reverse", &json!({"photo_id":id}), 0, None, 3)
+                    .await?;
+            }
             photo_grants(&mut tx, &[*id], grants).await?;
             sqlx::query!("DELETE FROM photo_tags WHERE photo_id=$1", id)
                 .execute(&mut *tx)
@@ -779,7 +848,7 @@ async fn bulk(c: &mut PgConnection, ids: &[Uuid], action: &BulkAction) -> Result
                 .iter()
                 .map(|p| ShortId::from_photo_id(*p).to_string())
                 .collect();
-            sqlx::query!("INSERT INTO photos(id,short_id,album_id,title,description,taken_at,posted_at,sort_order,visibility,original_hash,original_name,original_bytes,mime,kind,width,height,orientation,is_hdr,has_gain_map,icc_name,camera_make,camera_model,lens,focal_mm,aperture,shutter,iso,gps_lat,gps_lon,place_id,dominant_colors,placeholder,status,failure_reason,derivative_plan,taken_at_local,original_orientation,generation,taken_at_override,gps_overridden) SELECT m.target,m.short,$4,p.title,p.description,p.taken_at,p.posted_at,p.sort_order,p.visibility,p.original_hash,p.original_name,p.original_bytes,p.mime,p.kind,p.width,p.height,p.orientation,p.is_hdr,p.has_gain_map,p.icc_name,p.camera_make,p.camera_model,p.lens,p.focal_mm,p.aperture,p.shutter,p.iso,p.gps_lat,p.gps_lon,p.place_id,p.dominant_colors,p.placeholder,p.status,p.failure_reason,p.derivative_plan,p.taken_at_local,p.original_orientation,p.generation,p.taken_at_override,p.gps_overridden FROM photos p JOIN unnest($1::uuid[],$2::uuid[],$3::text[]) m(source,target,short) ON p.id=m.source",ids,&new_ids,&shorts,album_id).execute(&mut *c).await?;
+            sqlx::query!("INSERT INTO photos(id,short_id,album_id,title,description,taken_at,posted_at,sort_order,visibility,original_hash,original_name,original_bytes,mime,kind,width,height,orientation,is_hdr,has_gain_map,icc_name,camera_make,camera_model,lens,focal_mm,aperture,shutter,iso,gps_lat,gps_lon,place_id,dominant_colors,placeholder,status,failure_reason,derivative_plan,taken_at_local,original_orientation,generation,taken_at_override,gps_overridden,place_overridden) SELECT m.target,m.short,$4,p.title,p.description,p.taken_at,p.posted_at,p.sort_order,p.visibility,p.original_hash,p.original_name,p.original_bytes,p.mime,p.kind,p.width,p.height,p.orientation,p.is_hdr,p.has_gain_map,p.icc_name,p.camera_make,p.camera_model,p.lens,p.focal_mm,p.aperture,p.shutter,p.iso,p.gps_lat,p.gps_lon,p.place_id,p.dominant_colors,p.placeholder,p.status,p.failure_reason,p.derivative_plan,p.taken_at_local,p.original_orientation,p.generation,p.taken_at_override,p.gps_overridden,p.place_overridden FROM photos p JOIN unnest($1::uuid[],$2::uuid[],$3::text[]) m(source,target,short) ON p.id=m.source",ids,&new_ids,&shorts,album_id).execute(&mut *c).await?;
             sqlx::query!("INSERT INTO derivatives(id,photo_id,variant,format,hdr,hash,width,height,bytes) SELECT yhotos_uuid_v7(),m.target,d.variant,d.format,d.hdr,d.hash,d.width,d.height,d.bytes FROM derivatives d JOIN unnest($1::uuid[],$2::uuid[]) m(source,target) ON d.photo_id=m.source",ids,&new_ids).execute(&mut *c).await?;
             sqlx::query!("INSERT INTO video_renditions(id,photo_id,codec,hash,width,height,bytes,duration_ms,hls) SELECT yhotos_uuid_v7(),m.target,d.codec,d.hash,d.width,d.height,d.bytes,d.duration_ms,d.hls FROM video_renditions d JOIN unnest($1::uuid[],$2::uuid[]) m(source,target) ON d.photo_id=m.source",ids,&new_ids).execute(&mut *c).await?;
             sqlx::query!("INSERT INTO photo_tags(id,photo_id,tag_id,confidence,source) SELECT yhotos_uuid_v7(),m.target,pt.tag_id,pt.confidence,pt.source FROM photo_tags pt JOIN unnest($1::uuid[],$2::uuid[]) m(source,target) ON pt.photo_id=m.source",ids,&new_ids).execute(&mut *c).await?;
@@ -821,14 +890,13 @@ async fn bulk(c: &mut PgConnection, ids: &[Uuid], action: &BulkAction) -> Result
             if !album.manual_order {
                 return Err(DbError::InvalidInput);
             }
-            let count=sqlx::query_scalar!(r#"SELECT count(*) AS "count!" FROM photos WHERE album_id=$1 AND deleted_at IS NULL"#,album_id).fetch_one(&mut *c).await?;
-            if usize::try_from(count).ok() != Some(ids.len()) {
+            // Reorder only the selected slots, retaining the relative order of all other photos.
+            // Normalize ties first so swaps also work for albums uploaded with equal sort_order.
+            let members = sqlx::query_scalar!(r#"SELECT count(*) AS "count!" FROM photos WHERE album_id=$1 AND deleted_at IS NULL AND id=ANY($2)"#,album_id,ids).fetch_one(&mut *c).await?;
+            if usize::try_from(members).ok() != Some(ids.len()) {
                 return Err(DbError::InvalidInput);
             }
-            let changed=sqlx::query!("UPDATE photos p SET sort_order=(o.n-1)::int FROM unnest($1::uuid[]) WITH ORDINALITY o(id,n) WHERE p.id=o.id AND p.album_id=$2",ids,album_id).execute(c).await?.rows_affected();
-            if usize::try_from(changed).ok() != Some(ids.len()) {
-                return Err(DbError::InvalidInput);
-            }
+            sqlx::query!("WITH ranked AS MATERIALIZED (SELECT id,(row_number() OVER (ORDER BY sort_order,id)-1)::int AS new_order FROM photos WHERE album_id=$2 AND deleted_at IS NULL), desired AS MATERIALIZED (SELECT * FROM unnest($1::uuid[],ARRAY(SELECT new_order FROM ranked WHERE id=ANY($1) ORDER BY new_order)) AS m(id,new_order)) UPDATE photos p SET sort_order=coalesce(d.new_order,r.new_order) FROM ranked r LEFT JOIN desired d ON d.id=r.id WHERE p.id=r.id AND p.sort_order IS DISTINCT FROM coalesce(d.new_order,r.new_order)",ids,album_id).execute(c).await?;
             Ok(json!({}))
         }
         BulkAction::Delete => {

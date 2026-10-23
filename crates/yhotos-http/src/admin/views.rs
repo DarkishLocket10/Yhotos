@@ -115,6 +115,18 @@ fn select(name: &str, label: &str, options: &[(&str, &str)], selected: &str) -> 
         ..text(name, label, "")
     }
 }
+fn override_mode(name: &str, label: &str) -> Field {
+    select(
+        name,
+        label,
+        &[
+            ("keep", "Keep current value and source"),
+            ("automatic", "Use automatic metadata"),
+            ("manual", "Override with the entered value"),
+        ],
+        "keep",
+    )
+}
 fn choices(
     name: &str,
     label: &str,
@@ -543,6 +555,9 @@ pub(super) fn render(
                     "Description (Markdown)",
                     s(data, "description"),
                 ),
+                override_mode("taken_at_mode", "Capture date source"),
+                override_mode("gps_mode", "Coordinates source"),
+                override_mode("place_mode", "Place source"),
                 optional(
                     "taken_at",
                     "Taken at override (RFC 3339)",

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO jobs(id,kind,payload,created_at,finished_at,error,attempts) VALUES($1,'ingest','{}',now()-interval '2 days',now(),'Older unresolved failure',5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2c06381f097b466e5a11606df3dc6a5dd21ef4b9308adcb912c78d787a2fb20c"
+}
