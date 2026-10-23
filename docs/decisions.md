@@ -17,3 +17,5 @@ scope violation. Newest last.
 | 2026-10-22 | HDR | Compressed (`brob`) JPEG XL gain maps are not decompressed; the photo keeps SDR output with a recorded reason. | 019 |
 | 2026-10-22 | Benchmarks | Mutation benchmarks timing real writes are owned by 018, not 013. | 013, 018 |
 | 2026-10-22 | Deploy | 023 depends on 014 and 018. | 023 |
+| 2026-10-22 | Search | Task 014's Docker image build, offline (no egress) run and combined GPU timing are verified during staging on tower's GTX 1080 Ti (task 023), not in the 014 PR. 014 merges once its code review passes on everything else. | 014, 023 |
+| 2026-10-22 | Search | ML preprocessing converts every image to sRGB from its ICC profile before inference. | 014 |
