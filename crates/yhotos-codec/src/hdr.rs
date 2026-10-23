@@ -230,6 +230,28 @@ unsafe fn block<'a>(p: *const ffi::uhdr_mem_block_t) -> Result<&'a [u8], CodecEr
     Ok(unsafe { std::slice::from_raw_parts(b.data.cast(), b.data_sz) })
 }
 
+pub(crate) fn check_geometry((w, h): (u32, u32), base: &Identity) -> Result<(), CodecError> {
+    let (bw, bh) = base.width.zip(base.height).ok_or(CodecError::Decode)?;
+    // JPEG/HEIF auxiliaries follow the base orientation. JXL header sizes already
+    // include codestream orientation, so its identified base has orientation 1.
+    let ((w, h), (bw, bh)) = if base.orientation >= 5 {
+        ((h, w), (bh, bw))
+    } else {
+        ((w, h), (bw, bh))
+    };
+    if w == 0
+        || h == 0
+        || bw == 0
+        || bh == 0
+        || w > bw
+        || h > bh
+        || (f64::from(w) / f64::from(h) - f64::from(bw) / f64::from(bh)).abs() > 0.02
+    {
+        return Err(CodecError::Decode);
+    }
+    Ok(())
+}
+
 pub(crate) fn extract(path: &Path, id: &Identity, limits: &Limits) -> Result<GainMap, CodecError> {
     let bytes = read(path, limits)?;
     let (image, metadata) = match id.kind {
@@ -239,14 +261,14 @@ pub(crate) fn extract(path: &Path, id: &Identity, limits: &Limits) -> Result<Gai
             crate::headers::gain_map(path)?;
             let gain = crate::hdr_jpeg::extract(&bytes)?;
             (
-                native::Image::gain_jpeg(gain.image, limits, id.orientation)?,
+                native::Image::gain_jpeg(gain.image, limits, id)?,
                 gain.metadata,
             )
         }
         Kind::Heif | Kind::Avif => {
             let gain = crate::gain_container::heif(&bytes, limits)?;
             let mut image =
-                native::Image::gain_heif(path, gain.id, limits)?.oriented(id.orientation)?;
+                native::Image::gain_heif(path, gain.id, limits, id)?.oriented(id.orientation)?;
             if gain.apple {
                 let headroom = gain.metadata.alternate_headroom.exp2();
                 let pixels = image
@@ -272,26 +294,13 @@ pub(crate) fn extract(path: &Path, id: &Identity, limits: &Limits) -> Result<Gai
             (image, gain.metadata)
         }
         Kind::Jxl => {
-            let gain = crate::gain_container::jxl(&bytes, limits)?;
+            let gain = crate::gain_container::jxl(&bytes, limits, id)?;
             (gain.image, gain.metadata)
         }
         _ => return Err(CodecError::Unsupported),
     };
     if !metadata.use_base {
         return Err(CodecError::Unsupported);
-    }
-    let (w, h) = image.size()?;
-    let (bw, bh) = id.width.zip(id.height).ok_or(CodecError::Decode)?;
-    let (bw, bh) = if id.orientation >= 5 {
-        (bh, bw)
-    } else {
-        (bw, bh)
-    };
-    if w > bw
-        || h > bh
-        || (f64::from(w) / f64::from(h) - f64::from(bw) / f64::from(bh)).abs() > 0.02
-    {
-        return Err(CodecError::Decode);
     }
     Ok(GainMap { image, metadata })
 }
@@ -382,8 +391,10 @@ pub fn validate_gain_map_metadata(bytes: &[u8]) -> Result<(), CodecError> {
             }
         }
     }
-    if bytes.starts_with(b"\0\0\0\x0cJXL ") {
-        let _ = crate::gain_container::jxl(bytes, &limits);
+    if bytes.starts_with(b"\0\0\0\x0cJXL ")
+        && let Ok(base) = native::identify_jxl_reader(bytes, &limits)
+    {
+        let _ = crate::gain_container::jxl(bytes, &limits, &base);
     }
     Ok(())
 }
@@ -396,6 +407,135 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../fixtures/hdr")
             .join(name)
+    }
+    fn assert_geometry_skips_auxiliary_decode(path: &Path) {
+        let limits = Limits::default();
+        let id = crate::identify(path, &limits).unwrap();
+        assert!(id.has_gain_map);
+        let before = native::GAIN_PIXEL_DECODES.get();
+        let working = crate::decode(path, &id, &limits).unwrap();
+        assert_eq!(native::GAIN_PIXEL_DECODES.get(), before);
+        assert!(!working.has_gain_map());
+        assert_eq!(
+            working.hdr_skipped_reason(),
+            Some(HdrSkippedReason::InvalidGainMap)
+        );
+        let base = crate::from_image(native::Image::load(path, &id.kind).unwrap()).unwrap();
+        assert_eq!(
+            working.image.pixels().unwrap(),
+            base.image.pixels().unwrap()
+        );
+        let resized = crate::resize(
+            &working,
+            crate::ResizeSpec {
+                long_edge: 48,
+                square: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(resized.hdr_skipped_reason(), working.hdr_skipped_reason());
+        let output = tempfile::NamedTempFile::new().unwrap();
+        crate::encode(
+            &resized,
+            crate::Encode::Jpeg {
+                quality: 90,
+                progressive: true,
+                chroma_subsampling: false,
+                hdr: false,
+            },
+            crate::EncodeOpts {
+                keep_icc: true,
+                strip_metadata: true,
+            },
+            output.path(),
+        )
+        .unwrap();
+    }
+    #[test]
+    fn inconsistent_jpeg_mpf_geometry_skips_auxiliary_decode() {
+        let original = std::fs::read(fixture("iso.jpg")).unwrap();
+        let gain = crate::hdr_jpeg::extract(&original).unwrap();
+        let auxiliary = original
+            .windows(gain.image.len())
+            .position(|bytes| bytes == gain.image)
+            .unwrap();
+        let frame = gain
+            .image
+            .windows(2)
+            .position(|marker| matches!(marker, [0xff, 0xc0..=0xc2]))
+            .unwrap()
+            + auxiliary;
+        // Both are below global limits: an oversized map with the correct aspect,
+        // and a smaller map whose aspect disagrees with the 96x64 base.
+        for (w, h) in [(192_u16, 128_u16), (48, 16)] {
+            let mut bytes = original.clone();
+            bytes[frame + 5..frame + 7].copy_from_slice(&h.to_be_bytes());
+            bytes[frame + 7..frame + 9].copy_from_slice(&w.to_be_bytes());
+            let input = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(input.path(), bytes).unwrap();
+            assert_geometry_skips_auxiliary_decode(input.path());
+        }
+    }
+    #[test]
+    fn inconsistent_heic_aux_geometry_skips_auxiliary_decode() {
+        let original = std::fs::read(fixture("apple.heic")).unwrap();
+        let properties: Vec<_> = original
+            .windows(4)
+            .enumerate()
+            .filter_map(|(at, kind)| (kind == b"ispe").then_some(at))
+            .collect();
+        assert_eq!(properties.len(), 2);
+        let auxiliary = properties[1];
+        let crop = original
+            .windows(4)
+            .position(|kind| kind == b"clap")
+            .unwrap();
+        for (w, h) in [(192_u32, 128_u32), (48, 16)] {
+            let mut bytes = original.clone();
+            bytes[auxiliary + 8..auxiliary + 12].copy_from_slice(&w.to_be_bytes());
+            bytes[auxiliary + 12..auxiliary + 16].copy_from_slice(&h.to_be_bytes());
+            // libheif reports the clean aperture as the decoded item geometry.
+            bytes[crop + 4..crop + 8].copy_from_slice(&w.to_be_bytes());
+            bytes[crop + 12..crop + 16].copy_from_slice(&h.to_be_bytes());
+            bytes[crop + 20..crop + 24].fill(0);
+            bytes[crop + 28..crop + 32].fill(0);
+            let input = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(input.path(), bytes).unwrap();
+            assert_geometry_skips_auxiliary_decode(input.path());
+        }
+    }
+    #[test]
+    fn inconsistent_jxl_jhgm_geometry_skips_auxiliary_decode() {
+        let original = std::fs::read(fixture("gain-map.jxl")).unwrap();
+        let auxiliary = original
+            .windows(4)
+            .position(|kind| kind == b"jhgm")
+            .unwrap()
+            - 4;
+        assert_eq!(
+            auxiliary
+                + u32::from_be_bytes(original[auxiliary..auxiliary + 4].try_into().unwrap())
+                    as usize,
+            original.len()
+        );
+        let metadata = crate::hdr_jpeg::extract(&std::fs::read(fixture("iso.jpg")).unwrap())
+            .unwrap()
+            .metadata;
+        for (w, h) in [(192, 128), (48, 16)] {
+            let gain =
+                native::Image::samples(&vec![128; w as usize * h as usize * 3], w, h, 3).unwrap();
+            let encoded = tempfile::NamedTempFile::new().unwrap();
+            gain.gain_save_jxl(encoded.path()).unwrap();
+            let bytes = crate::gain_container::jxl_mux(
+                &original[..auxiliary],
+                &std::fs::read(encoded.path()).unwrap(),
+                &metadata,
+            )
+            .unwrap();
+            let input = tempfile::NamedTempFile::new().unwrap();
+            std::fs::write(input.path(), bytes).unwrap();
+            assert_geometry_skips_auxiliary_decode(input.path());
+        }
     }
     fn half(bits: u16) -> f32 {
         let exponent = i32::from((bits >> 10) & 31);
@@ -488,8 +628,9 @@ mod tests {
             out.path(),
         )
         .unwrap();
+        let id = crate::identify(out.path(), &Limits::default()).unwrap();
         let decoded =
-            native::Image::gain_jxl(&std::fs::read(out.path()).unwrap(), &Limits::default())
+            native::Image::gain_jxl(&std::fs::read(out.path()).unwrap(), &Limits::default(), &id)
                 .unwrap();
         assert_eq!(decoded.pixels().unwrap(), original);
     }
@@ -551,7 +692,7 @@ mod tests {
                 .unwrap()
                 .pixels()
                 .unwrap(),
-            native::Image::gain_jpeg(&base.bytes, &Limits::default(), 1)
+            native::Image::gain_jpeg(&base.bytes, &Limits::default(), &id)
                 .unwrap()
                 .pixels()
                 .unwrap()

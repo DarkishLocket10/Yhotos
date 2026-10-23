@@ -21,6 +21,9 @@ pub(crate) const UCHAR: i32 = ffi::VipsBandFormat_VIPS_FORMAT_UCHAR;
 pub(crate) const USHORT: i32 = ffi::VipsBandFormat_VIPS_FORMAT_USHORT;
 const END: *const std::ffi::c_char = ptr::null();
 
+#[cfg(test)]
+std::thread_local! { pub(crate) static GAIN_PIXEL_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
 pub(crate) fn init() -> Result<(), CodecError> {
     init_with_concurrency(2)
 }
@@ -149,13 +152,16 @@ impl Image {
     pub(crate) fn gain_jpeg(
         bytes: &[u8],
         limits: &crate::Limits,
-        orientation: u8,
+        base: &Identity,
     ) -> Result<Self, CodecError> {
+        crate::hdr::check_geometry(crate::headers::jpeg_dimensions(bytes, limits)?, base)?;
+        #[cfg(test)]
+        GAIN_PIXEL_DECODES.set(GAIN_PIXEL_DECODES.get() + 1);
         let image = Self::jpeg(bytes, limits)?;
         if image.format() != UCHAR || !matches!(image.bands(), 1 | 3) || image.has_alpha() {
             return Err(CodecError::Unsupported);
         }
-        image.oriented(orientation)
+        image.oriented(base.orientation)
     }
     pub(crate) fn oriented(&self, orientation: u8) -> Result<Self, CodecError> {
         let image = self.copy()?;
@@ -169,12 +175,23 @@ impl Image {
         }
         image.autorot()?.materialize()
     }
-    pub(crate) fn gain_jxl(bytes: &[u8], limits: &crate::Limits) -> Result<Self, CodecError> {
+    pub(crate) fn gain_jxl(
+        bytes: &[u8],
+        limits: &crate::Limits,
+        base: &Identity,
+    ) -> Result<Self, CodecError> {
         let identity = identify_jxl_reader(bytes, limits)?;
+        let dimensions = identity
+            .width
+            .zip(identity.height)
+            .ok_or(CodecError::Decode)?;
+        crate::hdr::check_geometry(dimensions, base)?;
         if identity.has_alpha {
             return Err(CodecError::Unsupported);
         }
         init()?;
+        #[cfg(test)]
+        GAIN_PIXEL_DECODES.set(GAIN_PIXEL_DECODES.get() + 1);
         let image = operation!(|out| ffi::vips_jxlload_buffer(
             bytes.as_ptr().cast_mut().cast(),
             bytes.len(),
@@ -183,6 +200,9 @@ impl Image {
             3i32,
             END
         ))?;
+        if image.size()? != dimensions {
+            return Err(CodecError::Mismatch);
+        }
         if !matches!(image.bands(), 1 | 3) {
             return Err(CodecError::Unsupported);
         }
@@ -198,6 +218,7 @@ impl Image {
         path: &Path,
         id: u32,
         limits: &crate::Limits,
+        base: &Identity,
     ) -> Result<Self, CodecError> {
         let path = path_string(path)?;
         init()?;
@@ -224,6 +245,9 @@ impl Image {
                 let h = u32::try_from(ffi::heif_image_handle_get_height(handle))
                     .map_err(|_| CodecError::Limits)?;
                 limits.check(w, h, 1)?;
+                crate::hdr::check_geometry((w, h), base)?;
+                #[cfg(test)]
+                GAIN_PIXEL_DECODES.set(GAIN_PIXEL_DECODES.get() + 1);
                 if ffi::heif_decode_image(
                     handle,
                     &mut decoded,

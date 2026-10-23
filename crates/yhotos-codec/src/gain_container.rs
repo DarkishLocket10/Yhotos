@@ -189,7 +189,11 @@ pub(crate) fn iso_write(metadata: &Metadata) -> Result<Vec<u8>, CodecError> {
     Ok(bytes)
 }
 
-pub(crate) fn jxl(bytes: &[u8], limits: &Limits) -> Result<crate::hdr::GainMap, CodecError> {
+pub(crate) fn jxl(
+    bytes: &[u8],
+    limits: &Limits,
+    base: &crate::Identity,
+) -> Result<crate::hdr::GainMap, CodecError> {
     let top = parse_boxes(bytes, &mut 4096, true)?;
     if top
         .iter()
@@ -211,7 +215,7 @@ pub(crate) fn jxl(bytes: &[u8], limits: &Limits) -> Result<crate::hdr::GainMap, 
     if c.num(1)? != 0 || c.num(4)? != 0 || !metadata.use_base {
         return Err(CodecError::Unsupported);
     }
-    let image = crate::native::Image::gain_jxl(&data[c.at..], limits)?;
+    let image = crate::native::Image::gain_jxl(&data[c.at..], limits, base)?;
     Ok(crate::hdr::GainMap { image, metadata })
 }
 pub(crate) fn jxl_mux(
@@ -748,6 +752,9 @@ mod tests {
     #[test]
     fn jxl_brob_detection_checks_inner_type_and_box_extent() {
         let file = tempfile::NamedTempFile::new().unwrap();
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/hdr/gain-map.jxl");
+        let base = crate::native::identify_jxl(&path, &Limits::default()).unwrap();
         for extended in [false, true] {
             for (payload, present) in [
                 (b"jhgm\0".as_slice(), true),
@@ -768,7 +775,7 @@ mod tests {
                 assert_eq!(jxl_present(file.path()), Ok(present));
                 if present {
                     assert!(matches!(
-                        jxl(&bytes, &Limits::default()),
+                        jxl(&bytes, &Limits::default(), &base),
                         Err(CodecError::CompressedJxlGainMap)
                     ));
                 }
@@ -778,7 +785,7 @@ mod tests {
         std::fs::write(file.path(), bytes).unwrap();
         assert_eq!(jxl_present(file.path()), Ok(true));
         assert!(matches!(
-            jxl(bytes, &Limits::default()),
+            jxl(bytes, &Limits::default(), &base),
             Err(CodecError::CompressedJxlGainMap)
         ));
         assert!(matches!(boxes(bytes, &mut 4096), Err(CodecError::Decode)));

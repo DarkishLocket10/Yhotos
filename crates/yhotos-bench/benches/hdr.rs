@@ -35,6 +35,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     criterion.bench_function("hdr/identify_jpeg_gain_map", |b| {
         b.iter(|| yhotos_codec::identify(black_box(&input), &Limits::default()));
     });
+    criterion.bench_function("hdr/decode_jpeg_gain_map", |b| {
+        b.iter(|| yhotos_codec::decode(black_box(&input), &id, &Limits::default()));
+    });
     for (form, name) in [
         ("plain", "gain-map.jxl"),
         ("compressed", "gain-map-brob.jxl"),
