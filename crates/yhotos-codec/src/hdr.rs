@@ -719,6 +719,93 @@ mod tests {
         }
     }
     #[test]
+    fn scalar_jpeg_metadata_and_hdr_luminance_round_trip_through_xmp_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = std::fs::read(fixture("iso.jpg")).unwrap();
+        let mut metadata = crate::hdr_jpeg::extract(&original).unwrap().metadata;
+        // Non-default scalars detect optional fields silently falling back to defaults too.
+        metadata.min = [0.25; 3];
+        metadata.max = [2.5; 3];
+        metadata.gamma = [1.25; 3];
+        metadata.base_offset = [0.02; 3];
+        metadata.alternate_offset = [0.03; 3];
+        metadata.base_headroom = 0.125;
+        metadata.alternate_headroom = 3.0;
+        let input = crate::hdr_jpeg::dual(&original, &metadata).unwrap();
+        let expected_luma = reference_luma(&input);
+        let path = dir.path().join("input.jpg");
+        std::fs::write(&path, input).unwrap();
+        let id = crate::identify(&path, &Limits::default()).unwrap();
+        let working = crate::decode(&path, &id, &Limits::default()).unwrap();
+        assert!(working.has_gain_map(), "{:?}", working.hdr_skipped_reason());
+        for edge in [48, 1280, 2048, 3200] {
+            let resized = crate::resize(
+                &working,
+                crate::ResizeSpec {
+                    long_edge: edge,
+                    square: false,
+                },
+            )
+            .unwrap();
+            let hdr = dir.path().join("hdr.jpg");
+            crate::encode(
+                &resized,
+                crate::Encode::Jpeg {
+                    quality: 99,
+                    progressive: true,
+                    chroma_subsampling: false,
+                    hdr: true,
+                },
+                crate::EncodeOpts {
+                    keep_icc: true,
+                    strip_metadata: true,
+                },
+                &hdr,
+            )
+            .unwrap();
+            let mut bytes = std::fs::read(hdr).unwrap();
+            // Hide both ISO APP2 namespace identifiers in place: no lengths, MPF offsets,
+            // container lengths, XMP packets or compressed image bytes change.
+            let iso = b"urn:iso:std:iso:ts:21496:-1\0";
+            let positions: Vec<_> = bytes
+                .windows(iso.len())
+                .enumerate()
+                .filter_map(|(at, part)| (part == iso).then_some(at))
+                .collect();
+            assert_eq!(positions.len(), 2);
+            for at in positions {
+                bytes[at] = b'x';
+            }
+            // Our reader still resolves MPF extents, while the reference decoder must use XMP.
+            crate::hdr_jpeg::extract(&bytes).unwrap();
+            let decoded = Decoder::probe(&bytes, &Limits::default())
+                .unwrap()
+                .metadata()
+                .unwrap();
+            for (actual, expected) in [
+                (decoded.min, metadata.min),
+                (decoded.max, metadata.max),
+                (decoded.gamma, metadata.gamma),
+                (decoded.base_offset, metadata.base_offset),
+                (decoded.alternate_offset, metadata.alternate_offset),
+                (
+                    [decoded.base_headroom, decoded.alternate_headroom, 0.0],
+                    [metadata.base_headroom, metadata.alternate_headroom, 0.0],
+                ),
+            ] {
+                for (a, b) in actual.into_iter().zip(expected) {
+                    assert!((a - b).abs() < 0.0001, "{edge}: {a} vs {b}");
+                }
+            }
+            for (actual, expected) in reference_luma(&bytes).iter().zip(&expected_luma) {
+                assert!(
+                    (actual - expected).abs() <= 0.01 + 0.04 * expected,
+                    "{edge}: {actual} vs {expected}"
+                );
+            }
+        }
+    }
+    #[test]
     fn differing_rgb_coefficients_survive_jpeg_encoding_and_reference_decode() {
         let dir = tempfile::tempdir().unwrap();
         let original = std::fs::read(fixture("iso.jpg")).unwrap();

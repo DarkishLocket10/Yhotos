@@ -5,6 +5,7 @@
     clippy::cast_possible_truncation
 )] // Marker extents and fixed MP entry offsets are checked.
 use crate::{CodecError, hdr::Metadata};
+use std::fmt::Write;
 const ISO: &[u8] = b"urn:iso:std:iso:ts:21496:-1\0";
 const XMP: &[u8] = b"http://ns.adobe.com/xap/1.0/\0";
 fn segments(bytes: &[u8]) -> Result<Vec<(usize, usize, u8)>, CodecError> {
@@ -81,17 +82,19 @@ fn xml(body: &str) -> String {
         "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description xmlns:hdrgm=\"http://ns.adobe.com/hdr-gain-map/1.0/\" hdrgm:Version=\"1.0\" {body}</rdf:Description></rdf:RDF></x:xmpmeta>"
     )
 }
-fn property(name: &str, values: [f32; 3]) -> String {
+fn property(name: &str, values: [f32; 3], attributes: &mut String, properties: &mut String) {
     if values[0] == values[1] && values[1] == values[2] {
-        format!("<hdrgm:{name}>{}</hdrgm:{name}>", values[0])
+        // The reference XMP reader recognizes scalar coefficients only as Description attributes.
+        let _ = write!(attributes, "hdrgm:{name}=\"{}\" ", values[0]);
     } else {
-        format!(
+        let _ = write!(
+            properties,
             "<hdrgm:{name}><rdf:Seq>{}</rdf:Seq></hdrgm:{name}>",
             format_args!(
                 "<rdf:li>{}</rdf:li><rdf:li>{}</rdf:li><rdf:li>{}</rdf:li>",
                 values[0], values[1], values[2]
             )
-        )
+        );
     }
 }
 
@@ -371,6 +374,7 @@ pub(crate) fn dual(stream: &[u8], metadata: &Metadata) -> Result<Vec<u8>, CodecE
             .get(images[1].0 as usize..images[1].1 as usize)
             .ok_or(CodecError::Decode)?,
     )?;
+    let mut attributes = String::new();
     let mut properties = String::new();
     for (name, values) in [
         ("GainMapMin", metadata.min),
@@ -379,10 +383,10 @@ pub(crate) fn dual(stream: &[u8], metadata: &Metadata) -> Result<Vec<u8>, CodecE
         ("OffsetSDR", metadata.base_offset),
         ("OffsetHDR", metadata.alternate_offset),
     ] {
-        properties.push_str(&property(name, values));
+        property(name, values, &mut attributes, &mut properties);
     }
     let aux_document = xml(&format!(
-        "hdrgm:HDRCapacityMin=\"{}\" hdrgm:HDRCapacityMax=\"{}\" hdrgm:BaseRenditionIsHDR=\"False\">{properties}",
+        "{attributes}hdrgm:HDRCapacityMin=\"{}\" hdrgm:HDRCapacityMax=\"{}\" hdrgm:BaseRenditionIsHDR=\"False\">{properties}",
         metadata.base_headroom, metadata.alternate_headroom
     ));
     let aux_xmp = segment(0xe1, XMP, aux_document.as_bytes())?;
@@ -459,13 +463,23 @@ mod tests {
     }
     #[test]
     fn adobe_attributes_and_rgb_sequences_are_typed_and_bounded() {
+        let mut attributes = String::new();
+        let mut properties = String::new();
+        for (name, values) in [
+            ("GainMapMin", [-1.0, 0.0, 1.0]),
+            ("GainMapMax", [1.0, 2.0, 3.0]),
+            ("Gamma", [0.5, 1.0, 2.0]),
+            ("OffsetSDR", [0.01; 3]),
+            ("OffsetHDR", [0.02; 3]),
+        ] {
+            property(name, values, &mut attributes, &mut properties);
+        }
+        assert_eq!(
+            attributes,
+            "hdrgm:OffsetSDR=\"0.01\" hdrgm:OffsetHDR=\"0.02\" "
+        );
         let document = xml(&format!(
-            "hdrgm:HDRCapacityMin=\"0\" hdrgm:HDRCapacityMax=\"3\">{}{}{}{}{}",
-            property("GainMapMin", [-1.0, 0.0, 1.0]),
-            property("GainMapMax", [1.0, 2.0, 3.0]),
-            property("Gamma", [0.5, 1.0, 2.0]),
-            property("OffsetSDR", [0.01; 3]),
-            property("OffsetHDR", [0.02; 3])
+            "{attributes}hdrgm:HDRCapacityMin=\"0\" hdrgm:HDRCapacityMax=\"3\">{properties}"
         ));
         let metadata = adobe(document.as_bytes()).unwrap().unwrap();
         assert!(
@@ -481,6 +495,18 @@ mod tests {
                 .iter()
                 .zip([0.5, 1.0, 2.0])
                 .all(|(a, b)| (a - b).abs() < 0.0001)
+        );
+        assert!(
+            metadata
+                .base_offset
+                .iter()
+                .all(|v| (v - 0.01).abs() < 0.0001)
+        );
+        assert!(
+            metadata
+                .alternate_offset
+                .iter()
+                .all(|v| (v - 0.02).abs() < 0.0001)
         );
         assert!((metadata.alternate_headroom - 3.0).abs() < 0.0001);
         for (from, to) in [
@@ -522,9 +548,9 @@ mod tests {
         let encoded = crate::hdr::mux(base, gain.image, &gain.metadata).unwrap();
         assert!(extract(&encoded).is_ok());
         let mut bad = encoded;
-        let text = b"<hdrgm:GainMapMax>2</hdrgm:GainMapMax>";
+        let text = b"hdrgm:GainMapMax=\"2\"";
         let at = bad.windows(text.len()).position(|b| b == text).unwrap();
-        bad[at + b"<hdrgm:GainMapMax>".len()] = b'3';
+        bad[at + b"hdrgm:GainMapMax=\"".len()] = b'3';
         assert!(extract(&bad).is_err());
     }
     #[test]
