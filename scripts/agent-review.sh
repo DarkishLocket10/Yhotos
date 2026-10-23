@@ -21,7 +21,8 @@ done
 [[ -z "$EFFORT" || "$EFFORT" =~ ^(low|medium|high|xhigh|max)$ ]] || { echo "bad effort" >&2; exit 2; }
 
 if [[ "$HOST" != "local" ]]; then
-  REMOTE_CMD="cd ~/work/Yhotos && git fetch -q origin && scripts/agent-review.sh $(printf %q "$TASK_ID")${EFFORT:+ --effort $EFFORT}"
+  # Run main's copy of this script and prompt (the review host's checkout can be stale).
+  REMOTE_CMD="cd ~/work/Yhotos && git fetch -q origin && git checkout -q --detach origin/main && scripts/agent-review.sh $(printf %q "$TASK_ID")${EFFORT:+ --effort $EFFORT}"
   ssh -o BatchMode=yes "$HOST" "bash -lc $(printf %q "$REMOTE_CMD")" < /dev/null
   exit $?
 fi
@@ -47,6 +48,12 @@ echo "reviewing $BRANCH with gpt-6-astra (effort $EFFORT)"
 PROMPT_FILE="$(mktemp)"
 {
   cat "$REPO_ROOT/scripts/review-prompt.md"
+  # Older branches may predate the decision log; always give the reviewer main's copy.
+  if git -C "$REPO_ROOT" show origin/main:docs/decisions.md > /dev/null 2>&1; then
+    echo
+    echo "----- docs/decisions.md on main (binding maintainer decisions) -----"
+    git -C "$REPO_ROOT" show origin/main:docs/decisions.md
+  fi
   echo
   echo "The PR is task $TASK_ID ($SLUG) on branch $BRANCH. The base is origin/main."
   echo "Get the diff with: git diff origin/main...HEAD   and the file list with: git diff --name-only origin/main...HEAD"
@@ -58,7 +65,7 @@ LAST="$(mktemp)"
 # exhaust the host (yesktop crashed twice on 2026-10-22).
 SCOPE=()
 if [[ "$(uname)" != "Darwin" ]] && command -v systemd-run >/dev/null; then
-  SCOPE=(systemd-run --user --scope -q -p "MemoryMax=${YHOTOS_REVIEW_MEM_MAX:-4G}" -p MemorySwapMax=0 --)
+  SCOPE=(systemd-run --user --scope -q -p "MemoryHigh=${YHOTOS_REVIEW_MEM_HIGH:-4G}" -p "MemoryMax=${YHOTOS_REVIEW_MEM_MAX:-6G}" -p MemorySwapMax=0 --)
 fi
 ${SCOPE[@]+"${SCOPE[@]}"} codex exec \
   -C "$WT" \
@@ -70,7 +77,14 @@ ${SCOPE[@]+"${SCOPE[@]}"} codex exec \
   --output-last-message "$LAST" \
   - < "$PROMPT_FILE" > "$OUT" 2>&1 || true
 rm -f "$PROMPT_FILE"
-if [[ -s "$LAST" ]]; then cp "$LAST" "$OUT"; fi
+# Post only a real final message. A reviewer that died (for example killed at its memory
+# ceiling) leaves no final message; never post its raw log as the review.
+if [[ ! -s "$LAST" ]] || ! grep -q "VERDICT" "$LAST"; then
+  rm -f "$LAST"
+  echo "review did not complete; nothing posted. Log: $OUT" >&2
+  exit 4
+fi
+cp "$LAST" "$OUT"
 rm -f "$LAST"
 
 {

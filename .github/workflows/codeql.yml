@@ -13,11 +13,32 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Superseded PR runs are cancelled; every commit on main gets a complete run.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: scripts/ci-changes.sh
+
+  # The matrix job always runs so its check names stay "Analyze (rust)" and
+  # "Analyze (javascript-typescript)"; a job-level skip would report an unexpanded name and
+  # block required checks. On documentation-only pull requests only the steps are skipped.
   analyze:
     name: Analyze (${{ matrix.language }})
+    needs: changes
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -28,14 +49,16 @@ jobs:
         with:
           persist-credentials: false
       - name: Install pinned Rust toolchain
-        if: matrix.language == 'rust'
+        if: needs.changes.outputs.code == 'true' && matrix.language == 'rust'
         run: rustup show active-toolchain
       - name: Initialize CodeQL
+        if: needs.changes.outputs.code == 'true'
         uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           languages: ${{ matrix.language }}
           build-mode: none
       - name: Analyze
+        if: needs.changes.outputs.code == 'true'
         uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           category: /language:${{ matrix.language }}
