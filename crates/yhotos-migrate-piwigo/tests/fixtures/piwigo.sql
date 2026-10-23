@@ -1,12 +1,15 @@
 -- Synthetic Piwigo 16 schema shapes; no real gallery metadata or credentials.
-DROP TABLE IF EXISTS piwigo_image_tag,piwigo_image_category,piwigo_tags,piwigo_images,piwigo_categories,piwigo_config;
+DROP TABLE IF EXISTS piwigo_user_access,piwigo_group_access,piwigo_image_tag,piwigo_image_category,piwigo_tags,piwigo_images,piwigo_categories,piwigo_config;
 CREATE TABLE piwigo_config (param varchar(40) NOT NULL PRIMARY KEY, value text) ENGINE=MyISAM;
 CREATE TABLE piwigo_categories (
  id mediumint unsigned NOT NULL PRIMARY KEY, id_uppercat mediumint unsigned DEFAULT NULL,
  name varchar(255) NOT NULL, comment text, global_rank varchar(255),
  representative_picture_id mediumint unsigned DEFAULT NULL,
- status enum('public','private') NOT NULL DEFAULT 'public', permalink varchar(64)
+ status enum('public','private') NOT NULL DEFAULT 'public', permalink varchar(64),
+ visible enum('true','false') NOT NULL DEFAULT 'true'
 ) ENGINE=MyISAM;
+CREATE TABLE piwigo_user_access (user_id mediumint unsigned NOT NULL,cat_id smallint unsigned NOT NULL,PRIMARY KEY(user_id,cat_id)) ENGINE=MyISAM;
+CREATE TABLE piwigo_group_access (group_id smallint unsigned NOT NULL,cat_id smallint unsigned NOT NULL,PRIMARY KEY(group_id,cat_id)) ENGINE=MyISAM;
 CREATE TABLE piwigo_images (
  id mediumint unsigned NOT NULL PRIMARY KEY, file varchar(255) NOT NULL, path varchar(255) NOT NULL,
  name varchar(255), comment text, author varchar(255), date_creation datetime,
@@ -20,7 +23,7 @@ CREATE TABLE piwigo_image_category (
 CREATE TABLE piwigo_tags (id smallint unsigned NOT NULL PRIMARY KEY,name varchar(255) NOT NULL,url_name varchar(255)) ENGINE=MyISAM;
 CREATE TABLE piwigo_image_tag (image_id mediumint unsigned NOT NULL,tag_id smallint unsigned NOT NULL,PRIMARY KEY(image_id,tag_id)) ENGINE=MyISAM;
 INSERT INTO piwigo_config VALUES ('piwigo_db_version','16.0.0');
-INSERT INTO piwigo_categories VALUES
+INSERT INTO piwigo_categories (id,id_uppercat,name,comment,global_rank,representative_picture_id,status,permalink) VALUES
  (1,NULL,'Snow &amp; Ice','<p>A &lt;b&gt;trip&lt;/b&gt;</p>','2',1,'public','snow_ice'),
  (2,1,'Nested','<script>text only</script>','2.1',1,'public',''),
  (3,NULL,'Snow &amp; Ice',NULL,'10',2,'private',NULL);

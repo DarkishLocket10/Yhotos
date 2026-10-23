@@ -116,6 +116,24 @@ async fn bulk_identities_replacements_and_curated_metadata_survive_ingest(pool: 
         corrected.unix_timestamp()
     );
     assert_eq!((photo.gps_lat, photo.gps_lon), (Some(12.0), Some(13.0)));
+    // A rebuild with the same original/generation must retain administrative
+    // corrections even if the codec reports the old EXIF/source values.
+    sqlx::query!("SET LOCAL ROLE yhotos_worker")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query!("UPDATE photos SET status='ready',derivative_plan='rebuilt-corrected',taken_at=$2,taken_at_local=$3,gps_lat=45,gps_lon=-73 WHERE id=$1",id.0,date,PrimitiveDateTime::new(date.date(), date.time()))
+        .execute(&mut *tx).await.unwrap();
+    sqlx::query!("RESET ROLE").execute(&mut *tx).await.unwrap();
+    let rebuilt = photos::get_by_short_id(&mut tx, &ShortId::from_photo_id(id))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        rebuilt.taken_at.unwrap().unix_timestamp(),
+        corrected.unix_timestamp()
+    );
+    assert_eq!((rebuilt.gps_lat, rebuilt.gps_lon), (Some(12.0), Some(13.0)));
     photos::update_metadata(&mut tx, id, &PhotoMetadata::default())
         .await
         .unwrap();
@@ -123,6 +141,22 @@ async fn bulk_identities_replacements_and_curated_metadata_survive_ingest(pool: 
         .execute(&mut *tx)
         .await
         .unwrap();
+    sqlx::query!("SET LOCAL ROLE yhotos_worker")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query!("UPDATE photos SET status='ready',derivative_plan='rebuilt-removed',taken_at=$2,taken_at_local=$3,gps_lat=45,gps_lon=-73 WHERE id=$1",id.0,date,PrimitiveDateTime::new(date.date(), date.time()))
+        .execute(&mut *tx).await.unwrap();
+    sqlx::query!("RESET ROLE").execute(&mut *tx).await.unwrap();
+    let invalidated = sqlx::query!("SELECT taken_at,taken_at_local,gps_lat,gps_lon,metadata_edited FROM migration_sources WHERE photo_id=$1",id.0)
+        .fetch_one(&mut *tx).await.unwrap();
+    assert!(invalidated.metadata_edited);
+    assert!(
+        invalidated.taken_at.is_none()
+            && invalidated.taken_at_local.is_none()
+            && invalidated.gps_lat.is_none()
+            && invalidated.gps_lon.is_none()
+    );
     let cleared = sqlx::query!(
         "SELECT taken_at,taken_at_local,gps_lat,gps_lon FROM photos WHERE id=$1",
         id.0
@@ -156,5 +190,26 @@ async fn bulk_identities_replacements_and_curated_metadata_survive_ingest(pool: 
             .get("generation")
             .is_some_and(|generation| *generation == 1)
     }));
+    // Identical bytes in a later ingest generation cannot revive source-only
+    // metadata from the migration's earlier intended generation.
+    sqlx::query!(
+        "UPDATE photos SET generation=generation+1 WHERE id=$1",
+        id.0
+    )
+    .execute(&mut *tx)
+    .await
+    .unwrap();
+    sqlx::query!("SET LOCAL ROLE yhotos_worker")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query!("UPDATE photos SET status='ready',derivative_plan='later-generation',taken_at=NULL,taken_at_local=NULL,gps_lat=NULL,gps_lon=NULL WHERE id=$1",id.0)
+        .execute(&mut *tx).await.unwrap();
+    sqlx::query!("RESET ROLE").execute(&mut *tx).await.unwrap();
+    let later = photos::get_by_short_id(&mut tx, &ShortId::from_photo_id(id))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(later.taken_at.is_none() && later.gps_lat.is_none() && later.gps_lon.is_none());
     tx.rollback().await.unwrap();
 }

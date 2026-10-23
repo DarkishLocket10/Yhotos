@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::too_many_lines)]
-//! Compare ingest publication before and after returning effective coordinates.
+//! Compare ingest publication before and after generation/administrative guards.
 //! Requires a disposable migrated `DATABASE_URL`; all rows and DDL roll back.
 use axum::http::Uri;
 use criterion::{Criterion, criterion_group, criterion_main};
@@ -167,8 +167,32 @@ fn benchmark(c: &mut Criterion) {
         .block_on(migration::upsert_photos(&mut tx, &[row]))
         .unwrap();
     let id = *ids.first().unwrap();
-    // Both versions publish with the import guard. The previous publication
-    // discarded effective GPS; the corrected version returns it for follow-ups.
+    // Frozen pre-review trigger; benchmark DDL is private to this transaction
+    // and rolls back. Both cases return effective coordinates, isolating the
+    // generation/administrative guard's cost in the pipeline publication path.
+    runtime
+        .block_on(
+            sqlx::raw_sql(
+                r"
+CREATE OR REPLACE FUNCTION preserve_piwigo_metadata() RETURNS trigger LANGUAGE plpgsql
+SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+DECLARE imported record;
+BEGIN
+ SELECT * INTO imported FROM public.migration_sources
+ WHERE photo_id=NEW.id AND original_hash=NEW.original_hash;
+ IF FOUND THEN
+  NEW.taken_at := coalesce(imported.taken_at, NEW.taken_at);
+  NEW.taken_at_local := coalesce(imported.taken_at_local, NEW.taken_at_local);
+  NEW.gps_lat := coalesce(imported.gps_lat, NEW.gps_lat);
+  NEW.gps_lon := coalesce(imported.gps_lon, NEW.gps_lon);
+ END IF;
+ RETURN NEW;
+END $$;
+",
+            )
+            .execute(&mut *tx),
+        )
+        .unwrap();
     // Isolate each sample: retaining thousands of successful row versions in
     // this outer transaction biases the later case with a longer MVCC history.
     // Savepoint setup and rollback are excluded from publication timings.
@@ -178,13 +202,19 @@ fn benchmark(c: &mut Criterion) {
             for _ in 0..iterations {
                 let mut sample = runtime.block_on(tx.begin()).unwrap();
                 let start = std::time::Instant::now();
-                runtime.block_on(sqlx::query!("UPDATE photos SET taken_at=NULL,taken_at_local=NULL,gps_lat=NULL,gps_lon=NULL,status='ready',derivative_plan='benchmark' WHERE id=$1",id.0).execute(&mut *sample)).unwrap();
+                runtime.block_on(sqlx::query!("UPDATE photos SET taken_at=NULL,taken_at_local=NULL,gps_lat=NULL,gps_lon=NULL,status='ready',derivative_plan='benchmark' WHERE id=$1 RETURNING gps_lat,gps_lon",id.0).fetch_one(&mut *sample)).unwrap();
                 elapsed += start.elapsed();
                 runtime.block_on(sample.rollback()).unwrap();
             }
             elapsed
         });
     });
+    let migration =
+        include_str!("../../yhotos-db/migrations/20261022002204_piwigo_metadata_generation.sql");
+    let start = migration.find("CREATE OR REPLACE FUNCTION").unwrap();
+    runtime
+        .block_on(sqlx::raw_sql(migration.get(start..).unwrap()).execute(&mut *tx))
+        .unwrap();
     c.bench_function("migration_metadata/after", |b| {
         b.iter_custom(|iterations| {
             let mut elapsed = std::time::Duration::ZERO;

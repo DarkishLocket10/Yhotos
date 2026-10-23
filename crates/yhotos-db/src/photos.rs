@@ -311,6 +311,8 @@ pub async fn list_in_album(
 }
 
 /// Replaces the extracted metadata set; absent optional values clear stored values.
+/// Invalidates Piwigo overrides atomically and preserves these edits on rebuilds
+/// of this ingest generation. Capture wall-clock time clears with this replacement.
 ///
 /// # Errors
 /// Returns invalid input or a database constraint/connection failure.
@@ -319,7 +321,7 @@ pub async fn update_metadata(
     id: PhotoId,
     metadata: &PhotoMetadata,
 ) -> Result<u64, DbError> {
-    Ok(sqlx::query!(r#"UPDATE photos SET title=$2,description=$3,taken_at=$4,width=$5,height=$6,orientation=$7,is_hdr=$8,has_gain_map=$9,icc_name=$10,camera_make=$11,camera_model=$12,lens=$13,focal_mm=$14,aperture=$15,shutter=$16,iso=$17,gps_lat=$18,gps_lon=$19,place_id=$20,dominant_colors=$21,placeholder=$22 WHERE id=$1"#, id as _, metadata.title, metadata.description, metadata.taken_at, metadata.width, metadata.height, metadata.orientation, metadata.is_hdr, metadata.has_gain_map, metadata.icc_name, metadata.camera_make, metadata.camera_model, metadata.lens, metadata.focal_mm, metadata.aperture, metadata.shutter, metadata.iso, metadata.gps_lat, metadata.gps_lon, metadata.place_id, &metadata.dominant_colors, metadata.placeholder).execute(conn).await?.rows_affected())
+    Ok(sqlx::query!(r#"WITH invalidated AS (UPDATE migration_sources SET taken_at=NULL,taken_at_local=NULL,gps_lat=NULL,gps_lon=NULL,metadata_edited=true WHERE photo_id=$1) UPDATE photos SET title=$2,description=$3,taken_at=$4,taken_at_local=NULL,width=$5,height=$6,orientation=$7,is_hdr=$8,has_gain_map=$9,icc_name=$10,camera_make=$11,camera_model=$12,lens=$13,focal_mm=$14,aperture=$15,shutter=$16,iso=$17,gps_lat=$18,gps_lon=$19,place_id=$20,dominant_colors=$21,placeholder=$22 WHERE id=$1"#, id as _, metadata.title, metadata.description, metadata.taken_at, metadata.width, metadata.height, metadata.orientation, metadata.is_hdr, metadata.has_gain_map, metadata.icc_name, metadata.camera_make, metadata.camera_model, metadata.lens, metadata.focal_mm, metadata.aperture, metadata.shutter, metadata.iso, metadata.gps_lat, metadata.gps_lon, metadata.place_id, &metadata.dominant_colors, metadata.placeholder).execute(conn).await?.rows_affected())
 }
 
 /// Moves the supplied photos together in one statement, preserving their URLs.

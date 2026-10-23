@@ -1,4 +1,4 @@
-//! MariaDB access contains only SELECT statements over the six Piwigo tables.
+//! MariaDB access contains only SELECT statements over Piwigo metadata/access tables.
 use crate::{Error, Result};
 use sqlx::{
     Connection, MySqlPool,
@@ -14,7 +14,18 @@ pub(crate) struct Album {
     pub global_rank: Option<String>,
     pub cover: Option<i64>,
     pub status: String,
+    pub visible: String,
+    pub user_access: i64,
+    pub group_access: i64,
     pub url_name: Option<String>,
+}
+impl Album {
+    pub(crate) fn restricted(&self) -> bool {
+        self.status != "public"
+            || self.visible != "true"
+            || self.user_access != 0
+            || self.group_access != 0
+    }
 }
 pub(crate) struct Image {
     pub id: i64,
@@ -88,15 +99,28 @@ pub(crate) async fn snapshot(pool: &MySqlPool) -> Result<Snapshot> {
         .fetch_all(&mut *tx)
         .await?;
     if !config.iter().any(|row| {
-        row.value
-            .as_deref()
-            .is_some_and(|v| v == "16" || v.starts_with("16."))
+        matches!(row.param.as_str(), "piwigo_db_version" | "version")
+            && row
+                .value
+                .as_deref()
+                .is_some_and(|v| v == "16" || v.starts_with("16."))
     }) {
         return Err(Error::SourceSchema);
     }
-    let albums = sqlx::query_file_as!(Album, "queries/albums.sql")
+    let mut albums = sqlx::query_file_as!(Album, "queries/albums.sql")
         .fetch_all(&mut *tx)
         .await?;
+    // Absent flags use Piwigo's defaults. Unexpected values fail closed too.
+    // Local PHP configuration overrides must be checked by the operator.
+    if config.iter().any(|row| match row.param.as_str() {
+        "gallery_locked" => row.value.as_deref() != Some("false"),
+        "guest_access" => row.value.as_deref() != Some("true"),
+        _ => false,
+    }) {
+        for album in &mut albums {
+            album.visible = "false".into();
+        }
+    }
     let images = sqlx::query_file_as!(Image, "queries/images.sql")
         .fetch_all(&mut *tx)
         .await?;

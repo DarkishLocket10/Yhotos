@@ -41,6 +41,8 @@ do not put them in command arguments, logs, reports, shell history or this repo.
    GRANT SELECT ON piwigo.piwigo_tags TO 'yhotos_migrate'@'127.0.0.1';
    GRANT SELECT ON piwigo.piwigo_image_tag TO 'yhotos_migrate'@'127.0.0.1';
    GRANT SELECT ON piwigo.piwigo_config TO 'yhotos_migrate'@'127.0.0.1';
+   GRANT SELECT ON piwigo.piwigo_user_access TO 'yhotos_migrate'@'127.0.0.1';
+   GRANT SELECT ON piwigo.piwigo_group_access TO 'yhotos_migrate'@'127.0.0.1';
    SHOW GRANTS FOR 'yhotos_migrate'@'127.0.0.1';
    ```
 
@@ -107,10 +109,19 @@ Albums preserve numeric global-rank ordering and nesting. Names/entities are
 decoded, HTML/comments become plain text, and sibling slug collisions receive
 `-2`, `-3`. Retained destination albums/tags reserve their slugs when their source
 identities disappear, so remaining collision members cannot take those URLs.
-Unknown album statuses fail closed as private. Private albums and
-`level > 0` photos are restricted with **no grants**. Inherited public photo
-visibility respects private ancestors. Curated source capture dates/GPS take
-priority over EXIF during ingest; missing values may come from EXIF. Author is
+Unknown album statuses or `visible` values fail closed as restricted. Private or
+locked (`visible='false'`) albums, albums with any per-user/group access rows,
+and `level > 0` photos are restricted with **no grants**. Source grants are not
+re-created; even stale grants on public categories conservatively restrict them.
+Inherited photo visibility respects restricted ancestors. This follows
+[Piwigo 16's category and image authorization](https://github.com/Piwigo/Piwigo/blob/16.4.0/include/functions_user.inc.php#L600-L651).
+Database `gallery_locked` and `guest_access` flags also restrict all albums when
+anonymous access is disabled; malformed values fail closed. Before migration,
+inspect Piwigo's `local/config/config.inc.php` and plugins for access overrides
+not represented in the database. Reflect any global restriction in the snapshot's
+configuration table before import. The importer does not execute PHP or plugins.
+Curated source capture dates/GPS take priority over EXIF during their intended
+ingest generation; missing values may come from EXIF. Author is
 stored on `photos.author`. Invalid GPS is reported and omitted.
 
 Each image's first category by global rank is the bare-photo redirect target.
@@ -132,7 +143,11 @@ absent overrides can use actual EXIF again. Changed hashes also replace the
 original with a new generation and enqueue ingest. Album identity uses
 `migration_albums`. Source metadata and
 manual tag memberships are authoritative on rerun; do not edit imported content
-in Yhotos until final migration completes. Auto tags remain independent. Reruns
+in Yhotos until final migration completes. After cutover, complete administrative
+metadata replacements invalidate the source date/GPS overrides atomically,
+including deliberate NULL removals. Derivative rebuilds in that generation
+preserve those edits; later original generations cannot revive old import
+overrides, even for identical bytes. Auto tags remain independent. Reruns
 retire every migration-owned photo copy absent from the successfully imported
 memberships, including source-deleted images and skipped files. Retirement sets
 restricted visibility, removes grants and trashes the obsolete copy in the same
@@ -155,6 +170,10 @@ than redirected to an arbitrary album; numeric links remain. Each import
 transaction replaces its owned redirect set, removing previously unique aliases
 that have become ambiguous or disappeared. Independently managed redirects and
 old import mappings manually retargeted to different targets are retained.
+Canonical numeric and numeric/url-name album paths reserve their identities
+before name aliases are inserted. Conflicting aliases are reported in dry and
+real runs and cannot overwrite those canonical targets. Retained independent
+mappings are never overwritten or claimed as migration-owned on conflict.
 Bare album aliases (including encoded names) resolve through the same authorized
 HTTP lookup as `/legacy/` and PHP paths; restricted targets return 404. Names
 conflicting with application paths (for example `/map`) retain prefixed aliases
@@ -194,6 +213,10 @@ comments, ratings and Piwigo derivatives are intentionally excluded.
 named `piwigo_fixture`. The integration test resets it from
 `crates/yhotos-migrate-piwigo/tests/fixtures/piwigo.sql`. It contains synthetic
 nested/private albums, entities, duplicate memberships and hashes, missing/unsafe
-files and tags. PostgreSQL tests create isolated databases from `DATABASE_URL`.
+files and tags. The additional `privacy.sql` fixture covers locked albums,
+private albums with user/group grants, public albums with access rows, locked
+ancestors, and image levels. HTTP tests compare denied pages, files and redirects
+with the standard 404 after import and rerun. PostgreSQL tests create isolated
+databases from `DATABASE_URL`.
 CI exposes the MariaDB URL only to this crate's test step. For local full checks,
 provide both test URLs, run `npm ci --prefix web`, then `scripts/check.sh`.

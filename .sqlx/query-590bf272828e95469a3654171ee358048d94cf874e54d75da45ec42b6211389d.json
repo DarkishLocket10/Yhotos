@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE photos SET status='ready',derivative_plan='rebuilt-removed',taken_at=$2,taken_at_local=$3,gps_lat=45,gps_lon=-73 WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Timestamptz",
+        "Timestamp"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "590bf272828e95469a3654171ee358048d94cf874e54d75da45ec42b6211389d"
+}

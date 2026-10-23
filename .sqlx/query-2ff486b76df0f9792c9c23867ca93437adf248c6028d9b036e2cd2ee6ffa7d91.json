@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "describe": {
+    "columns": [
+      {
+        "name": "album_id",
+        "ordinal": 0,
+        "origin": {
+          "Table": {
+            "name": "album_id",
+            "table": "migration_albums"
+          }
+        },
+        "type_info": "Uuid"
+      }
+    ],
+    "nullable": [
+      false
+    ],
+    "parameters": {
+      "Left": []
+    }
+  },
+  "hash": "2ff486b76df0f9792c9c23867ca93437adf248c6028d9b036e2cd2ee6ffa7d91",
+  "query": "SELECT album_id FROM migration_albums WHERE source_id=1"
+}

@@ -13,6 +13,19 @@ pub(crate) struct PlannedAlbum {
     pub order: i32,
     pub rank: Vec<u32>,
 }
+impl PlannedAlbum {
+    pub(crate) fn url_name(&self) -> &str {
+        self.source
+            .url_name
+            .as_deref()
+            .filter(|s| {
+                !s.is_empty()
+                    && s.bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
+            })
+            .unwrap_or(self.slug.as_str())
+    }
+}
 pub(crate) struct Plan {
     pub albums: Vec<PlannedAlbum>,
     pub images: Vec<Image>,
@@ -105,6 +118,12 @@ pub(crate) fn build(snapshot: Snapshot, report: &mut Report) -> Result<Plan> {
                 report.unsupported.push(problem(
                     Some(source.id),
                     "unknown album status; treated as private",
+                ));
+            }
+            if !matches!(source.visible.as_str(), "true" | "false") {
+                report.unsupported.push(problem(
+                    Some(source.id),
+                    "unknown album visibility; treated as restricted",
                 ));
             }
             let title = text(&source.name);

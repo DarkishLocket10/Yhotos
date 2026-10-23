@@ -1,5 +1,5 @@
 //! Administrative, transaction-composable Piwigo import operations.
-use crate::{DbError, albums, photos, redirects};
+use crate::{DbError, albums, photos, share_links::TargetKind};
 use sqlx::PgConnection;
 use time::{OffsetDateTime, PrimitiveDateTime};
 use yhotos_core::{AlbumId, PhotoId, Slug, TagId, access::Visibility};
@@ -58,8 +58,8 @@ pub async fn reconcile_redirects(conn: &mut PgConnection) -> Result<(), DbError>
     Ok(())
 }
 
-/// Stores an exact internal redirect and records import ownership atomically
-/// within the caller's transaction, for reconciliation on the next import.
+/// Inserts an unclaimed internal redirect and records ownership only for that
+/// insertion. Existing independently managed mappings retain their targets.
 ///
 /// # Errors
 /// Returns database errors; callers must roll back on failure.
@@ -68,8 +68,11 @@ pub async fn insert_redirect(
     path: &str,
     target: yhotos_core::access::ShareTarget,
 ) -> Result<(), DbError> {
-    redirects::insert(conn, path, target).await?;
-    sqlx::query!("INSERT INTO migration_redirects(pattern,target_kind,target_id) SELECT pattern,target_kind,target_id FROM legacy_redirects WHERE pattern=$1 ON CONFLICT(pattern) DO UPDATE SET target_kind=excluded.target_kind,target_id=excluded.target_id",path).execute(conn).await?;
+    let (kind, id) = match target {
+        yhotos_core::access::ShareTarget::Album(id) => (TargetKind::Album, id.0),
+        yhotos_core::access::ShareTarget::Photo(id) => (TargetKind::Photo, id.0),
+    };
+    sqlx::query!("WITH inserted AS (INSERT INTO legacy_redirects(id,pattern,target_kind,target_id) VALUES ($1,$2,$3,$4) ON CONFLICT(pattern) DO NOTHING RETURNING pattern,target_kind,target_id) INSERT INTO migration_redirects(pattern,target_kind,target_id) SELECT pattern,target_kind,target_id FROM inserted",uuid::Uuid::now_v7(),path,kind as _,id).execute(conn).await?;
     Ok(())
 }
 
@@ -202,7 +205,7 @@ pub async fn upsert_photos(
             crate::jobs::enqueue_unique(conn, "ingest", &serde_json::json!({"photo_id":photo.id,"original_hash":row.original.original_hash,"generation":0}), 0, None, 3).await?;
             photo.id
         };
-        sqlx::query!("INSERT INTO migration_sources(image_id,category_id,original_hash,photo_id,taken_at,taken_at_local,gps_lat,gps_lon) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(image_id,category_id) DO UPDATE SET original_hash=excluded.original_hash,taken_at=excluded.taken_at,taken_at_local=excluded.taken_at_local,gps_lat=excluded.gps_lat,gps_lon=excluded.gps_lon",row.image_id,row.category_id,row.original.original_hash,id.0,row.taken_at,row.taken_at_local,row.gps_lat,row.gps_lon).execute(&mut *conn).await?;
+        sqlx::query!("INSERT INTO migration_sources(image_id,category_id,original_hash,photo_id,taken_at,taken_at_local,gps_lat,gps_lon,generation) SELECT $1,$2,$3,$4,$5,$6,$7,$8,generation FROM photos WHERE id=$4 ON CONFLICT(image_id,category_id) DO UPDATE SET original_hash=excluded.original_hash,taken_at=excluded.taken_at,taken_at_local=excluded.taken_at_local,gps_lat=excluded.gps_lat,gps_lon=excluded.gps_lon,generation=excluded.generation,metadata_edited=false",row.image_id,row.category_id,row.original.original_hash,id.0,row.taken_at,row.taken_at_local,row.gps_lat,row.gps_lon).execute(&mut *conn).await?;
         previous_gps.insert(id.0, gps);
         ids.push(id);
     }

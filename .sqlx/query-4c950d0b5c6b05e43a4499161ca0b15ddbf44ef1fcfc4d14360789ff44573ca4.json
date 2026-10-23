@@ -1,0 +1,93 @@
+{
+  "db_name": "PostgreSQL",
+  "describe": {
+    "columns": [
+      {
+        "name": "image_id",
+        "ordinal": 0,
+        "origin": {
+          "Table": {
+            "name": "image_id",
+            "table": "migration_sources"
+          }
+        },
+        "type_info": "Int8"
+      },
+      {
+        "name": "id",
+        "ordinal": 1,
+        "origin": {
+          "Table": {
+            "name": "id",
+            "table": "photos"
+          }
+        },
+        "type_info": "Uuid"
+      },
+      {
+        "name": "short_id",
+        "ordinal": 2,
+        "origin": {
+          "Table": {
+            "name": "short_id",
+            "table": "photos"
+          }
+        },
+        "type_info": "Text"
+      },
+      {
+        "name": "original_hash",
+        "ordinal": 3,
+        "origin": {
+          "Table": {
+            "name": "original_hash",
+            "table": "photos"
+          }
+        },
+        "type_info": "Text"
+      },
+      {
+        "name": "original_name",
+        "ordinal": 4,
+        "origin": {
+          "Table": {
+            "name": "original_name",
+            "table": "photos"
+          }
+        },
+        "type_info": "Text"
+      },
+      {
+        "name": "album_id",
+        "ordinal": 5,
+        "origin": {
+          "Table": {
+            "name": "id",
+            "table": "albums"
+          }
+        },
+        "type_info": "Uuid"
+      },
+      {
+        "name": "visibility!",
+        "ordinal": 6,
+        "origin": "Expression",
+        "type_info": "Text"
+      }
+    ],
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      null
+    ],
+    "parameters": {
+      "Left": []
+    }
+  },
+  "hash": "4c950d0b5c6b05e43a4499161ca0b15ddbf44ef1fcfc4d14360789ff44573ca4",
+  "query": "SELECT m.image_id,p.id,p.short_id,p.original_hash,p.original_name,a.id AS album_id,a.visibility::text AS \"visibility!\" FROM migration_sources m JOIN photos p ON p.id=m.photo_id JOIN albums a ON a.id=p.album_id WHERE m.image_id>=10 ORDER BY m.image_id"
+}

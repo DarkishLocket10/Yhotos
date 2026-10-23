@@ -1,6 +1,6 @@
 {
   "db_name": "MySQL",
-  "query": "SELECT param,value FROM piwigo_config WHERE param IN ('piwigo_db_version','version')\n",
+  "query": "SELECT param,value FROM piwigo_config WHERE param IN ('piwigo_db_version','version','gallery_locked','guest_access')\n",
   "describe": {
     "columns": [
       {
@@ -44,5 +44,5 @@
       true
     ]
   },
-  "hash": "3a802601cea614fb93ca320d3433f4c2b2bf8e6779ded0b1251616b6b307f746"
+  "hash": "f106f7c345b4a04812adf4580f8651d720d77d018362aa426aa317eb768455c9"
 }

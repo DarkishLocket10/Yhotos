@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT taken_at,taken_at_local,gps_lat,gps_lon,metadata_edited FROM migration_sources WHERE photo_id=$1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "taken_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "migration_sources",
+            "name": "taken_at"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "taken_at_local",
+        "type_info": "Timestamp",
+        "origin": {
+          "Table": {
+            "table": "migration_sources",
+            "name": "taken_at_local"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "gps_lat",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "migration_sources",
+            "name": "gps_lat"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "gps_lon",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "migration_sources",
+            "name": "gps_lon"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "metadata_edited",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "migration_sources",
+            "name": "metadata_edited"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "8f938859f04e4bf0a073eca6de9fec5ce730adeec9ad831f321571905c2d7572"
+}

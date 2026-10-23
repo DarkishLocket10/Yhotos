@@ -4,7 +4,7 @@ use crate::{
     source::Image,
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io::{Read, Seek, SeekFrom},
     sync::Arc,
 };
@@ -216,6 +216,24 @@ pub(crate) async fn execute(
             ));
         }
     }
+    let canonical_paths: BTreeSet<_> = plan
+        .albums
+        .iter()
+        .flat_map(|a| {
+            [
+                format!("/index.php?/category/{}", a.source.id),
+                format!("/index.php?/category/{}-{}", a.source.id, a.url_name()),
+            ]
+        })
+        .collect();
+    for (name, source_id) in &plan.aliases {
+        if canonical_paths.contains(&format!("/index.php?/category/{name}")) {
+            report.collisions.push(problem(
+                Some(*source_id),
+                "album alias conflicts with a canonical numeric redirect; alias omitted",
+            ));
+        }
+    }
     let Some((db, _)) = destination else {
         return Ok(());
     };
@@ -243,7 +261,7 @@ pub(crate) async fn execute(
             &a.title,
             &a.description,
             a.order,
-            a.source.status != "public",
+            a.source.restricted(),
         )
         .await?;
         album_ids.insert(a.source.id, id);
@@ -260,16 +278,7 @@ pub(crate) async fn execute(
         )
         .await?;
         // Exact numeric/url-name links remain valid even if a name is ambiguous.
-        let url_name = a
-            .source
-            .url_name
-            .as_deref()
-            .filter(|s| {
-                !s.is_empty()
-                    && s.bytes()
-                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
-            })
-            .unwrap_or(a.slug.as_str());
+        let url_name = a.url_name();
         migration::insert_redirect(
             &mut tx,
             &format!("/index.php?/category/{}-{url_name}", a.source.id),
@@ -302,6 +311,9 @@ pub(crate) async fn execute(
             paths.push(format!("/index.php?/category/{name}"));
         }
         for path in paths {
+            if canonical_paths.contains(&path) {
+                continue;
+            }
             migration::insert_redirect(&mut tx, &path, ShareTarget::Album(*id)).await?;
         }
     }

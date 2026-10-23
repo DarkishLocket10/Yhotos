@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "describe": {
+    "columns": [],
+    "nullable": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    }
+  },
+  "hash": "3b46f761e8e9ef5fc9c06ed213aae3afa577809abab7cb64ffd051d949f0456a",
+  "query": "INSERT INTO derivatives(id,photo_id,variant,format,hdr,hash,width,height,bytes) VALUES ($1,$2,'small','jpeg',false,$3,1,1,13) ON CONFLICT(photo_id,variant,format,hdr) DO NOTHING"
+}

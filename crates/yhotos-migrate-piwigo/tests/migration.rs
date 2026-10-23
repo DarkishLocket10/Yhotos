@@ -839,7 +839,7 @@ async fn bare_album_aliases_redirect_over_http_after_source_changes(pool: PgPool
         StatusCode::NOT_FOUND
     );
     assert_stored_redirects_reachable(&pool, &f.store).await;
-    f.change("UPDATE piwigo_categories SET permalink='thawed_ice',name='Thawed &amp; Ice' WHERE id=1; UPDATE piwigo_categories SET status='public' WHERE id=3; UPDATE piwigo_categories SET status='private' WHERE id=2; INSERT INTO piwigo_categories VALUES (4,NULL,'Map',NULL,'20',NULL,'public','map'),(5,NULL,'0',NULL,'21',NULL,'public',NULL);").await;
+    f.change("UPDATE piwigo_categories SET permalink='thawed_ice',name='Thawed &amp; Ice' WHERE id=1; UPDATE piwigo_categories SET status='public' WHERE id=3; UPDATE piwigo_categories SET status='private' WHERE id=2; INSERT INTO piwigo_categories VALUES (4,NULL,'Map',NULL,'20',NULL,'public','map','true'),(5,NULL,'0',NULL,'21',NULL,'public',NULL,'true');").await;
     f.import("after.json");
     let app = router(&pool, &f.store);
     let response = get(&app, "/thawed_ice").await;
@@ -948,4 +948,235 @@ async fn newly_ambiguous_aliases_remove_previous_http_redirects(pool: PgPool) {
         );
     }
     assert_stored_redirects_reachable(&pool, &f.store).await;
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn piwigo_access_flags_remain_hidden_over_http_on_import_and_rerun(pool: PgPool) {
+    let Some(f) = Fixture::new(&pool).await else {
+        return;
+    };
+    f.change(include_str!("fixtures/privacy.sql")).await;
+    for id in 10_u8..=17 {
+        std::fs::write(
+            f.root.join(format!("2024/{id}.jpg")),
+            [0xff, 0xd8, 0xff, id],
+        )
+        .unwrap();
+    }
+    for report in ["private-first.json", "private-rerun.json"] {
+        f.import(report);
+        let mut conn = pool.acquire().await.unwrap();
+        let rows = sqlx::query!("SELECT m.image_id,p.id,p.short_id,p.original_hash,p.original_name,a.id AS album_id,a.visibility::text AS \"visibility!\" FROM migration_sources m JOIN photos p ON p.id=m.photo_id JOIN albums a ON a.id=p.album_id WHERE m.image_id>=10 ORDER BY m.image_id")
+            .fetch_all(&mut *conn).await.unwrap();
+        assert_eq!(rows.len(), 8);
+        let storage = Store::open(&f.store).unwrap();
+        for row in &rows {
+            assert!(
+                grants::grants_for_photo(&mut conn, yhotos_core::PhotoId(row.id))
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            assert!(
+                grants::grants_for_album(&mut conn, yhotos_core::AlbumId(row.album_id))
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            if !matches!(row.image_id, 13 | 14) {
+                assert_eq!(row.visibility, "restricted");
+            }
+            // Real stored bytes and derivative rows ensure file rejection is
+            // authorization, rather than an absent original or derivative.
+            let stage = storage.tmp_dir().unwrap();
+            let path = stage.path().join("small.jpg");
+            std::fs::write(&path, b"\xff\xd8\xffderivative").unwrap();
+            let hash = row.original_hash.parse().unwrap();
+            storage
+                .put_derivative(
+                    &DerivativeKey {
+                        hash: &hash,
+                        variant: "small",
+                        format: "jpeg",
+                        hdr: false,
+                    },
+                    &path,
+                )
+                .await
+                .unwrap();
+            sqlx::query!("INSERT INTO derivatives(id,photo_id,variant,format,hdr,hash,width,height,bytes) VALUES ($1,$2,'small','jpeg',false,$3,1,1,13) ON CONFLICT(photo_id,variant,format,hdr) DO NOTHING",uuid::Uuid::now_v7(),row.id,row.original_hash).execute(&mut *conn).await.unwrap();
+        }
+        let app = router(&pool, &f.store);
+        let missing = get(&app, "/p/00000000").await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        let standard = axum::body::to_bytes(missing.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let albums = [
+            "locked",
+            "user-private",
+            "group-private",
+            "level-public",
+            "locked/locked-child",
+            "user-access",
+            "group-access",
+            "locked-private",
+        ];
+        for (row, album) in rows.iter().zip(albums) {
+            let mut paths = vec![
+                format!("/p/{}", row.short_id),
+                format!("/i/{}/small.jpeg", row.original_hash),
+                format!("/o/{}/{}", row.original_hash, row.original_name),
+                format!("/picture.php?/{}", row.image_id),
+                format!("/picture.php?/{}/category/{}", row.image_id, row.image_id),
+            ];
+            if row.image_id != 13 {
+                paths.extend([
+                    format!("/a/{album}"),
+                    format!("/index.php?/category/{}", row.image_id),
+                    format!("/index.php?/category/{}-obsolete", row.image_id),
+                ]);
+            }
+            for path in paths {
+                let response = get(&app, &path).await;
+                assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path} {report}");
+                assert!(response.headers().get("location").is_none(), "{path}");
+                assert_eq!(
+                    axum::body::to_bytes(response.into_body(), usize::MAX)
+                        .await
+                        .unwrap(),
+                    standard,
+                    "{path}"
+                );
+            }
+        }
+        // Validate every imported name/permalink redirect as well.
+        assert_stored_redirects_reachable(&pool, &f.store).await;
+    }
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn numeric_name_aliases_cannot_replace_canonical_album_targets(pool: PgPool) {
+    let Some(f) = Fixture::new(&pool).await else {
+        return;
+    };
+    f.change("UPDATE piwigo_categories SET name='1',permalink=NULL WHERE id=2; UPDATE piwigo_categories SET name='1-snow_ice',permalink=NULL,status='public' WHERE id=3;").await;
+    for report in ["canonical-first.json", "canonical-rerun.json"] {
+        let report = f.import(report);
+        assert!(
+            report
+                .get("collisions")
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| {
+                    p.get("reason")
+                        .unwrap()
+                        .as_str()
+                        .unwrap()
+                        .contains("canonical numeric redirect")
+                })
+        );
+        let mut conn = pool.acquire().await.unwrap();
+        let album = sqlx::query!("SELECT album_id FROM migration_albums WHERE source_id=1")
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+        for path in [
+            "/index.php?/category/1",
+            "/index.php?/category/1-snow_ice",
+            "/category/1",
+        ] {
+            let target: ShareTarget = redirects::lookup(&mut conn, path)
+                .await
+                .unwrap()
+                .unwrap()
+                .into();
+            assert_eq!(
+                target,
+                ShareTarget::Album(yhotos_core::AlbumId(album.album_id)),
+                "{path}"
+            );
+        }
+        let app = router(&pool, &f.store);
+        for path in ["/index.php?/category/1", "/index.php?/category/1-snow_ice"] {
+            let response = get(&app, path).await;
+            assert_eq!(response.status(), StatusCode::MOVED_PERMANENTLY);
+            assert_eq!(response.headers()["location"], "/a/snow-ice");
+        }
+    }
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn unchanged_source_reruns_preserve_manual_redirect_targets_and_ownership(pool: PgPool) {
+    let Some(f) = Fixture::new(&pool).await else {
+        return;
+    };
+    f.import("manual-before.json");
+    let mut conn = pool.acquire().await.unwrap();
+    let nested = albums::list_tree(&mut conn)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|a| a.slug.as_str() == "nested")
+        .unwrap();
+    let paths = [
+        "/snow_ice",
+        "/index.php?/category/1",
+        "/index.php?/category/1-snow_ice",
+        "/picture.php?/1",
+    ];
+    for path in paths {
+        redirects::insert(&mut conn, path, ShareTarget::Album(nested.id))
+            .await
+            .unwrap();
+    }
+    for report in ["manual-rerun.json", "manual-rerun-again.json"] {
+        f.import(report);
+        let app = router(&pool, &f.store);
+        for path in paths {
+            let target: ShareTarget = redirects::lookup(&mut conn, path)
+                .await
+                .unwrap()
+                .unwrap()
+                .into();
+            assert_eq!(target, ShareTarget::Album(nested.id), "{path}");
+            assert_eq!(
+                sqlx::query_scalar!(
+                    "SELECT count(*) FROM migration_redirects WHERE pattern=$1",
+                    path
+                )
+                .fetch_one(&mut *conn)
+                .await
+                .unwrap(),
+                Some(0)
+            );
+            let response = get(&app, path).await;
+            assert_eq!(response.status(), StatusCode::MOVED_PERMANENTLY, "{path}");
+            assert_eq!(response.headers()["location"], "/a/snow-ice/nested");
+        }
+    }
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn global_piwigo_access_flags_fail_closed_on_rerun(pool: PgPool) {
+    let Some(f) = Fixture::new(&pool).await else {
+        return;
+    };
+    for (index,sql) in [
+        "INSERT INTO piwigo_config VALUES ('gallery_locked','true');",
+        "UPDATE piwigo_config SET value='false' WHERE param='gallery_locked'; INSERT INTO piwigo_config VALUES ('guest_access','false');",
+    ].into_iter().enumerate() {
+        f.change(sql).await;
+        for run in 0..2 {
+            f.import(&format!("global-{index}-{run}.json"));
+            let mut conn = pool.acquire().await.unwrap();
+            assert!(albums::list_tree(&mut conn).await.unwrap().iter().all(|a|a.visibility==yhotos_core::access::Visibility::Restricted));
+            let app = router(&pool,&f.store);
+            for path in ["/a/snow-ice","/index.php?/category/1","/picture.php?/1"] {
+                assert_eq!(get(&app,path).await.status(),StatusCode::NOT_FOUND,"{path}");
+            }
+        }
+    }
 }

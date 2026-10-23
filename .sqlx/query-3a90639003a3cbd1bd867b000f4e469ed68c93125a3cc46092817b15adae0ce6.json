@@ -1,0 +1,27 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH inserted AS (INSERT INTO legacy_redirects(id,pattern,target_kind,target_id) VALUES ($1,$2,$3,$4) ON CONFLICT(pattern) DO NOTHING RETURNING pattern,target_kind,target_id) INSERT INTO migration_redirects(pattern,target_kind,target_id) SELECT pattern,target_kind,target_id FROM inserted",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        {
+          "Custom": {
+            "name": "target_kind",
+            "kind": {
+              "Enum": [
+                "album",
+                "photo"
+              ]
+            }
+          }
+        },
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3a90639003a3cbd1bd867b000f4e469ed68c93125a3cc46092817b15adae0ce6"
+}
