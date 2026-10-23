@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE jobs SET finished_at=now(),locked_at=NULL,locked_by=NULL,error='photo unavailable' WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7965e31af546876685ba75ded387c403c73ae3e704c42e40523fecc7a27b28b5"
+}

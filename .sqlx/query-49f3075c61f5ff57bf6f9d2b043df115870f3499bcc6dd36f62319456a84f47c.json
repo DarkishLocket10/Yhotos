@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "UPDATE photos SET original_hash=$2, original_name=$3, original_bytes=$4, mime=$5, kind=$6,status='pending',failure_reason=NULL,derivative_plan=NULL,taken_at=NULL,taken_at_local=NULL,original_orientation=NULL,generation=generation+1 WHERE id=$1 RETURNING generation",
+  "query": "UPDATE photos SET original_hash=$2, original_name=$3, original_bytes=$4, mime=$5, kind=$6,status='pending',failure_reason=NULL,derivative_plan=NULL,taken_at=NULL,taken_at_local=taken_at_override AT TIME ZONE 'UTC',original_orientation=NULL,generation=generation+1 WHERE id=$1 RETURNING generation",
   "describe": {
     "columns": [
       {
@@ -40,5 +40,5 @@
       false
     ]
   },
-  "hash": "89f606286fc281d9a85d50689690cb7727494f289b8b1acc5b125fdbf07b90ca"
+  "hash": "49f3075c61f5ff57bf6f9d2b043df115870f3499bcc6dd36f62319456a84f47c"
 }

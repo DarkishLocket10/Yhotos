@@ -201,10 +201,11 @@ pub(crate) async fn album(
             "/a/{}",
             path.iter().map(Slug::as_str).collect::<Vec<_>>().join("/")
         );
-        let destination = redirects::destination(&mut conn, &identity.principal(), &[old_path])
-            .await
-            .map_err(db_error)?
-            .ok_or(HttpError::NotFound)?;
+        let destination =
+            redirects::destination(&mut conn, &bindings(&identity, &links), &[old_path])
+                .await
+                .map_err(db_error)?
+                .ok_or(HttpError::NotFound)?;
         return Ok((
             StatusCode::MOVED_PERMANENTLY,
             [
@@ -354,6 +355,7 @@ fn legacy_patterns(uri: &Uri) -> Option<Vec<String>> {
 pub(crate) async fn legacy(
     State(state): State<AppState>,
     Extension(identity): Extension<SessionIdentity>,
+    Extension(links): Extension<Links>,
     OriginalUri(uri): OriginalUri,
 ) -> Result<Response, HttpError> {
     let patterns = legacy_patterns(&uri).ok_or(HttpError::NotFound)?;
@@ -362,7 +364,7 @@ pub(crate) async fn legacy(
         .acquire()
         .await
         .map_err(|e| HttpError::Internal(e.into()))?;
-    let destination = redirects::destination(&mut conn, &identity.principal(), &patterns)
+    let destination = redirects::destination(&mut conn, &bindings(&identity, &links), &patterns)
         .await
         .map_err(db_error)?
         .ok_or(HttpError::NotFound)?;

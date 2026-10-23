@@ -2207,3 +2207,57 @@ async fn retained_photo_link_loses_capabilities_when_its_album_becomes_restricte
         concealed(&client.action(&f.app, photo, action).await).await;
     }
 }
+
+#[cfg(feature = "admin")]
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn renamed_album_redirects_use_validated_share_scope(pool: PgPool) {
+    let f = Fixture::new(pool).await;
+    let child = f.album(Some(f.album), "child", Visibility::Public).await;
+    let hidden = f
+        .album(Some(f.album), "hidden", Visibility::Restricted)
+        .await;
+    let outside = f.album(None, "outside", Visibility::Restricted).await;
+    let (_, link) = f.link(ShareTarget::Album(f.album), None, flags()).await;
+    let mut client = Client::default();
+    assert_eq!(client.get(&f.app, &link).await.status, StatusCode::OK);
+    assert!(!client.jar.contains_key("__Host-ys"));
+    for (id, title, visibility) in [
+        (f.album, "Renamed", "restricted"),
+        (child, "New child", "public"),
+        (hidden, "New hidden", "restricted"),
+        (outside, "New outside", "restricted"),
+    ] {
+        let command = serde_json::from_value(serde_json::json!({"op":"album_edit","id":id,"title":title,"description":"","visibility":visibility,"manual_order":false,"grants":[]})).unwrap();
+        yhotos_db::library::execute(&f.pool, f.creator, &command)
+            .await
+            .unwrap();
+    }
+    for (old, new) in [
+        ("/a/shared", "/a/renamed"),
+        ("/a/shared/child", "/a/renamed/new-child"),
+    ] {
+        let response = client.get(&f.app, old).await;
+        assert_eq!(response.status, StatusCode::MOVED_PERMANENTLY, "{old}");
+        assert_eq!(response.headers[header::LOCATION], new);
+        assert_eq!(response.headers[header::CACHE_CONTROL], "private, no-store");
+        assert_eq!(client.get(&f.app, new).await.status, StatusCode::OK);
+    }
+    for path in ["/a/outside", "/a/shared/hidden", "/a/unknown"] {
+        concealed(&client.get(&f.app, path).await).await;
+    }
+    // A photo capability cannot redirect to its containing album, and a link's
+    // target cannot bypass a restricted ancestor added above it later.
+    let (_, photo_link) = f.link(ShareTarget::Photo(f.photo), None, flags()).await;
+    let mut photo_client = Client::default();
+    concealed(&photo_client.get(&f.app, &photo_link).await).await;
+    concealed(&photo_client.get(&f.app, "/a/shared").await).await;
+    sqlx::query!(
+        "UPDATE albums SET parent_id=$2 WHERE id=$1",
+        f.album.0,
+        outside.0
+    )
+    .execute(&f.pool)
+    .await
+    .unwrap();
+    concealed(&client.get(&f.app, "/a/shared").await).await;
+}

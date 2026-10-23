@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "WITH tree_lock AS MATERIALIZED (\n        SELECT pg_advisory_xact_lock(20) FROM uploads\n        WHERE id=$1 AND user_id=$2 AND expires_at>now() AND replace_photo_id IS NOT NULL\n    ) SELECT id,user_id AS \"user_id: _\",album_id AS \"album_id: _\",filename,declared_bytes,received_bytes,mime_hint,tmp_path,metadata,expires_at,created_at\n    FROM uploads WHERE id=$1 AND user_id=$2 AND expires_at>now()\n        AND (SELECT count(*) FROM tree_lock)>=0 FOR UPDATE",
+  "query": "SELECT id,user_id AS \"user_id: _\",album_id AS \"album_id: _\",filename,declared_bytes,received_bytes,mime_hint,tmp_path,metadata,expires_at,created_at\n    FROM uploads WHERE id=$1 AND user_id=$2 AND expires_at>now() FOR UPDATE NOWAIT",
   "describe": {
     "columns": [
       {
@@ -145,5 +145,5 @@
       false
     ]
   },
-  "hash": "2e2713390a943b77bec2ad2e0d904d72a6ec77010265f221b9e0ee81312693c9"
+  "hash": "de76db1b8cbbe8371cece61d7247d191cbdd589379a41d2829a233c27386bd06"
 }

@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM cache_purges",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "bc2e7f57f3ea4e1d2ac3b80295a10fc44f84a420cd1693a089678c18b107f988"
+}

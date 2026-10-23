@@ -425,7 +425,7 @@ pub async fn replace_original(
 ) -> Result<(), DbError> {
     use sqlx::Connection;
     let mut tx = conn.begin().await?;
-    let replaced = sqlx::query!("UPDATE photos SET original_hash=$2, original_name=$3, original_bytes=$4, mime=$5, kind=$6,status='pending',failure_reason=NULL,derivative_plan=NULL,taken_at=NULL,taken_at_local=NULL,original_orientation=NULL,generation=generation+1 WHERE id=$1 RETURNING generation", id as _, original.original_hash, original.original_name, original.original_bytes, original.mime, original.kind as _).fetch_one(&mut *tx).await?;
+    let replaced = sqlx::query!("UPDATE photos SET original_hash=$2, original_name=$3, original_bytes=$4, mime=$5, kind=$6,status='pending',failure_reason=NULL,derivative_plan=NULL,taken_at=NULL,taken_at_local=taken_at_override AT TIME ZONE 'UTC',original_orientation=NULL,generation=generation+1 WHERE id=$1 RETURNING generation", id as _, original.original_hash, original.original_name, original.original_bytes, original.mime, original.kind as _).fetch_one(&mut *tx).await?;
     update_metadata(&mut tx, id, metadata).await?;
     sqlx::query!("DELETE FROM derivatives WHERE photo_id=$1", id as _)
         .execute(&mut *tx)

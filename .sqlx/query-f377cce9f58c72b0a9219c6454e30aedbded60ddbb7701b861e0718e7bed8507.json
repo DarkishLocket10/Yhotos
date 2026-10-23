@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO places(id,name,country,lat,lon) VALUES($1,'Old place','CA',43,-79)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f377cce9f58c72b0a9219c6454e30aedbded60ddbb7701b861e0718e7bed8507"
+}

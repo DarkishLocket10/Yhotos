@@ -75,28 +75,18 @@ pub async fn lock(
 ) -> Result<Option<Upload>, DbError> {
     Ok(sqlx::query_as!(Upload,r#"SELECT id,user_id AS "user_id: _",album_id AS "album_id: _",filename,declared_bytes,received_bytes,mime_hint,tmp_path,metadata,expires_at,created_at FROM uploads WHERE id=$1 AND user_id=$2 AND expires_at>now() FOR UPDATE"#,id,user.0).fetch_optional(conn).await?)
 }
-/// Locks an owned, unexpired upload and its live destination until transaction end.
-/// Replacements take the tree advisory lock before upload and album rows, matching album edits.
-/// The materialized CTE is consumed before `FOR UPDATE` locks an upload row; ordinary uploads
-/// take no advisory lock and require no extra round trip. The album share lock prevents deletion.
+/// Locks only the owned upload while bytes stream and validation runs.
+/// Album and tree coordination is deferred until the final database mutation.
 /// # Errors
-/// Returns database errors; unavailable albums and uploads all return None.
+/// Returns database errors; missing or expired uploads return None.
 pub async fn lock_for_write(
     conn: &mut PgConnection,
     id: Uuid,
     user: UserId,
 ) -> Result<Option<Upload>, DbError> {
-    let Some(row) = sqlx::query_as!(Upload,r#"WITH tree_lock AS MATERIALIZED (
-        SELECT pg_advisory_xact_lock(20) FROM uploads
-        WHERE id=$1 AND user_id=$2 AND expires_at>now() AND replace_photo_id IS NOT NULL
-    ) SELECT id,user_id AS "user_id: _",album_id AS "album_id: _",filename,declared_bytes,received_bytes,mime_hint,tmp_path,metadata,expires_at,created_at
-    FROM uploads WHERE id=$1 AND user_id=$2 AND expires_at>now()
-        AND (SELECT count(*) FROM tree_lock)>=0 FOR UPDATE"#,id,user.0).fetch_optional(&mut *conn).await? else {
-        return Ok(None);
-    };
-    lock_live_album(conn, row).await
+    lock(conn, id, user).await
 }
-/// Uses the same tree-before-row ordering as `lock_for_write`, with NOWAIT on the upload row.
+/// Coordinates concurrent PATCH requests only on their upload row, never the library tree.
 /// A missing row may have completed; callers must check `was_completed` before returning 404.
 /// # Errors
 /// Returns SQLSTATE 55P03 on upload lock contention, or other database errors.
@@ -105,28 +95,32 @@ pub async fn lock_for_patch(
     id: Uuid,
     user: UserId,
 ) -> Result<Option<Upload>, DbError> {
-    let Some(row) = sqlx::query_as!(Upload,r#"WITH tree_lock AS MATERIALIZED (
-        SELECT pg_advisory_xact_lock(20) FROM uploads
-        WHERE id=$1 AND user_id=$2 AND expires_at>now() AND replace_photo_id IS NOT NULL
-    ) SELECT id,user_id AS "user_id: _",album_id AS "album_id: _",filename,declared_bytes,received_bytes,mime_hint,tmp_path,metadata,expires_at,created_at
-    FROM uploads WHERE id=$1 AND user_id=$2 AND expires_at>now()
-        AND (SELECT count(*) FROM tree_lock)>=0 FOR UPDATE NOWAIT"#,id,user.0).fetch_optional(&mut *conn).await? else {
-        return Ok(None);
-    };
-    lock_live_album(conn, row).await
+    Ok(sqlx::query_as!(Upload,r#"SELECT id,user_id AS "user_id: _",album_id AS "album_id: _",filename,declared_bytes,received_bytes,mime_hint,tmp_path,metadata,expires_at,created_at
+    FROM uploads WHERE id=$1 AND user_id=$2 AND expires_at>now() FOR UPDATE NOWAIT"#,id,user.0).fetch_optional(conn).await?)
 }
-async fn lock_live_album(conn: &mut PgConnection, row: Upload) -> Result<Option<Upload>, DbError> {
+/// Revalidates the destination after streaming and validation, immediately before publication.
+/// Never waits for the tree while holding an upload row: purge may need that row to delete
+/// its album or replacement target. A busy tree leaves the upload resumable for a retry.
+/// # Errors
+/// Returns false on tree contention, invalid input for an unavailable destination, or database errors.
+pub async fn lock_for_completion(conn: &mut PgConnection, album: AlbumId) -> Result<bool, DbError> {
+    let locked = sqlx::query_scalar!(r#"SELECT pg_try_advisory_xact_lock(20) AS "locked!""#)
+        .fetch_one(&mut *conn)
+        .await?;
+    if !locked {
+        return Ok(false);
+    }
     if sqlx::query!(
         "SELECT id FROM albums WHERE id=$1 AND deleted_at IS NULL FOR SHARE",
-        row.album_id.0
+        album.0
     )
     .fetch_optional(conn)
     .await?
     .is_none()
     {
-        return Ok(None);
+        return Err(DbError::InvalidInput);
     }
-    Ok(Some(row))
+    Ok(true)
 }
 /// Advances the durable offset after the caller has synced the corresponding bytes.
 /// # Errors

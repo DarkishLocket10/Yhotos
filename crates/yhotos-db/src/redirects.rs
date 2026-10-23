@@ -58,10 +58,9 @@ impl From<RedirectTarget> for yhotos_core::access::ShareTarget {
 /// Returns database failures; invalid stored slugs or short ids fail closed.
 pub async fn destination(
     conn: &mut PgConnection,
-    principal: &yhotos_core::access::Principal<'_>,
+    bindings: &crate::access_sql::Bindings,
     patterns: &[String],
 ) -> Result<Option<String>, DbError> {
-    let bindings = crate::access_sql::visible_photos(principal);
     let row = crate::visible_page_query!(
         r#", target AS (
       SELECT target_kind,target_id FROM legacy_redirects WHERE pattern=ANY($6)

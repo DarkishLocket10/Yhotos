@@ -984,22 +984,31 @@ async fn trash(
         sqlx::query!("DELETE FROM albums WHERE id=ANY($1)", &albums)
             .execute(&mut *c)
             .await?;
-        jobs::enqueue_unique(c, "gc", &json!({}), 0, None, 5).await?;
+        jobs::enqueue_unique(c, "gc", &Value::Null, 0, None, 5).await?;
     } else {
-        sqlx::query!(
-            "UPDATE photos SET deleted_at=CASE WHEN $2 THEN NULL ELSE coalesce(deleted_at,now()) END WHERE id=ANY($1) AND (NOT $2 OR deleted_at=$3)",
+        let changed = sqlx::query!(
+            "UPDATE photos SET deleted_at=CASE WHEN $2 THEN NULL ELSE coalesce(deleted_at,now()) END WHERE id=ANY($1) AND (NOT $2 OR deleted_at=$3) RETURNING id",
             &photos,
             restore,deleted
         )
-        .execute(&mut *c)
+        .fetch_all(&mut *c)
         .await?;
+        let restored: Vec<_> = changed.into_iter().map(|row| row.id).collect();
         sqlx::query!(
             "UPDATE albums SET deleted_at=CASE WHEN $2 THEN NULL ELSE coalesce(deleted_at,now()) END WHERE id=ANY($1) AND (NOT $2 OR deleted_at=$3)",
             &albums,
             restore,deleted
         )
-        .execute(c)
+        .execute(&mut *c)
         .await?;
+        if restore {
+            // Only rows restored by this action restart. Fence both terminated jobs and
+            // workers still decoding the pre-trash generation before they can publish.
+            let unfinished = sqlx::query!("UPDATE photos SET status='pending',failure_reason=NULL,generation=generation+1 WHERE id=ANY($1) AND deleted_at IS NULL AND status<>'ready' RETURNING id,original_hash,generation", &restored).fetch_all(&mut *c).await?;
+            for row in unfinished {
+                jobs::enqueue_unique(c, "ingest", &json!({"photo_id":row.id,"original_hash":row.original_hash,"generation":row.generation}), 0, None, 3).await?;
+            }
+        }
     }
     Ok(before)
 }
@@ -1100,12 +1109,21 @@ pub async fn replace(
     let photo = photos::get_by_id(&mut tx, PhotoId(id))
         .await?
         .ok_or(DbError::InvalidInput)?;
+    if photo.deleted_at.is_some()
+        || albums::get_by_id(&mut tx, photo.album_id)
+            .await?
+            .is_none_or(|album| album.deleted_at.is_some())
+    {
+        return Err(DbError::InvalidInput);
+    }
     sqlx::query!("INSERT INTO original_trash(id,photo_id,original_hash,original_name,original_bytes) VALUES($1,$2,$3,$4,$5)",Uuid::now_v7(),id,photo.original_hash,photo.original_name,photo.original_bytes).execute(&mut *tx).await?;
     let metadata = photos::PhotoMetadata {
         title: photo.title,
         description: photo.description,
-        taken_at: photo.taken_at,
-        place_id: photo.place_id,
+        // Automatic capture date and place belong to the old bytes. The metadata
+        // writer preserves explicit date/GPS/place overrides from the row itself.
+        taken_at: None,
+        place_id: None,
         ..Default::default()
     };
     photos::replace_original(&mut tx, photo.id, original, &metadata).await?;

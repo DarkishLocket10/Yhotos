@@ -433,7 +433,7 @@ async fn complete(
     mut tx: sqlx::Transaction<'_, sqlx::Postgres>,
     row: uploads::Upload,
 ) -> Result<Response, HttpError> {
-    // Both entry points hold the creator's upload lock and a share lock on its live album.
+    // Both entry points coordinate only on the creator's upload during IO and validation.
     let id = row.id;
     let temp: TempId = row.tmp_path.parse().map_err(internal)?;
     let prepared = prepare_original(state, &row, &temp).await;
@@ -456,7 +456,21 @@ async fn complete(
     };
     let mut r = progress(&row)?;
     let hash = put.hash.to_string();
+    // Serialize identical publications before taking library coordination, so
+    // competing uploads deduplicate normally rather than conflict on the tree.
     uploads::lock_hash(&mut tx, &hash).await?;
+    // No tree or album lock is held while the request body streams or the host validates.
+    // Revalidate under short-lived library coordination before changing any photo rows.
+    if !uploads::lock_for_completion(&mut tx, row.album_id)
+        .await
+        .map_err(|error| match error {
+            yhotos_db::DbError::InvalidInput => HttpError::NotFound,
+            _ => HttpError::from(error),
+        })?
+    {
+        tx.commit().await?;
+        return Err(HttpError::Upload(StatusCode::CONFLICT));
+    }
     let replacement = yhotos_db::library::replacement_target(&mut tx, id).await?;
     let existing = photos::get_by_hash(&mut tx, &hash)
         .await?
@@ -473,8 +487,14 @@ async fn complete(
             mime: validated.mime.into(),
             kind: validated.kind,
         };
-        replaced_change =
-            Some(yhotos_db::library::replace(&mut tx, row.user_id, target, &original).await?);
+        replaced_change = Some(
+            yhotos_db::library::replace(&mut tx, row.user_id, target, &original)
+                .await
+                .map_err(|error| match error {
+                    yhotos_db::DbError::InvalidInput => HttpError::NotFound,
+                    _ => HttpError::from(error),
+                })?,
+        );
         (
             photos::get_by_id(&mut tx, yhotos_core::PhotoId(target))
                 .await?
