@@ -19,6 +19,8 @@ from .safety import derivative, vector
 
 Connection: TypeAlias = psycopg.Connection[dict[str, object]]
 KINDS = ["ml.embed", "ml.faces", "ml.ocr", "ml.tags", "ml.cluster"]
+# now() stays a timestamptz for leases, retries and writes: no session-local
+# date/timestamp cast. maintain() truncates its nightly day explicitly in UTC.
 CLAIM = """
 UPDATE jobs SET locked_by=%s,locked_at=now(),attempts=attempts+1
 WHERE id=(SELECT id FROM jobs WHERE finished_at IS NULL AND locked_at IS NULL
@@ -33,7 +35,7 @@ FACE_EPS = 0.637
 
 
 def identifier() -> uuid.UUID:
-    """Time-ordered UUIDv7, using independent OS randomness for its random fields."""
+    """UUIDv7 from UTC Unix epoch milliseconds, with independent OS randomness."""
     value = ((time.time_ns() // 1_000_000) << 80) | (uuid.uuid4().int & ((1 << 76) - 1))
     value = (value & ~(15 << 76)) | (7 << 76)
     value = (value & ~(3 << 62)) | (2 << 62)

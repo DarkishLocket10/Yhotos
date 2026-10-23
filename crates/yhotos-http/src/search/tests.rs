@@ -304,9 +304,10 @@ async fn hidden_people_never_appear_in_admin_search(pool: PgPool) {
             .is_empty()
     );
     assert!(
-        yhotos_db::faces::people(&mut conn)
+        yhotos_db::faces::people(&mut conn, 1, None)
             .await
             .unwrap()
+            .people
             .is_empty()
     );
 }
@@ -393,3 +394,5 @@ async fn private_face_routes_are_unreachable_on_public_listener() {
         );
     }
 }
+
+mod regressions;

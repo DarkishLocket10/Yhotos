@@ -4,7 +4,7 @@ use sqlx::PgConnection;
 use uuid::Uuid;
 
 /// A private person summary, excluding hidden identities.
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct Person {
     /// Internal administrative identity.
     pub id: Uuid,
@@ -15,23 +15,37 @@ pub struct Person {
     /// Up to three representative face ids, highest detector quality first.
     pub samples: Vec<Uuid>,
 }
-/// Lists up to two hundred visible private clusters.
+/// A stable sixty-person page, excluding hidden or empty clusters.
+pub struct PeoplePage {
+    /// Private summaries in name/identifier order.
+    pub people: Vec<Person>,
+    /// Matching clusters before pagination.
+    pub total: usize,
+}
+/// Lists a one-based page of private clusters, optionally excluding a merge source.
 ///
 /// # Errors
-/// Returns database failures.
-pub async fn people(conn: &mut PgConnection) -> Result<Vec<Person>, DbError> {
-    let rows=sqlx::query!(r#"SELECT p.id,p.name,count(f.id) AS "count!",(array_agg(f.id ORDER BY f.quality DESC,f.id))[1:3] AS "samples!" FROM persons p
+/// Rejects page zero and returns database failures or malformed stored summaries.
+pub async fn people(
+    conn: &mut PgConnection,
+    page: u32,
+    exclude: Option<Uuid>,
+) -> Result<PeoplePage, DbError> {
+    let offset = i64::from(page.checked_sub(1).ok_or(DbError::InvalidInput)?) * 60;
+    // Three quality-ranked samples are a deliberate preview cap, not a face
+    // browser. The linked person photo grid paginates the complete collection.
+    let row=sqlx::query!(r#"WITH clusters AS MATERIALIZED (
+        SELECT p.id,p.name,count(f.id) AS count,(array_agg(f.id ORDER BY f.quality DESC,f.id))[1:3] AS samples FROM persons p
         JOIN faces f ON f.person_id=p.id JOIN photos photo ON photo.id=f.photo_id
-        WHERE NOT p.hidden AND photo.deleted_at IS NULL AND photo.status='ready' GROUP BY p.id ORDER BY p.name NULLS LAST,p.id LIMIT 200"#).fetch_all(conn).await?;
-    Ok(rows
-        .into_iter()
-        .map(|r| Person {
-            id: r.id,
-            name: r.name,
-            count: r.count,
-            samples: r.samples,
-        })
-        .collect())
+        WHERE NOT p.hidden AND ($2::uuid IS NULL OR p.id<>$2) AND photo.deleted_at IS NULL AND photo.status='ready' GROUP BY p.id
+      ), person_page AS (SELECT * FROM clusters ORDER BY name NULLS LAST,id LIMIT 60 OFFSET $1)
+      SELECT (SELECT count(*) FROM clusters) AS "total!",
+        coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.name NULLS LAST,p.id),'[]'::jsonb) AS "people!"
+      FROM person_page p"#,offset,exclude).fetch_one(conn).await?;
+    Ok(PeoplePage {
+        people: serde_json::from_value(row.people).map_err(|_| DbError::InvalidInput)?,
+        total: usize::try_from(row.total).map_err(|_| DbError::InvalidInput)?,
+    })
 }
 /// Updates a name or hides an identity, refusing to disclose hidden identities again.
 ///
@@ -134,7 +148,9 @@ async fn find(
       ), photo_page AS (
         SELECT p.* FROM photos p JOIN matches m ON m.id=p.id ORDER BY p.id LIMIT 60 OFFSET $3
       ) SELECT (SELECT count(*) FROM matches) AS "total!",
-      coalesce(jsonb_agg(to_jsonb(p) || jsonb_build_object('thumbhash',encode(p.placeholder,'base64'),
+      coalesce(jsonb_agg(to_jsonb(p) || jsonb_build_object(
+      'taken_at',to_char(p.taken_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+      'thumbhash',encode(p.placeholder,'base64'),
       'derivatives',coalesce((SELECT jsonb_agg(jsonb_build_object('variant',d.variant,'format',d.format,
       'hdr',d.hdr,'hash',d.hash,'w',d.width,'h',d.height) ORDER BY d.width,d.format,d.hdr)
       FROM derivatives d WHERE d.photo_id=p.id),'[]'::jsonb)) ORDER BY p.id),'[]'::jsonb) AS "photos!"

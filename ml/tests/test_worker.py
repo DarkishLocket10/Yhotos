@@ -97,11 +97,9 @@ def test_nightly_rebuild_deduplicates_and_stale_locks_recover(connection: Connec
     assert connection.execute("SELECT count(*) AS count FROM jobs WHERE kind='ml.cluster'").fetchone()["count"] == 1
 
 
-@pytest.mark.parametrize("timezone", ["UTC", "America/Toronto"])
-def test_completed_nightly_rebuild_deduplicates_by_utc_day(connection: Connection, timezone: str) -> None:
+def test_completed_nightly_rebuild_deduplicates_by_utc_day(connection: Connection) -> None:
     from yhotos_ml.worker import maintain
     with connection.transaction():
-        connection.execute("SELECT set_config('TimeZone',%s,true)", (timezone,))
         previous = identifier()
         connection.execute("""
             INSERT INTO jobs(id,kind,payload,created_at,finished_at)

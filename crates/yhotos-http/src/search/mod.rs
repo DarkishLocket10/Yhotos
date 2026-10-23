@@ -32,6 +32,8 @@ pub struct Ranked {
     pub score: f64,
 }
 /// Fuses up to three bounded lists without crediting duplicates within a list.
+/// Each list deliberately contributes only its top 200 candidates, per the search
+/// budget; the resulting at-most-600 matches are browsed in sixty-photo pages.
 #[must_use]
 pub fn fuse(lists: impl IntoIterator<Item = Vec<Candidate>>) -> Vec<Ranked> {
     let mut scores: HashMap<PhotoId, Ranked> = HashMap::new();
@@ -78,6 +80,7 @@ pub(crate) async fn execute(
     let _permit = state.search.permit().ok_or(HttpError::RateLimited)?;
     let parsed = query::parse(&options.q).map_err(|_| HttpError::BadRequest)?;
     let page = options.page.unwrap_or(1);
+    // Three deliberate 200-candidate relevance windows yield at most ten pages.
     if page == 0 || page > 10 {
         return Err(HttpError::NotFound);
     }

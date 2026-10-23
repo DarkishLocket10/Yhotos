@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO photo_tags(id,photo_id,tag_id,source) SELECT id,id,$2,'manual' FROM unnest($1::uuid[]) id",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0da73c15e5ab3937d208f38d24a0e4840b1a88e5634f802c894469a5d3293d2b"
+}

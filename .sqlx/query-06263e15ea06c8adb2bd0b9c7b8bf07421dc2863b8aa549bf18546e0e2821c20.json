@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO persons(id,name) SELECT id,name FROM unnest($1::uuid[],$2::text[]) f(id,name)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "06263e15ea06c8adb2bd0b9c7b8bf07421dc2863b8aa549bf18546e0e2821c20"
+}

@@ -40,8 +40,9 @@ def database() -> Iterator[str]:
             admin.execute(sql.SQL("DROP DATABASE {} WITH (FORCE)").format(sql.Identifier(name)))
 
 
-@pytest.fixture()
-def connection(database: str) -> Iterator[psycopg.Connection[dict[str, object]]]:
+@pytest.fixture(params=["UTC", "America/Toronto"])
+def connection(database: str, request: pytest.FixtureRequest) -> Iterator[psycopg.Connection[dict[str, object]]]:
     with psycopg.connect(database, autocommit=True, row_factory=dict_row) as conn:
+        conn.execute("SELECT set_config('TimeZone',%s,false)", (request.param,))
         yield conn
         conn.execute("TRUNCATE albums,photos,persons,tags,jobs CASCADE")

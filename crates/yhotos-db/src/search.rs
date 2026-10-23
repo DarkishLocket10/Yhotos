@@ -43,8 +43,8 @@ macro_rules! candidates {
               WHEN 'place' THEN EXISTS (SELECT FROM places l WHERE l.id=p.place_id AND lower(l.name)=f.value)
               WHEN 'year' THEN extract(year FROM coalesce(p.taken_at,p.posted_at) AT TIME ZONE 'UTC')=f.value::int
               WHEN 'month' THEN extract(month FROM coalesce(p.taken_at,p.posted_at) AT TIME ZONE 'UTC')=f.value::int
-              WHEN 'before' THEN coalesce(p.taken_at,p.posted_at)<(f.value::date AT TIME ZONE 'UTC')
-              WHEN 'after' THEN coalesce(p.taken_at,p.posted_at)>=(f.value::date AT TIME ZONE 'UTC')
+              WHEN 'before' THEN coalesce(p.taken_at,p.posted_at)<(f.value::date::timestamp AT TIME ZONE 'UTC')
+              WHEN 'after' THEN coalesce(p.taken_at,p.posted_at)>=(f.value::date::timestamp AT TIME ZONE 'UTC')
               WHEN 'is' THEN CASE f.value WHEN 'hdr' THEN p.is_hdr ELSE p.kind::text=f.value END
               WHEN 'color' THEN EXISTS (SELECT FROM unnest(p.dominant_colors) c WHERE
                 abs(((c>>16)&255)-((f.value::int>>16)&255))<=64 AND
@@ -55,6 +55,7 @@ macro_rules! candidates {
             CASE WHEN $8::text IS NOT NULL THEN 'siglip-base-patch16-224@4649052661e53c7000355844105f8a1792088239' ELSE (SELECT model FROM seed) END AS model),
           text_query AS MATERIALIZED (SELECT plainto_tsquery('simple',$7::text) AS q),
           ranked AS ("#, $tail, r#") SELECT jsonb_build_object('photo',to_jsonb(p) || jsonb_build_object(
+            'taken_at',to_char(p.taken_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
             'thumbhash',encode(p.placeholder,'base64'),'derivatives',coalesce((SELECT jsonb_agg(jsonb_build_object(
               'variant',d.variant,'format',d.format,'hdr',d.hdr,'hash',d.hash,'w',d.width,'h',d.height)
               ORDER BY d.width,d.format,d.hdr) FROM derivatives d WHERE d.photo_id=p.id),'[]'::jsonb)),
@@ -64,7 +65,9 @@ macro_rules! candidates {
     };
 }
 
-/// Candidate source, each capped at two hundred before fusion.
+/// Candidate source, deliberately capped at two hundred before fusion.
+/// This relevance window bounds database/response work; users can narrow filters
+/// to reach other matches. The fused window is paginated sixty photos at a time.
 #[derive(Clone, Copy)]
 pub enum List {
     /// HNSW cosine neighbours of a query or visible seed photo.
@@ -136,6 +139,8 @@ pub struct Suggestion {
     pub count: i64,
 }
 /// Returns at most twenty suggestions, escaping LIKE metacharacters as literals.
+/// This deliberate typeahead cap keeps the dropdown small; a more specific
+/// prefix reaches values outside the current window, without an exhaustive list.
 ///
 /// # Errors
 /// Returns invalid prefix lengths or database failures.

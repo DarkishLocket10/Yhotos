@@ -36,7 +36,7 @@ pub(crate) fn routes() -> Router<AppState> {
         .route("/admin/people/faces/{face}", get(previews::serve))
         .route("/admin/people/rebuild", post(rebuild))
         .route("/admin/people/{id}", post(update).get(person))
-        .route("/admin/people/{id}/merge", post(merge))
+        .route("/admin/people/{id}/merge", get(merge_targets).post(merge))
 }
 #[derive(serde::Deserialize)]
 struct PersonQuery {
@@ -76,31 +76,79 @@ async fn search(
 struct PeopleTemplate<'a> {
     people: Vec<faces::Person>,
     csrf: &'a str,
-
+    merge_source: Option<Uuid>,
+    previous: Option<String>,
+    next: Option<String>,
     stylesheet: &'static str,
 }
 async fn index(
     State(state): State<AppState>,
     current: Current,
     headers: HeaderMap,
+    Query(options): Query<super::Options>,
 ) -> Result<Response, HttpError> {
-    guard(&current)?;
-    let mut c = auth::required(&state)?
+    listing(&state, &current, &headers, options.page, None).await
+}
+async fn merge_targets(
+    State(state): State<AppState>,
+    current: Current,
+    headers: HeaderMap,
+    Path(id): Path<Uuid>,
+    Query(options): Query<super::Options>,
+) -> Result<Response, HttpError> {
+    listing(&state, &current, &headers, options.page, Some(id)).await
+}
+async fn listing(
+    state: &AppState,
+    current: &Current,
+    headers: &HeaderMap,
+    page: Option<u32>,
+    merge_source: Option<Uuid>,
+) -> Result<Response, HttpError> {
+    guard(current)?;
+    let page = page_number(page)?;
+    let mut c = auth::required(state)?
         .db(Audience(true))?
         .pool()
         .acquire()
         .await?;
-    let csrf = CsrfToken::for_page(&headers)?;
-    let body = PeopleTemplate {
-        people: faces::people(&mut c).await?,
-        csrf: csrf.form_value(),
-        stylesheet: static_assets::stylesheet_url()?,
+    if let Some(source) = merge_source
+        && faces::photos(&mut c, source, 1).await?.total == 0
+    {
+        return Err(HttpError::NotFound);
     }
-    .render()
-    .map_err(|e| HttpError::Internal(e.into()))?;
+    let people = faces::people(&mut c, page, merge_source).await?;
+    let csrf = CsrfToken::for_page(headers)?;
+    let body = render_listing(people, page, merge_source, csrf.form_value())?;
     let mut response = ([(header::CACHE_CONTROL, "private, no-store")], Html(body)).into_response();
     auth::set_cookie(&mut response, csrf.cookie(true)?);
     Ok(response)
+}
+fn render_listing(
+    results: faces::PeoplePage,
+    page: u32,
+    merge_source: Option<Uuid>,
+    csrf: &str,
+) -> Result<String, HttpError> {
+    if page == 0 || (page > 1 && results.people.is_empty()) {
+        return Err(HttpError::NotFound);
+    }
+    let action = merge_source.map_or_else(
+        || "/admin/people".to_owned(),
+        |id| format!("/admin/people/{id}/merge"),
+    );
+    let next = (u64::from(page) * 60 < u64::try_from(results.total).unwrap_or(u64::MAX))
+        .then(|| format!("{action}?page={}", page.saturating_add(1)));
+    PeopleTemplate {
+        people: results.people,
+        merge_source,
+        previous: (page > 1).then(|| format!("{action}?page={}", page - 1)),
+        next,
+        csrf,
+        stylesheet: static_assets::stylesheet_url()?,
+    }
+    .render()
+    .map_err(|e| HttpError::Internal(e.into()))
 }
 #[derive(serde::Deserialize)]
 struct Update {
@@ -252,6 +300,62 @@ fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn cluster_and_merge_navigation_cover_every_page_and_escape_names() {
+        for source in [None, Some(Uuid::from_u128(1))] {
+            for page in 1..=4 {
+                let id = Uuid::from_u128(205);
+                let html = render_listing(
+                    faces::PeoplePage {
+                        people: vec![faces::Person {
+                            id,
+                            name: Some("<script>name</script>".into()),
+                            count: 1,
+                            samples: vec![],
+                        }],
+                        total: 205,
+                    },
+                    page,
+                    source,
+                    "csrf",
+                )
+                .unwrap();
+                let action = source.map_or_else(
+                    || "/admin/people".to_owned(),
+                    |id| format!("/admin/people/{id}/merge"),
+                );
+                assert_eq!(html.contains("rel=\"prev\""), page > 1);
+                assert_eq!(html.contains("rel=\"next\""), page < 4);
+                if page > 1 {
+                    assert!(html.contains(&format!("href=\"{action}?page={}\"", page - 1)));
+                }
+                if page < 4 {
+                    assert!(html.contains(&format!("href=\"{action}?page={}\"", page + 1)));
+                }
+                assert!(!html.contains("<script>name</script>"));
+                if let Some(source) = source {
+                    assert!(html.contains(&format!("action=\"/admin/people/{source}/merge\"")));
+                    assert!(html.contains(&format!("name=\"target\" value=\"{id}\"")));
+                    assert!(html.contains("name=\"_csrf\" value=\"csrf\""));
+                } else {
+                    assert!(html.contains(&format!("href=\"/admin/people/{id}/merge\"")));
+                }
+            }
+            assert!(
+                render_listing(
+                    faces::PeoplePage {
+                        people: vec![],
+                        total: 205
+                    },
+                    5,
+                    source,
+                    "csrf"
+                )
+                .is_err()
+            );
+        }
+    }
     #[tokio::test]
     #[allow(clippy::unwrap_used)]
     async fn person_results_are_a_private_escaped_photo_grid() {
