@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM migration_redirects",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "f53fc72d2adaad16fc0c721a1f31998ca5292c31a976414f235c31f122fe84b1"
+}

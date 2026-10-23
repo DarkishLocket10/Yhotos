@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE jobs SET max_attempts=1 WHERE kind='ingest'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "553e4680925bb0a2ca9c743c0f3a57f45a70e6a4b6a64dea14addc031a1ae2fa"
+}

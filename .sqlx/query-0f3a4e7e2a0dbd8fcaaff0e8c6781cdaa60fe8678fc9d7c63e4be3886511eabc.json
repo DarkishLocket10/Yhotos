@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE photos SET status='failed',failure_reason='fixture failure' WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0f3a4e7e2a0dbd8fcaaff0e8c6781cdaa60fe8678fc9d7c63e4be3886511eabc"
+}

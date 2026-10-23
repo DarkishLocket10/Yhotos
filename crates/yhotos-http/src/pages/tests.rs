@@ -1721,6 +1721,11 @@ async fn map_place_list_paginates_after_visibility_and_stays_under_budget(pool: 
 fn migration_legacy_forms_reach_stored_aliases() {
     use axum::http::Uri;
     for path in [
+        "/snow_ice",
+        "/Snow%20%26%20Ice",
+        "/category/12",
+        "/picture/12",
+        "/picture/12/category/3",
         "/picture.php?/12",
         "/picture.php?/12/category/3",
         "/index.php?/category/snow-ice",
@@ -1735,6 +1740,12 @@ fn migration_legacy_forms_reach_stored_aliases() {
         );
     }
     for path in [
+        "/snow_ice?query=1",
+        "/two/segments",
+        "/.",
+        "/..",
+        "/category/0",
+        "/picture/0",
         "/picture.php?/0",
         "/picture.php?/../x",
         "/index.php?/category/../x",
@@ -1742,4 +1753,6 @@ fn migration_legacy_forms_reach_stored_aliases() {
     ] {
         assert!(super::legacy_patterns(&path.parse().unwrap()).is_none());
     }
+    let oversized = format!("/{}", "a".repeat(4097));
+    assert!(super::legacy_patterns(&oversized.parse().unwrap()).is_none());
 }

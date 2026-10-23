@@ -1,0 +1,151 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT m.photo_id,m.original_hash,m.taken_at AS source_taken,m.taken_at_local AS source_local,m.gps_lat AS source_lat,m.gps_lon AS source_lon,p.gps_lat,p.gps_lon,p.deleted_at,p.status::text AS \"status!\",p.derivative_plan,EXISTS(SELECT 1 FROM derivatives d WHERE d.photo_id=p.id) AS \"has_derivatives!\" FROM migration_sources m JOIN photos p ON p.id=m.photo_id WHERE m.image_id=$1 AND m.category_id=$2 FOR UPDATE OF p",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "photo_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "migration_sources",
+            "name": "photo_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "original_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "migration_sources",
+            "name": "original_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "source_taken",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "migration_sources",
+            "name": "taken_at"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "source_local",
+        "type_info": "Timestamp",
+        "origin": {
+          "Table": {
+            "table": "migration_sources",
+            "name": "taken_at_local"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "source_lat",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "migration_sources",
+            "name": "gps_lat"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "source_lon",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "migration_sources",
+            "name": "gps_lon"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "gps_lat",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "gps_lat"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "gps_lon",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "gps_lon"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "deleted_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "deleted_at"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "status!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 10,
+        "name": "derivative_plan",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "derivative_plan"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "has_derivatives!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      null,
+      true,
+      null
+    ]
+  },
+  "hash": "48b2eb8a93e7be83f4a1465a2922c390c553b035bd36a95a0f8c50d7c13b95e2"
+}

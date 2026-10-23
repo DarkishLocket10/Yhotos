@@ -105,7 +105,9 @@ dates against the source and resolve timezone ambiguity before cutover.
 
 Albums preserve numeric global-rank ordering and nesting. Names/entities are
 decoded, HTML/comments become plain text, and sibling slug collisions receive
-`-2`, `-3`. Unknown album statuses fail closed as private. Private albums and
+`-2`, `-3`. Retained destination albums/tags reserve their slugs when their source
+identities disappear, so remaining collision members cannot take those URLs.
+Unknown album statuses fail closed as private. Private albums and
 `level > 0` photos are restricted with **no grants**. Inherited public photo
 visibility respects private ancestors. Curated source capture dates/GPS take
 priority over EXIF during ingest; missing values may come from EXIF. Author is
@@ -123,15 +125,21 @@ reported, not silently put in a synthetic album.
 
 Reruns preserve photo URLs using `(image_id, category_id)` in `migration_sources`
 and compare its original hash. Unchanged hashes skip original copies and do not
-queue another ingest. Changed hashes replace the original with a new generation
-and enqueue ingest. Album identity uses `migration_albums`. Source metadata and
+queue another ingest unless a source override was removed or an unfinished photo
+is being restored. Removed source capture dates/GPS clear the previous published
+metadata and derived place, then enqueue a new generation to re-extract EXIF;
+absent overrides can use actual EXIF again. Changed hashes also replace the
+original with a new generation and enqueue ingest. Album identity uses
+`migration_albums`. Source metadata and
 manual tag memberships are authoritative on rerun; do not edit imported content
 in Yhotos until final migration completes. Auto tags remain independent. Reruns
 retire every migration-owned photo copy absent from the successfully imported
 memberships, including source-deleted images and skipped files. Retirement sets
 restricted visibility, removes grants and trashes the obsolete copy in the same
 transaction as current metadata updates. Returning memberships restore their
-identities. Empty source-deleted albums remain; use a fresh rehearsal destination
+identities. Restored pending/processing/failed or unpublished photos enqueue a
+fresh ingest generation; already published photos retain their derivatives.
+Empty source-deleted albums remain; use a fresh rehearsal destination
 for exact album counts.
 
 Keep the destination private during reruns. Before serving revised visibility,
@@ -143,7 +151,14 @@ cache invalidation requirement for visibility changes.
 Legacy rows include numeric album paths, numeric/url-name paths, name/slug aliases
 and both photo URL forms. Piwigo's nullable category `permalink` supplies its
 url-name when available. Ambiguous name aliases are reported and omitted rather
-than redirected to an arbitrary album; numeric links remain. Old IDs were reset,
+than redirected to an arbitrary album; numeric links remain. Each import
+transaction replaces its owned redirect set, removing previously unique aliases
+that have become ambiguous or disappeared. Independently managed redirects and
+old import mappings manually retargeted to different targets are retained.
+Bare album aliases (including encoded names) resolve through the same authorized
+HTTP lookup as `/legacy/` and PHP paths; restricted targets return 404. Names
+conflicting with application paths (for example `/map`) retain prefixed aliases
+and are reported; unreachable bare/PHP variants are not stored. Old IDs were reset,
 so test name-based fallbacks with representative historical links. Users,
 comments, ratings and Piwigo derivatives are intentionally excluded.
 

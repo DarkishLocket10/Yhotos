@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO migration_redirects(pattern,target_kind,target_id) SELECT pattern,target_kind,target_id FROM legacy_redirects WHERE pattern=$1 ON CONFLICT(pattern) DO UPDATE SET target_kind=excluded.target_kind,target_id=excluded.target_id",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b871d0caa1b045d7e46a711b6c5f3359373ce79b1aa80740b22f36b5bb0b199d"
+}

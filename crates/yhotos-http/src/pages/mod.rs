@@ -287,7 +287,31 @@ pub fn legacy_patterns(uri: &Uri) -> Option<Vec<String>> {
         }
         return Some(vec![uri.path().to_owned(), format!("/{rest}")]);
     }
-    let query = uri.query()?;
+    let Some(query) = uri.query() else {
+        let rest = uri.path().strip_prefix('/')?;
+        if rest.len() > 4096 {
+            return None;
+        }
+        if let Some(id) = rest
+            .strip_prefix("category/")
+            .or_else(|| rest.strip_prefix("picture/"))
+        {
+            let valid = id.split_once("/category/").map_or_else(
+                || positive_id(id),
+                |(image, category)| positive_id(image) && positive_id(category),
+            );
+            return valid.then(|| vec![uri.path().to_owned()]);
+        }
+        // Exact, bounded single-segment lookup. Encoded album names stay encoded
+        // to match stored patterns; only the authorized DB target becomes Location.
+        return (!rest.is_empty()
+            && rest != "."
+            && rest != ".."
+            && rest.bytes().all(|c| {
+                c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-' | b'.' | b'%' | b'*')
+            }))
+        .then(|| vec![uri.path().to_owned()]);
+    };
     match uri.path() {
         "/index.php" => {
             let category = query.strip_prefix("/category/")?;
@@ -300,7 +324,7 @@ pub fn legacy_patterns(uri: &Uri) -> Option<Vec<String>> {
                     .next()
                     .is_some_and(|part| part.bytes().all(|b| b.is_ascii_digit()))
                     || category.is_empty()
-                    || category.len() > 1024
+                    || category.len() > 4096
                     || category.contains(['/', '\\', '?', '#', '&'])
                     || category.chars().any(char::is_control)
                 {
@@ -310,7 +334,7 @@ pub fn legacy_patterns(uri: &Uri) -> Option<Vec<String>> {
             }
             if slug.is_some_and(|slug| {
                 slug.is_empty()
-                    || slug.len() > 1024
+                    || slug.len() > 4096
                     || slug.contains(['/', '\\', '?', '#', '&'])
                     || slug.chars().any(char::is_control)
             }) {

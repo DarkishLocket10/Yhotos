@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT slug::text AS \"slug!\" FROM tags WHERE id NOT IN (SELECT tag_id FROM migration_tags WHERE source_id=$1)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "slug!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "32c836bb4405a547d11b1e8115a7b4c0472be9ec4d1ba914cbba698ea6648980"
+}

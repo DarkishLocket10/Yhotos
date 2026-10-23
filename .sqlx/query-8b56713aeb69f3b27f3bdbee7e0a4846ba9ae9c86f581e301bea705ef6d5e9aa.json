@@ -1,0 +1,74 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT m.image_id,m.category_id,p.id,p.short_id,p.original_hash FROM migration_sources m JOIN photos p ON p.id=m.photo_id ORDER BY m.image_id,m.category_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "image_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "migration_sources",
+            "name": "image_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "category_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "migration_sources",
+            "name": "category_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "short_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "short_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "original_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "original_hash"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "8b56713aeb69f3b27f3bdbee7e0a4846ba9ae9c86f581e301bea705ef6d5e9aa"
+}

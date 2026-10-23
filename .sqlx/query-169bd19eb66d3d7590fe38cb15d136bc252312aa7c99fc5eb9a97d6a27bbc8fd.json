@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM legacy_redirects r USING migration_redirects m WHERE r.pattern=m.pattern AND r.target_kind=m.target_kind AND r.target_id=m.target_id",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "169bd19eb66d3d7590fe38cb15d136bc252312aa7c99fc5eb9a97d6a27bbc8fd"
+}

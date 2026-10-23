@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE photos SET derivative_plan='exif',taken_at=now(),taken_at_local=localtimestamp,gps_lat=30,gps_lon=40 WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3a9f7d5c194a21beaa38dc865d5d48725b9803c06a3f11bbfdc3d2da0e7c90c5"
+}

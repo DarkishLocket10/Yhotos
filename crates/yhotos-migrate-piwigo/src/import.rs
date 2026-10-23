@@ -14,7 +14,6 @@ use yhotos_db::{
     Db, albums,
     migration::{self, ImportPhoto},
     photos::{MediaKind, NewPhoto},
-    redirects,
     tags::{self, TagSource},
 };
 use yhotos_storage::{Area, ContentHash, SourceTree, Store};
@@ -228,6 +227,7 @@ pub(crate) async fn execute(
     let album_sources: Vec<_> = plan.albums.iter().map(|a| a.source.id).collect();
     let tag_sources: Vec<_> = plan.tags.keys().copied().collect();
     migration::prepare_slugs(&mut tx, &album_sources, &tag_sources).await?;
+    migration::reconcile_redirects(&mut tx).await?;
     let mut album_ids = BTreeMap::<i64, AlbumId>::new();
     for a in &plan.albums {
         let parent = a
@@ -247,13 +247,13 @@ pub(crate) async fn execute(
         )
         .await?;
         album_ids.insert(a.source.id, id);
-        redirects::insert(
+        migration::insert_redirect(
             &mut tx,
             &format!("/category/{}", a.source.id),
             ShareTarget::Album(id),
         )
         .await?;
-        redirects::insert(
+        migration::insert_redirect(
             &mut tx,
             &format!("/index.php?/category/{}", a.source.id),
             ShareTarget::Album(id),
@@ -270,7 +270,7 @@ pub(crate) async fn execute(
                         .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
             })
             .unwrap_or(a.slug.as_str());
-        redirects::insert(
+        migration::insert_redirect(
             &mut tx,
             &format!("/index.php?/category/{}-{url_name}", a.source.id),
             ShareTarget::Album(id),
@@ -279,12 +279,30 @@ pub(crate) async fn execute(
     }
     for (name, source_id) in &plan.aliases {
         let id = album_ids.get(source_id).ok_or(Error::SourceData)?;
-        for path in [
-            format!("/{name}"),
-            format!("/legacy/{name}"),
-            format!("/index.php?/category/{name}"),
-        ] {
-            redirects::insert(&mut tx, &path, ShareTarget::Album(*id)).await?;
+        let mut paths = vec![format!("/legacy/{name}")];
+        // Existing application routes keep their meaning. Do not store bare
+        // aliases that cannot reach the authorized legacy handler.
+        if matches!(
+            name.as_str(),
+            "." | ".." | "map" | "calendar" | "healthz" | "login" | "logout"
+        ) {
+            report.collisions.push(problem(
+                Some(*source_id),
+                "bare album alias conflicts with an application path; prefixed alias retained",
+            ));
+        } else {
+            paths.push(format!("/{name}"));
+        }
+        // The PHP parser rejects malformed/zero numeric prefixes. Such names
+        // remain reachable through their bare and /legacy/ aliases.
+        let prefix = name.split('-').next().unwrap_or("");
+        if !prefix.bytes().all(|b| b.is_ascii_digit())
+            || prefix.parse::<u64>().is_ok_and(|id| id > 0)
+        {
+            paths.push(format!("/index.php?/category/{name}"));
+        }
+        for path in paths {
+            migration::insert_redirect(&mut tx, &path, ShareTarget::Album(*id)).await?;
         }
     }
     let mut tag_ids = BTreeMap::new();
@@ -349,7 +367,7 @@ pub(crate) async fn execute(
                 .await?;
             }
             photo_ids.insert((image.id, row.category_id), *id);
-            redirects::insert(
+            migration::insert_redirect(
                 &mut tx,
                 &format!("/picture.php?/{}/category/{}", image.id, row.category_id),
                 ShareTarget::Photo(*id),
@@ -357,13 +375,13 @@ pub(crate) async fn execute(
             .await?;
         }
         if let Some(first) = ids.first() {
-            redirects::insert(
+            migration::insert_redirect(
                 &mut tx,
                 &format!("/picture/{}", image.id),
                 ShareTarget::Photo(*first),
             )
             .await?;
-            redirects::insert(
+            migration::insert_redirect(
                 &mut tx,
                 &format!("/picture.php?/{}", image.id),
                 ShareTarget::Photo(*first),

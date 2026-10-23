@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE photos SET gps_lat=10,gps_lon=20,taken_at=now(),taken_at_local=localtimestamp WHERE id IN (SELECT photo_id FROM migration_sources WHERE image_id=2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "0fd77adbb5131dc87be6c6dca7fe95c92363962eebed38a974c28a508bce5e1a"
+}

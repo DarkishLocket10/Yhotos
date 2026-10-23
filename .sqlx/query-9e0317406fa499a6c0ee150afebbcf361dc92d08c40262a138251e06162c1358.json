@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT photo_id FROM migration_sources WHERE image_id=1 ORDER BY category_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "photo_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "migration_sources",
+            "name": "photo_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9e0317406fa499a6c0ee150afebbcf361dc92d08c40262a138251e06162c1358"
+}

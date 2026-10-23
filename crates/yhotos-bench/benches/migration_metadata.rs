@@ -11,7 +11,7 @@ use yhotos_db::{
     photos::{MediaKind, NewPhoto},
 };
 
-// Frozen pre-task parser for comparing the previously supported numeric URL.
+// Frozen parser from the revision before bare album routing.
 fn positive_id(value: &str) -> bool {
     !value.is_empty()
         && value.bytes().all(|b| b.is_ascii_digit())
@@ -35,14 +35,26 @@ fn legacy_before(uri: &Uri) -> Option<Vec<String>> {
             let (id, slug) = category
                 .split_once('-')
                 .map_or((category, None), |(id, slug)| (id, Some(slug)));
-            if !positive_id(id)
-                || slug.is_some_and(|slug| {
-                    slug.is_empty()
-                        || slug.len() > 1024
-                        || slug.contains(['/', '\\', '?', '#', '&'])
-                        || slug.chars().any(char::is_control)
-                })
-            {
+            if !positive_id(id) {
+                if category
+                    .split('-')
+                    .next()
+                    .is_some_and(|part| part.bytes().all(|b| b.is_ascii_digit()))
+                    || category.is_empty()
+                    || category.len() > 1024
+                    || category.contains(['/', '\\', '?', '#', '&'])
+                    || category.chars().any(char::is_control)
+                {
+                    return None;
+                }
+                return Some(vec![format!("/index.php?{query}"), format!("/{category}")]);
+            }
+            if slug.is_some_and(|slug| {
+                slug.is_empty()
+                    || slug.len() > 1024
+                    || slug.contains(['/', '\\', '?', '#', '&'])
+                    || slug.chars().any(char::is_control)
+            }) {
                 return None;
             }
             let mut patterns = vec![
@@ -57,7 +69,10 @@ fn legacy_before(uri: &Uri) -> Option<Vec<String>> {
         }
         "/picture.php" => {
             let rest = query.strip_prefix('/')?;
-            let (id, category) = rest.split_once("/category/")?;
+            let Some((id, category)) = rest.split_once("/category/") else {
+                return positive_id(rest)
+                    .then(|| vec![format!("/picture.php?/{rest}"), format!("/picture/{rest}")]);
+            };
             if !positive_id(id) || !positive_id(category) {
                 return None;
             }
@@ -80,6 +95,17 @@ fn benchmark(c: &mut Criterion) {
         b.iter(|| {
             std::hint::black_box(yhotos_http::pages::legacy_patterns(std::hint::black_box(
                 &uri,
+            )))
+        });
+    });
+    let album: Uri = "/snow_ice".parse().unwrap();
+    c.bench_function("legacy_patterns/bare_album_before", |b| {
+        b.iter(|| std::hint::black_box(legacy_before(std::hint::black_box(&album))));
+    });
+    c.bench_function("legacy_patterns/bare_album_after", |b| {
+        b.iter(|| {
+            std::hint::black_box(yhotos_http::pages::legacy_patterns(std::hint::black_box(
+                &album,
             )))
         });
     });

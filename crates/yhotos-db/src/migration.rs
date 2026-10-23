@@ -1,5 +1,5 @@
 //! Administrative, transaction-composable Piwigo import operations.
-use crate::{DbError, albums, photos};
+use crate::{DbError, albums, photos, redirects};
 use sqlx::PgConnection;
 use time::{OffsetDateTime, PrimitiveDateTime};
 use yhotos_core::{AlbumId, PhotoId, Slug, TagId, access::Visibility};
@@ -20,6 +20,56 @@ pub async fn prepare_slugs(
     let prefix = format!("stage-{}-", uuid::Uuid::now_v7().simple());
     sqlx::query!("UPDATE albums a SET slug=($2::text || replace(a.id::text,'-',''))::citext FROM migration_albums m WHERE a.id=m.album_id AND m.source_id=ANY($1)",album_sources,&prefix).execute(&mut *conn).await?;
     sqlx::query!("UPDATE tags t SET slug=($2::text || replace(t.id::text,'-',''))::citext FROM migration_tags m WHERE t.id=m.tag_id AND m.source_id=ANY($1)",tag_sources,&prefix).execute(conn).await?;
+    Ok(())
+}
+
+// Resolve against retained destination identities as well as this run's plan.
+// Staged source identities are free to rename; absent identities keep their URLs.
+fn available_slug(requested: &Slug, occupied: &[String]) -> Slug {
+    let mut candidate = requested.clone();
+    let mut suffix = 2;
+    while occupied
+        .iter()
+        .any(|s| s.eq_ignore_ascii_case(candidate.as_str()))
+    {
+        let tail = format!("-{suffix}");
+        let stem = requested
+            .as_str()
+            .chars()
+            .take(80 - tail.len())
+            .collect::<String>();
+        candidate = Slug::from_title(&format!("{}{tail}", stem.trim_end_matches('-')));
+        suffix += 1;
+    }
+    candidate
+}
+
+/// Removes the previous import's redirects, preserving independently managed
+/// mappings (including migration mappings that were manually retargeted).
+/// Call before inserting this run's mappings in the same transaction.
+///
+/// # Errors
+/// Returns database errors; callers must roll back on failure.
+pub async fn reconcile_redirects(conn: &mut PgConnection) -> Result<(), DbError> {
+    sqlx::query!("DELETE FROM legacy_redirects r USING migration_redirects m WHERE r.pattern=m.pattern AND r.target_kind=m.target_kind AND r.target_id=m.target_id").execute(&mut *conn).await?;
+    sqlx::query!("DELETE FROM migration_redirects")
+        .execute(conn)
+        .await?;
+    Ok(())
+}
+
+/// Stores an exact internal redirect and records import ownership atomically
+/// within the caller's transaction, for reconciliation on the next import.
+///
+/// # Errors
+/// Returns database errors; callers must roll back on failure.
+pub async fn insert_redirect(
+    conn: &mut PgConnection,
+    path: &str,
+    target: yhotos_core::access::ShareTarget,
+) -> Result<(), DbError> {
+    redirects::insert(conn, path, target).await?;
+    sqlx::query!("INSERT INTO migration_redirects(pattern,target_kind,target_id) SELECT pattern,target_kind,target_id FROM legacy_redirects WHERE pattern=$1 ON CONFLICT(pattern) DO UPDATE SET target_kind=excluded.target_kind,target_id=excluded.target_id",path).execute(conn).await?;
     Ok(())
 }
 
@@ -47,6 +97,8 @@ pub async fn upsert_album(
     )
     .fetch_optional(&mut *conn)
     .await?;
+    let occupied = sqlx::query_scalar!("SELECT slug::text AS \"slug!\" FROM albums WHERE parent_id IS NOT DISTINCT FROM $1 AND id NOT IN (SELECT album_id FROM migration_albums WHERE source_id=$2)",parent.map(|p|p.0),source).fetch_all(&mut *conn).await?;
+    let slug = available_slug(slug, &occupied);
     let visibility = if restricted {
         Visibility::Restricted
     } else {
@@ -55,7 +107,7 @@ pub async fn upsert_album(
     let id = if let Some(row) = existing {
         AlbumId(row.album_id)
     } else {
-        let row = albums::create(conn, parent, slug, title, visibility).await?;
+        let row = albums::create(conn, parent, &slug, title, visibility).await?;
         sqlx::query!(
             "INSERT INTO migration_albums(source_id,album_id) VALUES ($1,$2)",
             source,
@@ -102,7 +154,8 @@ pub struct ImportPhoto {
 }
 
 /// Batch-upserts memberships, reusing identities and unchanged originals.
-/// New or replaced originals enqueue ingest atomically with the caller's transaction.
+/// New/replaced originals, removed source overrides and unfinished restorations
+/// enqueue a new ingest generation atomically with the caller's transaction.
 ///
 /// # Errors
 /// Returns invalid source ids, constraints or database errors. Roll back on failure.
@@ -116,14 +169,25 @@ pub async fn upsert_photos(
         if row.image_id <= 0 || row.category_id <= 0 {
             return Err(DbError::InvalidInput);
         }
-        let old = sqlx::query!("SELECT m.photo_id,m.original_hash,p.gps_lat,p.gps_lon FROM migration_sources m JOIN photos p ON p.id=m.photo_id WHERE m.image_id=$1 AND m.category_id=$2 FOR UPDATE OF p", row.image_id, row.category_id).fetch_optional(&mut *conn).await?;
+        let old = sqlx::query!("SELECT m.photo_id,m.original_hash,m.taken_at AS source_taken,m.taken_at_local AS source_local,m.gps_lat AS source_lat,m.gps_lon AS source_lon,p.gps_lat,p.gps_lon,p.deleted_at,p.status::text AS \"status!\",p.derivative_plan,EXISTS(SELECT 1 FROM derivatives d WHERE d.photo_id=p.id) AS \"has_derivatives!\" FROM migration_sources m JOIN photos p ON p.id=m.photo_id WHERE m.image_id=$1 AND m.category_id=$2 FOR UPDATE OF p", row.image_id, row.category_id).fetch_optional(&mut *conn).await?;
         let gps = old
             .as_ref()
             .map(|p| (p.gps_lat, p.gps_lon))
             .unwrap_or_default();
         let id = if let Some(old) = old {
             let id = PhotoId(old.photo_id);
-            if old.original_hash != row.original.original_hash {
+            let removed_override = (old.source_taken.is_some() && row.taken_at.is_none())
+                || (old.source_local.is_some() && row.taken_at_local.is_none())
+                || (old.source_lat.is_some() && row.gps_lat.is_none())
+                || (old.source_lon.is_some() && row.gps_lon.is_none());
+            let unfinished_restoration = old.deleted_at.is_some()
+                && (old.status != "ready" || old.derivative_plan.is_none() || !old.has_derivatives);
+            if old.original_hash != row.original.original_hash
+                || removed_override
+                || unfinished_restoration
+            {
+                // The published value may be an old source override, not EXIF.
+                // Reset extraction and fence old workers with a fresh generation.
                 photos::replace_original(
                     conn,
                     id,
@@ -142,7 +206,7 @@ pub async fn upsert_photos(
         previous_gps.insert(id.0, gps);
         ids.push(id);
     }
-    // One metadata update for the batch. Coalesce absent curated values with EXIF.
+    // Removed overrides were reset above. Remaining absent values can use EXIF.
     let uuid: Vec<_> = ids.iter().map(|id| id.0).collect();
     let albums: Vec<_> = rows.iter().map(|r| r.original.album_id.0).collect();
     let titles: Vec<_> = rows.iter().map(|r| r.original.title.as_str()).collect();
@@ -224,6 +288,8 @@ pub async fn upsert_tag(
     if source <= 0 {
         return Err(DbError::InvalidInput);
     }
+    let occupied = sqlx::query_scalar!("SELECT slug::text AS \"slug!\" FROM tags WHERE id NOT IN (SELECT tag_id FROM migration_tags WHERE source_id=$1)",source).fetch_all(&mut *conn).await?;
+    let slug = available_slug(slug, &occupied);
     if let Some(row) = sqlx::query!(
         "SELECT tag_id FROM migration_tags WHERE source_id=$1",
         source

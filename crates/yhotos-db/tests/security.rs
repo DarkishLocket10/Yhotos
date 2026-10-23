@@ -121,7 +121,7 @@ async fn grant_matrix_catalog_and_forbidden_statements(pool: PgPool) {
     .await
     .unwrap();
     // Includes share-session memberships, uploads, gazetteer and import identities.
-    assert_eq!(rows.len(), 38 * 3);
+    assert_eq!(rows.len(), 39 * 3);
     for row in rows {
         let actual = (row.select, row.insert, row.update, row.delete);
         let expected = match row.role.as_str() {
@@ -140,6 +140,7 @@ async fn grant_matrix_catalog_and_forbidden_statements(pool: PgPool) {
                     "migration_albums",
                     "migration_sources",
                     "migration_tags",
+                    "migration_redirects",
                 ]
                 .contains(&row.table.as_str());
                 (allowed, allowed, allowed, allowed)
@@ -165,6 +166,7 @@ async fn grant_matrix_catalog_and_forbidden_statements(pool: PgPool) {
                     "migration_albums",
                     "migration_sources",
                     "migration_tags",
+                    "migration_redirects",
                 ]
                 .contains(&row.table.as_str()),
                 [

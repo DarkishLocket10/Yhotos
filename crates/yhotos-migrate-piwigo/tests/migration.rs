@@ -9,7 +9,7 @@ use axum::{
 };
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::Value;
-use sqlx::PgPool;
+use sqlx::{Connection, MySqlConnection, MySqlPool, PgPool, Row};
 use std::{path::Path, process::Command};
 use tower::ServiceExt;
 use yhotos_core::access::{Principal, ShareTarget};
@@ -109,14 +109,15 @@ fn invoke(
     serde_json::from_slice(&std::fs::read(report).unwrap()).unwrap()
 }
 
-#[sqlx::test(migrations = "../yhotos-db/migrations")]
-async fn fixture_import_dry_run_rerun_and_metadata_updates(pool: PgPool) {
+// MariaDB's fixture is shared by these isolated PostgreSQL test databases.
+// Keep a dedicated session lock alive until each test's source mutations end.
+async fn source_fixture() -> Option<(String, MySqlPool, MySqlConnection)> {
     let Ok(source_url) = std::env::var("YHOTOS_TEST_MARIADB_URL") else {
         assert!(
             std::env::var_os("CI").is_none(),
             "MariaDB fixture service required in CI"
         );
-        return;
+        return None;
     };
     let fixture_url = url::Url::parse(&source_url).unwrap();
     assert_eq!(
@@ -126,11 +127,77 @@ async fn fixture_import_dry_run_rerun_and_metadata_updates(pool: PgPool) {
     );
     // This is the only MariaDB the test may touch. The fixed trusted dump is
     // test DDL, not SQL assembled from source data or request input.
-    let source = sqlx::MySqlPool::connect(&source_url).await.unwrap();
+    let mut lock = MySqlConnection::connect(&source_url).await.unwrap();
+    let acquired = sqlx::raw_sql("SELECT GET_LOCK('yhotos_piwigo_fixture',120)")
+        .fetch_one(&mut lock)
+        .await
+        .unwrap();
+    assert_eq!(acquired.get::<Option<i64>, _>(0), Some(1));
+    let source = MySqlPool::connect(&source_url).await.unwrap();
     sqlx::raw_sql(include_str!("fixtures/piwigo.sql"))
         .execute(&source)
         .await
         .unwrap();
+    Some((source_url, source, lock))
+}
+
+struct Fixture {
+    source_url: String,
+    source: MySqlPool,
+    _lock: MySqlConnection,
+    temp: tempfile::TempDir,
+    root: std::path::PathBuf,
+    store: std::path::PathBuf,
+    target: String,
+}
+impl Fixture {
+    async fn new(pool: &PgPool) -> Option<Self> {
+        let (source_url, source, lock) = source_fixture().await?;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("upload");
+        let store = temp.path().join("store");
+        std::fs::create_dir_all(root.join("2024")).unwrap();
+        std::fs::create_dir(&store).unwrap();
+        for name in ["one.jpg", "two.jpg"] {
+            std::fs::write(
+                root.join("2024").join(name),
+                b"\xff\xd8\xffsynthetic original",
+            )
+            .unwrap();
+        }
+        std::fs::write(root.join("2024/five.png"), b"\x89PNG\r\n\x1a\nfixture").unwrap();
+        let mut target = url::Url::parse(&std::env::var("DATABASE_URL").unwrap()).unwrap();
+        target.set_path(pool.connect_options().get_database().unwrap());
+        Some(Self {
+            source_url,
+            source,
+            _lock: lock,
+            temp,
+            root,
+            store,
+            target: target.to_string(),
+        })
+    }
+    fn import(&self, report: &str) -> Value {
+        invoke(
+            &self.source_url,
+            &self.target,
+            &self.root,
+            &self.store,
+            &self.temp.path().join(report),
+            false,
+        )
+    }
+    async fn change(&self, sql: &'static str) {
+        sqlx::raw_sql(sql).execute(&self.source).await.unwrap();
+    }
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn fixture_import_dry_run_rerun_and_metadata_updates(pool: PgPool) {
+    let Some((source_url, source, _lock)) = source_fixture().await else {
+        return;
+    };
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("upload");
     let store = temp.path().join("store");
@@ -479,4 +546,406 @@ async fn fixture_import_dry_run_rerun_and_metadata_updates(pool: PgPool) {
     assert!(!failed.status.success());
     assert!(!String::from_utf8_lossy(&failed.stderr).contains(&source_url));
     assert_eq!(std::fs::read(root.join("2024/one.jpg")).unwrap(), jpeg);
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn deleted_collision_owners_do_not_break_reruns(pool: PgPool) {
+    let Some(f) = Fixture::new(&pool).await else {
+        return;
+    };
+    f.import("before.json");
+    let mut conn = pool.acquire().await.unwrap();
+    let albums_before = albums::list_tree(&mut conn).await.unwrap();
+    let tags_before =
+        sqlx::query!("SELECT source_id,tag_id FROM migration_tags ORDER BY source_id")
+            .fetch_all(&mut *conn)
+            .await
+            .unwrap();
+    let photos_before = sqlx::query!("SELECT photo_id FROM migration_sources WHERE image_id=1")
+        .fetch_all(&mut *conn)
+        .await
+        .unwrap();
+    // Delete the first owner of each collision, plus its nested category and
+    // image. Their destination identities must remain reserved, not reused.
+    f.change("DELETE FROM piwigo_categories WHERE id IN (1,2); DELETE FROM piwigo_images WHERE id=1; DELETE FROM piwigo_image_category WHERE image_id=1 OR category_id IN (1,2); DELETE FROM piwigo_tags WHERE id=1; DELETE FROM piwigo_image_tag WHERE tag_id=1;").await;
+    f.import("after.json");
+    let albums_after = albums::list_tree(&mut conn).await.unwrap();
+    for before in &albums_before {
+        let after = albums_after.iter().find(|a| a.id == before.id).unwrap();
+        assert_eq!(before.slug, after.slug);
+    }
+    let tags_after = sqlx::query!("SELECT m.source_id,m.tag_id,t.slug::text AS \"slug!\" FROM migration_tags m JOIN tags t ON t.id=m.tag_id ORDER BY m.source_id")
+        .fetch_all(&mut *conn).await.unwrap();
+    for (before, after) in tags_before.iter().zip(&tags_after) {
+        assert_eq!(
+            (before.source_id, before.tag_id),
+            (after.source_id, after.tag_id)
+        );
+    }
+    assert_eq!(tags_after.first().unwrap().slug, "best-bright");
+    assert_eq!(tags_after.get(1).unwrap().slug, "best-bright-2");
+    for photo in photos_before {
+        let retired = sqlx::query!("SELECT deleted_at FROM photos WHERE id=$1", photo.photo_id)
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap();
+        assert!(retired.deleted_at.is_some());
+    }
+    let app = router(&pool, &f.store);
+    assert_eq!(
+        get(&app, "/picture.php?/1").await.status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(get(&app, "/snow_ice").await.status(), StatusCode::NOT_FOUND);
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn removed_source_overrides_clear_publication_and_reextract_exif(pool: PgPool) {
+    let Some(f) = Fixture::new(&pool).await else {
+        return;
+    };
+    f.import("before.json");
+    let mut conn = pool.acquire().await.unwrap();
+    // Simulate completed ingest and geocoding with source-only dates/GPS.
+    sqlx::query!("INSERT INTO gazetteer(geonameid,name,admin1,country,lat,lon,population) VALUES (1,'First','Region','CA',45.5,-73.6,1000)")
+        .execute(&mut *conn).await.unwrap();
+    let ids = sqlx::query!(
+        "SELECT photo_id FROM migration_sources WHERE image_id=1 ORDER BY category_id"
+    )
+    .fetch_all(&mut *conn)
+    .await
+    .unwrap();
+    for id in &ids {
+        sqlx::query!("UPDATE photos SET status='ready',derivative_plan='fixture',taken_at=NULL,taken_at_local=NULL,gps_lat=NULL,gps_lon=NULL WHERE id=$1",id.photo_id)
+            .execute(&mut *conn).await.unwrap();
+        yhotos_db::places::reverse(&mut conn, yhotos_core::PhotoId(id.photo_id))
+            .await
+            .unwrap();
+        assert!(
+            sqlx::query!("SELECT place_id FROM photos WHERE id=$1", id.photo_id)
+                .fetch_one(&mut *conn)
+                .await
+                .unwrap()
+                .place_id
+                .is_some()
+        );
+    }
+    // An EXIF-only photo must retain its fallback on this same rerun.
+    sqlx::query!("UPDATE photos SET gps_lat=10,gps_lon=20,taken_at=now(),taken_at_local=localtimestamp WHERE id IN (SELECT photo_id FROM migration_sources WHERE image_id=2)")
+        .execute(&mut *conn).await.unwrap();
+    f.change(
+        "UPDATE piwigo_images SET date_creation=NULL,latitude=NULL,longitude=NULL WHERE id=1;",
+    )
+    .await;
+    f.import("after.json");
+    for id in &ids {
+        let photo = sqlx::query!("SELECT taken_at,taken_at_local,gps_lat,gps_lon,place_id,status::text AS \"status!\",generation FROM photos WHERE id=$1",id.photo_id).fetch_one(&mut *conn).await.unwrap();
+        assert!(photo.taken_at.is_none() && photo.taken_at_local.is_none());
+        assert!(photo.gps_lat.is_none() && photo.gps_lon.is_none() && photo.place_id.is_none());
+        assert_eq!(photo.status, "pending");
+        assert_eq!(photo.generation, 1);
+        let payload = serde_json::json!({"photo_id":id.photo_id,"original_hash":blake3::hash(b"\xff\xd8\xffsynthetic original").to_hex().to_string(),"generation":1});
+        let queued = sqlx::query_scalar!(
+            "SELECT count(*) FROM jobs WHERE kind='ingest' AND payload=$1 AND finished_at IS NULL",
+            payload
+        )
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+        assert_eq!(queued, Some(1));
+        // Ingest publication with no EXIF must keep removed values absent.
+        sqlx::query!("UPDATE photos SET status='ready',derivative_plan='no-exif',taken_at=NULL,taken_at_local=NULL,gps_lat=NULL,gps_lon=NULL WHERE id=$1",id.photo_id).execute(&mut *conn).await.unwrap();
+        let published = sqlx::query!(
+            "SELECT taken_at,gps_lat,gps_lon FROM photos WHERE id=$1",
+            id.photo_id
+        )
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+        assert!(
+            published.taken_at.is_none()
+                && published.gps_lat.is_none()
+                && published.gps_lon.is_none()
+        );
+        // Real EXIF is accepted after the override is removed, through the same
+        // publication trigger used by the pipeline.
+        sqlx::query!("UPDATE photos SET derivative_plan='exif',taken_at=now(),taken_at_local=localtimestamp,gps_lat=30,gps_lon=40 WHERE id=$1",id.photo_id).execute(&mut *conn).await.unwrap();
+        let published = sqlx::query!(
+            "SELECT taken_at,gps_lat FROM photos WHERE id=$1",
+            id.photo_id
+        )
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+        assert!(published.taken_at.is_some());
+        assert_eq!(published.gps_lat, Some(30.0));
+    }
+    let exif = sqlx::query!("SELECT p.taken_at,p.gps_lat,p.gps_lon,p.generation FROM photos p JOIN migration_sources m ON m.photo_id=p.id WHERE m.image_id=2").fetch_one(&mut *conn).await.unwrap();
+    assert!(exif.taken_at.is_some());
+    assert_eq!(
+        (exif.gps_lat, exif.gps_lon, exif.generation),
+        (Some(10.0), Some(20.0), 0)
+    );
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn retired_unfinished_photos_get_new_ingest_generations_on_restoration(pool: PgPool) {
+    let Some(f) = Fixture::new(&pool).await else {
+        return;
+    };
+    f.import("before.json");
+    let mut conn = pool.acquire().await.unwrap();
+    let before = sqlx::query!("SELECT m.image_id,m.category_id,p.id,p.short_id,p.original_hash FROM migration_sources m JOIN photos p ON p.id=m.photo_id ORDER BY m.image_id,m.category_id").fetch_all(&mut *conn).await.unwrap();
+    sqlx::query!(
+        "UPDATE photos SET status='processing' WHERE id=$1",
+        before.get(1).unwrap().id
+    )
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    sqlx::query!(
+        "UPDATE photos SET status='ready',derivative_plan='fixture' WHERE id=$1",
+        before.get(2).unwrap().id
+    )
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    sqlx::query!("INSERT INTO derivatives(id,photo_id,variant,format,hdr,hash,width,height,bytes) VALUES ($1,$2,'small','jpeg',false,$3,100,80,1)",uuid::Uuid::now_v7(),before.get(2).unwrap().id,before.get(2).unwrap().original_hash).execute(&mut *conn).await.unwrap();
+    sqlx::query!(
+        "UPDATE photos SET status='failed',failure_reason='fixture failure' WHERE id=$1",
+        before.get(3).unwrap().id
+    )
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    f.change("DELETE FROM piwigo_image_category;").await;
+    f.import("retired.json");
+    // Terminate each worker envelope while its photo is unavailable. A new
+    // generation must not deduplicate against these old finished jobs.
+    sqlx::query!("UPDATE jobs SET max_attempts=1 WHERE kind='ingest'")
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+    while let Some((job, token)) = jobs::claim(&mut conn, "fixture-worker", &["ingest"])
+        .await
+        .unwrap()
+    {
+        let id: uuid::Uuid =
+            serde_json::from_value(job.payload.get("photo_id").unwrap().clone()).unwrap();
+        let unavailable = sqlx::query!(
+            "SELECT id FROM photos WHERE id=$1 AND deleted_at IS NULL",
+            id
+        )
+        .fetch_optional(&mut *conn)
+        .await
+        .unwrap();
+        assert!(unavailable.is_none());
+        assert!(
+            jobs::fail(
+                &mut conn,
+                &token,
+                "photo unavailable",
+                std::time::Duration::ZERO
+            )
+            .await
+            .unwrap()
+        );
+    }
+    assert_eq!(
+        jobs::list(&mut conn, JobStatus::Failed, 0)
+            .await
+            .unwrap()
+            .len(),
+        4
+    );
+    f.change("INSERT INTO piwigo_image_category VALUES (1,1,8),(1,2,3),(2,3,1),(5,2,4);")
+        .await;
+    f.import("restored.json");
+    for (index, old) in before.iter().enumerate() {
+        let restored = sqlx::query!("SELECT id,short_id,deleted_at,status::text AS \"status!\",generation,failure_reason,derivative_plan FROM photos WHERE id=$1",old.id).fetch_one(&mut *conn).await.unwrap();
+        assert_eq!(
+            (restored.id, restored.short_id),
+            (old.id, old.short_id.clone())
+        );
+        assert!(restored.deleted_at.is_none());
+        if index == 2 {
+            assert_eq!(restored.status, "ready");
+            assert_eq!(restored.generation, 0);
+            assert_eq!(restored.derivative_plan.as_deref(), Some("fixture"));
+        } else {
+            assert_eq!(restored.status, "pending");
+            assert_eq!(restored.generation, 1);
+            assert!(restored.failure_reason.is_none());
+            let payload = serde_json::json!({"photo_id":old.id,"original_hash":old.original_hash,"generation":1});
+            assert_eq!(sqlx::query_scalar!("SELECT count(*) FROM jobs WHERE kind='ingest' AND payload=$1 AND finished_at IS NULL",payload).fetch_one(&mut *conn).await.unwrap(),Some(1));
+        }
+    }
+}
+
+// Every pattern the importer persists must be routed to authorized lookup,
+// including internal numeric fallbacks and encoded bare names.
+async fn assert_stored_redirects_reachable(pool: &PgPool, store: &Path) {
+    let mut conn = pool.acquire().await.unwrap();
+    let paths = sqlx::query!("SELECT pattern FROM migration_redirects ORDER BY pattern")
+        .fetch_all(&mut *conn)
+        .await
+        .unwrap();
+    assert!(!paths.is_empty());
+    let app = router(pool, store);
+    for row in paths {
+        let destination = redirects::destination(
+            &mut conn,
+            &Principal::Anonymous,
+            std::slice::from_ref(&row.pattern),
+        )
+        .await
+        .unwrap();
+        let response = get(&app, &row.pattern).await;
+        if let Some(destination) = destination {
+            assert_eq!(
+                response.status(),
+                StatusCode::MOVED_PERMANENTLY,
+                "{}",
+                row.pattern
+            );
+            assert_eq!(
+                response.headers()["location"],
+                destination,
+                "{}",
+                row.pattern
+            );
+        } else {
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{}", row.pattern);
+            assert!(response.headers().get("location").is_none());
+        }
+    }
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn bare_album_aliases_redirect_over_http_after_source_changes(pool: PgPool) {
+    let Some(f) = Fixture::new(&pool).await else {
+        return;
+    };
+    f.change("UPDATE piwigo_categories SET permalink='private_snow' WHERE id=3;")
+        .await;
+    f.import("before.json");
+    let app = router(&pool, &f.store);
+    assert_eq!(
+        get(&app, "/snow_ice").await.status(),
+        StatusCode::MOVED_PERMANENTLY
+    );
+    assert_eq!(
+        get(&app, "/private_snow").await.status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_stored_redirects_reachable(&pool, &f.store).await;
+    f.change("UPDATE piwigo_categories SET permalink='thawed_ice',name='Thawed &amp; Ice' WHERE id=1; UPDATE piwigo_categories SET status='public' WHERE id=3; UPDATE piwigo_categories SET status='private' WHERE id=2; INSERT INTO piwigo_categories VALUES (4,NULL,'Map',NULL,'20',NULL,'public','map'),(5,NULL,'0',NULL,'21',NULL,'public',NULL);").await;
+    f.import("after.json");
+    let app = router(&pool, &f.store);
+    let response = get(&app, "/thawed_ice").await;
+    assert_eq!(response.status(), StatusCode::MOVED_PERMANENTLY);
+    assert_eq!(response.headers()["location"], "/a/thawed-ice");
+    assert_eq!(
+        get(&app, "/private_snow").await.status(),
+        StatusCode::MOVED_PERMANENTLY
+    );
+    assert_eq!(get(&app, "/nested").await.status(), StatusCode::NOT_FOUND);
+    for invalid in ["/unknown-alias", "/snow_ice?query=1", "/two/segments"] {
+        assert_eq!(get(&app, invalid).await.status(), StatusCode::NOT_FOUND);
+    }
+    let mut conn = pool.acquire().await.unwrap();
+    assert!(
+        redirects::lookup(&mut conn, "/map")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        redirects::lookup(&mut conn, "/index.php?/category/0")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(
+        get(&app, "/legacy/map").await.status(),
+        StatusCode::MOVED_PERMANENTLY
+    );
+    assert_stored_redirects_reachable(&pool, &f.store).await;
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn newly_ambiguous_aliases_remove_previous_http_redirects(pool: PgPool) {
+    let Some(f) = Fixture::new(&pool).await else {
+        return;
+    };
+    f.change("UPDATE piwigo_categories SET name='Trip',permalink=NULL WHERE id=1; UPDATE piwigo_categories SET name='Other',status='public' WHERE id=3;").await;
+    f.import("before.json");
+    let paths = ["/trip", "/legacy/trip", "/index.php?/category/trip"];
+    let app = router(&pool, &f.store);
+    for path in paths {
+        assert_eq!(
+            get(&app, path).await.status(),
+            StatusCode::MOVED_PERMANENTLY,
+            "{path}"
+        );
+    }
+    let mut conn = pool.acquire().await.unwrap();
+    let target = redirects::lookup(&mut conn, "/trip")
+        .await
+        .unwrap()
+        .unwrap();
+    redirects::insert(&mut conn, "/owner-kept", target.clone().into())
+        .await
+        .unwrap();
+    // A mapping manually retargeted after an earlier import is independent.
+    let nested = albums::list_tree(&mut conn)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|a| a.slug.as_str() == "nested")
+        .unwrap();
+    redirects::insert(&mut conn, "/Trip", ShareTarget::Album(nested.id))
+        .await
+        .unwrap();
+    f.change("UPDATE piwigo_categories SET name='Trip' WHERE id=3;")
+        .await;
+    let report = f.import("after.json");
+    assert!(
+        report
+            .get("collisions")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| {
+                p.get("reason")
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .contains("trip collides; alias omitted")
+            })
+    );
+    let app = router(&pool, &f.store);
+    for path in paths {
+        assert!(redirects::lookup(&mut conn, path).await.unwrap().is_none());
+        assert_eq!(
+            get(&app, path).await.status(),
+            StatusCode::NOT_FOUND,
+            "{path}"
+        );
+    }
+    assert_eq!(
+        get(&app, "/owner-kept").await.status(),
+        StatusCode::MOVED_PERMANENTLY
+    );
+    assert!(
+        matches!(redirects::lookup(&mut conn,"/Trip").await.unwrap().unwrap().into(),ShareTarget::Album(id) if id==nested.id)
+    );
+    for path in ["/index.php?/category/1", "/index.php?/category/3"] {
+        assert_eq!(
+            get(&app, path).await.status(),
+            StatusCode::MOVED_PERMANENTLY
+        );
+    }
+    assert_stored_redirects_reachable(&pool, &f.store).await;
 }

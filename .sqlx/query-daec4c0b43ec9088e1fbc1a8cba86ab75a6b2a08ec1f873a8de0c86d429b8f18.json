@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE photos SET status='ready',derivative_plan='fixture' WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "daec4c0b43ec9088e1fbc1a8cba86ab75a6b2a08ec1f873a8de0c86d429b8f18"
+}
