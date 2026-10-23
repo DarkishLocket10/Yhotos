@@ -41,11 +41,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     for (form, name) in [
         ("plain", "gain-map.jxl"),
         ("compressed", "gain-map-brob.jxl"),
+        ("rotated", "orientation/jxl-6.jxl"),
+        ("mirrored", "orientation/jxl-2.jxl"),
     ] {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../fixtures/hdr")
             .join(name);
         let identity = yhotos_codec::identify(&path, &Limits::default())?;
+        if form != "compressed"
+            && !yhotos_codec::decode(&path, &identity, &Limits::default())?.has_gain_map()
+        {
+            return Err("JXL benchmark lost its gain map".into());
+        }
         criterion.bench_function(&format!("hdr/identify_jxl_gain_map/{form}"), |b| {
             b.iter(|| yhotos_codec::identify(black_box(&path), &Limits::default()));
         });
@@ -56,12 +63,26 @@ fn main() -> Result<(), Box<dyn Error>> {
     for (form, name) in [
         ("attribute", "apple.heic"),
         ("element", "apple-element.heic"),
+        ("rotated", "orientation/heic-container-6.heic"),
+        ("mirrored", "orientation/heic-container-2.heic"),
     ] {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../../fixtures/hdr")
             .join(name);
         let identity = yhotos_codec::identify(&path, &Limits::default())?;
         criterion.bench_function(&format!("hdr/decode_apple_heic/{form}"), |b| {
+            b.iter(|| yhotos_codec::decode(black_box(&path), &identity, &Limits::default()));
+        });
+    }
+    for (form, name) in [
+        ("rotated", "orientation/avif-container-6.avif"),
+        ("mirrored", "orientation/avif-container-2.avif"),
+    ] {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/hdr")
+            .join(name);
+        let identity = yhotos_codec::identify(&path, &Limits::default())?;
+        criterion.bench_function(&format!("hdr/decode_avif_tmap/{form}"), |b| {
             b.iter(|| yhotos_codec::decode(black_box(&path), &identity, &Limits::default()));
         });
     }

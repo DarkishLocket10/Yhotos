@@ -47,7 +47,7 @@ def heic_image(path):
         locations[item]=data[base+off:base+off+size]
     primary=int.from_bytes(one(meta,b'pitm')[4:],'big')
     props=boxes(one(one(meta,b'iprp'),b'ipco'))
-    return locations[primary],[(k,v) for k,v in props if k in [b'hvcC',b'ispe',b'pixi',b'colr',b'clap']]
+    return locations[primary],[(k,v) for k,v in props if k in [b'hvcC',b'av1C',b'ispe',b'pixi',b'colr',b'clap']]
 def apple(base,gain,xmp):
     base,baseprops=heic_image(base);gain,gainprops=heic_image(gain)
     # Header + two documented float32 MakerNote values. Headroom is 3 stops.
@@ -122,6 +122,10 @@ with tempfile.TemporaryDirectory() as tmp:
     tmp=pathlib.Path(tmp)
     flags=shlex.split(subprocess.check_output(['pkg-config','--cflags','--libs','libuhdr'],text=True))
     run('cc',DEST/'mux.c','-o',tmp/'mux',*flags)
+    if sys.argv[1:] == ['--orientations']:
+        import orientations
+        orientations.generate(sys.modules[__name__], tmp)
+        sys.exit(0)
     if len(sys.argv)==3 and sys.argv[1]=='--benchmark':
         # 24 MP working set from the owner's stripped, committed photographic fixture.
         out=pathlib.Path(sys.argv[2]).resolve()

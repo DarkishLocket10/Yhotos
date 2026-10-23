@@ -645,4 +645,6 @@ fn rgba(w: &Working, edge: u32) -> Result<(u32, u32, Vec<u8>), CodecError> {
 }
 
 #[cfg(test)]
+mod hdr_orientation;
+#[cfg(test)]
 mod tests;

@@ -232,13 +232,7 @@ unsafe fn block<'a>(p: *const ffi::uhdr_mem_block_t) -> Result<&'a [u8], CodecEr
 
 pub(crate) fn check_geometry((w, h): (u32, u32), base: &Identity) -> Result<(), CodecError> {
     let (bw, bh) = base.width.zip(base.height).ok_or(CodecError::Decode)?;
-    // JPEG/HEIF auxiliaries follow the base orientation. JXL header sizes already
-    // include codestream orientation, so its identified base has orientation 1.
-    let ((w, h), (bw, bh)) = if base.orientation >= 5 {
-        ((h, w), (bh, bw))
-    } else {
-        ((w, h), (bw, bh))
-    };
+    // Compare stored coordinates before applying the same base transform to both.
     if w == 0
         || h == 0
         || bw == 0
@@ -267,8 +261,23 @@ pub(crate) fn extract(path: &Path, id: &Identity, limits: &Limits) -> Result<Gai
         }
         Kind::Heif | Kind::Avif => {
             let gain = crate::gain_container::heif(&bytes, limits)?;
+            // libheif applies each item's irot/imir before libvips' EXIF autorot.
+            // Ignore auxiliary orientation while retaining its decoded clean aperture.
+            let mut base = id.clone();
+            for orientation in &gain.base_transforms {
+                if *orientation >= 5 {
+                    std::mem::swap(&mut base.width, &mut base.height);
+                }
+            }
             let mut image =
-                native::Image::gain_heif(path, gain.id, limits, id)?.oriented(id.orientation)?;
+                native::Image::gain_heif(path, gain.id, limits, &base, &gain.auxiliary_transforms)?;
+            for orientation in gain.auxiliary_transforms.iter().rev() {
+                image = image.undo_orientation(*orientation)?;
+            }
+            for orientation in &gain.base_transforms {
+                image = image.oriented(*orientation)?;
+            }
+            let mut image = image.oriented(id.orientation)?;
             if gain.apple {
                 let headroom = gain.metadata.alternate_headroom.exp2();
                 let pixels = image
@@ -294,7 +303,7 @@ pub(crate) fn extract(path: &Path, id: &Identity, limits: &Limits) -> Result<Gai
             (image, gain.metadata)
         }
         Kind::Jxl => {
-            let gain = crate::gain_container::jxl(&bytes, limits, id)?;
+            let gain = crate::gain_container::jxl(&bytes, limits)?;
             (gain.image, gain.metadata)
         }
         _ => return Err(CodecError::Unsupported),
@@ -391,10 +400,8 @@ pub fn validate_gain_map_metadata(bytes: &[u8]) -> Result<(), CodecError> {
             }
         }
     }
-    if bytes.starts_with(b"\0\0\0\x0cJXL ")
-        && let Ok(base) = native::identify_jxl_reader(bytes, &limits)
-    {
-        let _ = crate::gain_container::jxl(bytes, &limits, &base);
+    if bytes.starts_with(b"\0\0\0\x0cJXL ") {
+        let _ = crate::gain_container::jxl(bytes, &limits);
     }
     Ok(())
 }

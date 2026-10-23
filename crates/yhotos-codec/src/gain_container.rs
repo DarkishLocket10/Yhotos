@@ -189,11 +189,7 @@ pub(crate) fn iso_write(metadata: &Metadata) -> Result<Vec<u8>, CodecError> {
     Ok(bytes)
 }
 
-pub(crate) fn jxl(
-    bytes: &[u8],
-    limits: &Limits,
-    base: &crate::Identity,
-) -> Result<crate::hdr::GainMap, CodecError> {
+pub(crate) fn jxl(bytes: &[u8], limits: &Limits) -> Result<crate::hdr::GainMap, CodecError> {
     let top = parse_boxes(bytes, &mut 4096, true)?;
     if top
         .iter()
@@ -215,7 +211,8 @@ pub(crate) fn jxl(
     if c.num(1)? != 0 || c.num(4)? != 0 || !metadata.use_base {
         return Err(CodecError::Unsupported);
     }
-    let image = crate::native::Image::gain_jxl(&data[c.at..], limits, base)?;
+    let base = crate::native::jxl_stored_identity(bytes, limits)?;
+    let image = crate::native::Image::gain_jxl(&data[c.at..], limits, &base)?;
     Ok(crate::hdr::GainMap { image, metadata })
 }
 pub(crate) fn jxl_mux(
@@ -394,6 +391,8 @@ pub(crate) struct HeifGain {
     pub id: u32,
     pub metadata: Metadata,
     pub apple: bool,
+    pub base_transforms: Vec<u8>,
+    pub auxiliary_transforms: Vec<u8>,
 }
 #[allow(clippy::too_many_lines)] // Item tables share one bounded namespace and box budget.
 pub(crate) fn heif(bytes: &[u8], limits: &Limits) -> Result<HeifGain, CodecError> {
@@ -486,18 +485,6 @@ pub(crate) fn heif(bytes: &[u8], limits: &Limits) -> Result<HeifGain, CodecError
         .iter()
         .find(|b| b.kind == b"idat")
         .map_or(&[][..], |b| b.data);
-    if let Some((tmap, id)) = derived {
-        let data = item(bytes, idat, &locations, tmap)?;
-        // ToneMapImage carries a one-byte version before ISO gain-map metadata.
-        if data.first() != Some(&0) {
-            return Err(CodecError::Unsupported);
-        }
-        return Ok(HeifGain {
-            id,
-            metadata: iso(&data[1..])?,
-            apple: false,
-        });
-    }
     let iprp = boxes(one(&meta, b"iprp")?, &mut budget)?;
     let properties = boxes(one(&iprp, b"ipco")?, &mut budget)?;
     let ipma = one(&iprp, b"ipma")?;
@@ -512,9 +499,14 @@ pub(crate) fn heif(bytes: &[u8], limits: &Limits) -> Result<HeifGain, CodecError
         return Err(CodecError::Limits);
     }
     let mut apple = None;
+    let mut transforms = BTreeMap::<u32, Vec<u8>>::new();
+    let mut associations = 4096_usize;
     for _ in 0..count {
         let id = c.num(if version == 0 { 2 } else { 4 })? as u32;
         let count = c.num(1)?;
+        associations = associations
+            .checked_sub(count as usize)
+            .ok_or(CodecError::Limits)?;
         for _ in 0..count {
             let index = c.num(if flags == 0 { 1 } else { 2 })? as usize
                 & if flags == 0 { 127 } else { 32767 };
@@ -522,6 +514,27 @@ pub(crate) fn heif(bytes: &[u8], limits: &Limits) -> Result<HeifGain, CodecError
                 continue;
             }
             let p = properties.get(index - 1).ok_or(CodecError::Decode)?;
+            if p.kind == b"irot" || p.kind == b"imir" {
+                let orientation = match (p.kind, p.data) {
+                    (b"irot", [0]) => 1,
+                    (b"irot", [1]) => 8,
+                    (b"irot", [2]) => 3,
+                    (b"irot", [3]) => 6,
+                    (b"imir", [0]) => 4,
+                    (b"imir", [1]) => 2,
+                    _ => return Err(CodecError::Decode),
+                };
+                let item_transforms = transforms.entry(id).or_default();
+                // An item has at most one rotation and one mirror. Reject duplicate
+                // properties instead of disagreeing with the native decoder's choice.
+                if item_transforms
+                    .iter()
+                    .any(|old| matches!(*old, 2 | 4) == (p.kind == b"imir"))
+                {
+                    return Err(CodecError::Decode);
+                }
+                item_transforms.push(orientation);
+            }
             if aux.contains(&id)
                 && p.kind == b"auxC"
                 && p.data.get(4..) == Some(b"urn:com:apple:photo:2020:aux:hdrgainmap\0")
@@ -530,6 +543,24 @@ pub(crate) fn heif(bytes: &[u8], limits: &Limits) -> Result<HeifGain, CodecError
                 return Err(CodecError::Decode);
             }
         }
+    }
+    if c.at != ipma.len() {
+        return Err(CodecError::Decode);
+    }
+    let base_transforms = transforms.remove(&primary).unwrap_or_default();
+    if let Some((tmap, id)) = derived {
+        let data = item(bytes, idat, &locations, tmap)?;
+        // ToneMapImage carries a one-byte version before ISO gain-map metadata.
+        if data.first() != Some(&0) {
+            return Err(CodecError::Unsupported);
+        }
+        return Ok(HeifGain {
+            id,
+            metadata: iso(&data[1..])?,
+            apple: false,
+            base_transforms,
+            auxiliary_transforms: transforms.remove(&id).unwrap_or_default(),
+        });
     }
     let gain_id = apple.ok_or(CodecError::Unsupported)?;
     let mut exif = None;
@@ -573,6 +604,8 @@ pub(crate) fn heif(bytes: &[u8], limits: &Limits) -> Result<HeifGain, CodecError
     Ok(HeifGain {
         id: gain_id,
         apple: true,
+        base_transforms,
+        auxiliary_transforms: transforms.remove(&gain_id).unwrap_or_default(),
         metadata: Metadata {
             min: [0.0; 3],
             max: [headroom; 3],
@@ -752,9 +785,6 @@ mod tests {
     #[test]
     fn jxl_brob_detection_checks_inner_type_and_box_extent() {
         let file = tempfile::NamedTempFile::new().unwrap();
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../fixtures/hdr/gain-map.jxl");
-        let base = crate::native::identify_jxl(&path, &Limits::default()).unwrap();
         for extended in [false, true] {
             for (payload, present) in [
                 (b"jhgm\0".as_slice(), true),
@@ -775,7 +805,7 @@ mod tests {
                 assert_eq!(jxl_present(file.path()), Ok(present));
                 if present {
                     assert!(matches!(
-                        jxl(&bytes, &Limits::default(), &base),
+                        jxl(&bytes, &Limits::default()),
                         Err(CodecError::CompressedJxlGainMap)
                     ));
                 }
@@ -785,7 +815,7 @@ mod tests {
         std::fs::write(file.path(), bytes).unwrap();
         assert_eq!(jxl_present(file.path()), Ok(true));
         assert!(matches!(
-            jxl(bytes, &Limits::default(), &base),
+            jxl(bytes, &Limits::default()),
             Err(CodecError::CompressedJxlGainMap)
         ));
         assert!(matches!(boxes(bytes, &mut 4096), Err(CodecError::Decode)));

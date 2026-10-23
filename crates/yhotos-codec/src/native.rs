@@ -164,6 +164,9 @@ impl Image {
         image.oriented(base.orientation)
     }
     pub(crate) fn oriented(&self, orientation: u8) -> Result<Self, CodecError> {
+        if !(1..=8).contains(&orientation) {
+            return Err(CodecError::Decode);
+        }
         let image = self.copy()?;
         // SAFETY: the private header is live, the validated EXIF orientation is copied.
         unsafe {
@@ -175,12 +178,19 @@ impl Image {
         }
         image.autorot()?.materialize()
     }
+    pub(crate) fn undo_orientation(&self, orientation: u8) -> Result<Self, CodecError> {
+        self.oriented(match orientation {
+            6 => 8,
+            8 => 6,
+            other => other,
+        })
+    }
     pub(crate) fn gain_jxl(
         bytes: &[u8],
         limits: &crate::Limits,
         base: &Identity,
     ) -> Result<Self, CodecError> {
-        let identity = identify_jxl_reader(bytes, limits)?;
+        let identity = jxl_stored_identity(bytes, limits)?;
         let dimensions = identity
             .width
             .zip(identity.height)
@@ -200,7 +210,12 @@ impl Image {
             3i32,
             END
         ))?;
-        if image.size()? != dimensions {
+        let decoded_dimensions = if identity.orientation >= 5 {
+            (dimensions.1, dimensions.0)
+        } else {
+            dimensions
+        };
+        if image.size()? != decoded_dimensions {
             return Err(CodecError::Mismatch);
         }
         if !matches!(image.bands(), 1 | 3) {
@@ -211,14 +226,22 @@ impl Image {
             USHORT => image.linear_offset(1.0 / 257.0, 0.5)?.cast(UCHAR)?,
             _ => return Err(CodecError::Unsupported),
         };
+        // libvips/libjxl already applied the auxiliary codestream orientation.
+        // Undo it, then apply only the base transform, as required for gain maps.
         // Evaluation completes while the borrowed compressed slice remains live.
-        image.gain_header()?.materialize()
+        let image = if identity.orientation == 1 {
+            image
+        } else {
+            image.undo_orientation(identity.orientation)?
+        };
+        image.gain_header()?.oriented(base.orientation)
     }
     pub(crate) fn gain_heif(
         path: &Path,
         id: u32,
         limits: &crate::Limits,
         base: &Identity,
+        auxiliary_transforms: &[u8],
     ) -> Result<Self, CodecError> {
         let path = path_string(path)?;
         init()?;
@@ -245,7 +268,13 @@ impl Image {
                 let h = u32::try_from(ffi::heif_image_handle_get_height(handle))
                     .map_err(|_| CodecError::Limits)?;
                 limits.check(w, h, 1)?;
-                crate::hdr::check_geometry((w, h), base)?;
+                let mut dimensions = (w, h);
+                for orientation in auxiliary_transforms {
+                    if *orientation >= 5 {
+                        dimensions = (dimensions.1, dimensions.0);
+                    }
+                }
+                crate::hdr::check_geometry(dimensions, base)?;
                 #[cfg(test)]
                 GAIN_PIXEL_DECODES.set(GAIN_PIXEL_DECODES.get() + 1);
                 if ffi::heif_decode_image(
@@ -933,8 +962,23 @@ pub(crate) fn check_jxl_bytes(bytes: &[u8], limits: &crate::Limits) -> Result<()
     identify_jxl_reader(bytes, limits).map(|_| ())
 }
 pub(crate) fn identify_jxl_reader(
+    input: impl std::io::Read,
+    limits: &crate::Limits,
+) -> Result<Identity, CodecError> {
+    jxl_header_reader(input, limits, false)
+}
+// Internal gain-map extraction needs stored dimensions and the original transform.
+// Public identification stays consistent with libvips' already-oriented base pixels.
+pub(crate) fn jxl_stored_identity(
+    input: impl std::io::Read,
+    limits: &crate::Limits,
+) -> Result<Identity, CodecError> {
+    jxl_header_reader(input, limits, true)
+}
+fn jxl_header_reader(
     mut input: impl std::io::Read,
     limits: &crate::Limits,
+    keep_orientation: bool,
 ) -> Result<Identity, CodecError> {
     let cap = usize::try_from(limits.max_bytes.min(16 << 20)).map_err(|_| CodecError::Limits)?;
     // Keep this buffer alive until after decoder destruction, including errors.
@@ -949,11 +993,13 @@ pub(crate) fn identify_jxl_reader(
             return Err(CodecError::Decode);
         }
         let result = (|| {
-            if ffi::JxlDecoderSubscribeEvents(
-                decoder,
-                (ffi::JxlDecoderStatus_JXL_DEC_BASIC_INFO
-                    | ffi::JxlDecoderStatus_JXL_DEC_COLOR_ENCODING) as i32,
-            ) != ffi::JxlDecoderStatus_JXL_DEC_SUCCESS
+            if ffi::JxlDecoderSetKeepOrientation(decoder, i32::from(keep_orientation))
+                != ffi::JxlDecoderStatus_JXL_DEC_SUCCESS
+                || ffi::JxlDecoderSubscribeEvents(
+                    decoder,
+                    (ffi::JxlDecoderStatus_JXL_DEC_BASIC_INFO
+                        | ffi::JxlDecoderStatus_JXL_DEC_COLOR_ENCODING) as i32,
+                ) != ffi::JxlDecoderStatus_JXL_DEC_SUCCESS
             {
                 return Err(CodecError::Decode);
             }
@@ -995,6 +1041,9 @@ pub(crate) fn identify_jxl_reader(
                             return Err(CodecError::Decode);
                         }
                         let info = info.assume_init();
+                        if !(1..=8).contains(&info.orientation) {
+                            return Err(CodecError::Decode);
+                        }
                         limits.check(info.xsize, info.ysize, 1)?;
                         // Counting animated frames requires scanning past the
                         // color header; do not silently report one page.
@@ -1045,9 +1094,8 @@ pub(crate) fn identify_jxl_reader(
                             kind: Kind::Jxl,
                             width: Some(info.xsize),
                             height: Some(info.ysize),
-                            // libjxl defaults to applying codestream orientation,
-                            // just like the libvips loader used for pixel decode.
-                            orientation: 1,
+                            orientation: u8::try_from(info.orientation)
+                                .map_err(|_| CodecError::Decode)?,
                             has_icc: len != 0,
                             icc_desc: profile_description(&profile),
                             bits: u8::try_from(info.bits_per_sample)
