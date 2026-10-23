@@ -11,11 +11,9 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::AsyncRead,
     sync::{OwnedSemaphorePermit, Semaphore},
     time::{Instant, Sleep, sleep},
 };
-use tokio_util::io::ReaderStream;
 
 const MAX_ACTIVE_IPS: usize = 16_384;
 
@@ -77,13 +75,13 @@ impl Drop for Permit {
 // The fixed deadline is checked before every read and wakes pending reads.
 // When socket backpressure stops body polls, the transport write timeout drops
 // the body instead; a body timer alone cannot reclaim that connection.
-pub(crate) struct GuardedStream<R> {
-    stream: ReaderStream<R>,
+pub(crate) struct GuardedStream<S> {
+    stream: S,
     permit: Option<Permit>,
     deadline: Pin<Box<Sleep>>,
 }
-impl<R> GuardedStream<R> {
-    pub(crate) fn new(stream: ReaderStream<R>, permit: Permit, lifetime: Duration) -> Self {
+impl<S> GuardedStream<S> {
+    pub(crate) fn new(stream: S, permit: Permit, lifetime: Duration) -> Self {
         Self {
             stream,
             permit: Some(permit),
@@ -91,7 +89,7 @@ impl<R> GuardedStream<R> {
         }
     }
 }
-impl<R: AsyncRead + Unpin> Stream for GuardedStream<R> {
+impl<S: Stream<Item = std::io::Result<Bytes>> + Unpin> Stream for GuardedStream<S> {
     type Item = std::io::Result<Bytes>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -121,7 +119,8 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
     use std::future::poll_fn;
-    use tokio::io::ReadBuf;
+    use tokio::io::{AsyncRead, ReadBuf};
+    use tokio_util::io::ReaderStream;
 
     #[test]
     fn rejected_per_ip_acquisition_does_not_leak_a_global_permit() {

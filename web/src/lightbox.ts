@@ -31,6 +31,7 @@ enhance(signal => {
   let restoring = false;
   const pointers = new Map<number, { x: number; y: number }>();
   let start = { x: 0, y: 0, time: 0 }, pinch = 0;
+  function resetGesture(): void { pointers.clear(); pinch = 0; lastTap = null; start = { x: 0, y: 0, time: 0 }; }
   const setStatus = (message: string) => { status.textContent = message; };
   function pause(): void { clearInterval(timer); timer = undefined; $("[data-slideshow]").setAttribute("aria-pressed", "false"); $("[data-slideshow]").textContent = "Play slideshow"; }
   function transform(): void {
@@ -115,7 +116,7 @@ enhance(signal => {
   function render(seed?: HTMLImageElement): void {
     playback?.abort(); playback = null; picture.hidden = false;
     const photo = photos[index], version = ++generation;
-    scale = 1; tx = 0; ty = 0; upgrades.reset(); lastTap = null; pointers.clear();
+    scale = 1; tx = 0; ty = 0; upgrades.reset(); resetGesture();
     $("#lightbox-title").textContent = photo.title;
     $("[data-description]").textContent = photo.description;
     const details = $("[data-details]"); details.replaceChildren();
@@ -222,7 +223,7 @@ enhance(signal => {
   stage.addEventListener("dragstart", event => event.preventDefault(), { signal });
   stage.addEventListener("wheel", event => { if (photos[index].video) return; event.preventDefault(); void zoom(scale * Math.exp(-event.deltaY * .002)); }, { signal, passive: false });
   stage.addEventListener("pointerdown", event => {
-    if (photos[index].video) return;
+    if (photos[index].video) { resetGesture(); return; }
     pause(); stage.setPointerCapture(event.pointerId); pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
     if (pointers.size === 1) start = { x: event.clientX, y: event.clientY, time: event.timeStamp };
     if (pointers.size === 2) { lastTap = null; const [a, b] = [...pointers.values()]; pinch = Math.hypot(a.x - b.x, a.y - b.y); }
@@ -234,6 +235,8 @@ enhance(signal => {
     else if (scale > 1) { tx += event.clientX - previous.x; ty += event.clientY - previous.y; transform(); }
   }, { signal });
   stage.addEventListener("pointerup", event => {
+    if (photos[index].video) { resetGesture(); return; }
+    if (!pointers.has(event.pointerId)) return;
     const multiple = pointers.size > 1 || pinch > 0; pointers.delete(event.pointerId);
     if (multiple) { if (!pointers.size) pinch = 0; return; }
     const dx = event.clientX - start.x, dy = event.clientY - start.y;

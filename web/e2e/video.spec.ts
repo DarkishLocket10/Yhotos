@@ -6,7 +6,7 @@ import {tmpdir} from 'node:os';
 import {resolve, join} from 'node:path';
 
 const root = resolve(import.meta.dirname, '../..');
-let directory: string, av1: Buffer, island: string, av1Type: string;
+let directory: string, av1: Buffer, island: string, lightbox: string, av1Type: string;
 test.beforeAll(async () => {
   directory = mkdtempSync(join(tmpdir(), 'yhotos-video-'));
   const tools = process.env.YHOTOS_TEST_VIDEO_BIN_DIR || join(root, 'target/video-tools');
@@ -17,8 +17,73 @@ test.beforeAll(async () => {
   av1 = readFileSync(join(directory, 'av1.mp4'));
   const bundle = await build({entryPoints: [join(root, 'web/src/lib/video.ts')], bundle: true, write: false, format: 'iife', globalName: 'videoIsland'});
   island = bundle.outputFiles[0].text;
+  lightbox = (await build({entryPoints: [join(root, 'web/src/lightbox.ts')], bundle: true, write: false, format: 'iife'})).outputFiles[0].text;
 });
 test.afterAll(() => { if (directory) rmSync(directory, {recursive: true, force: true}); });
+
+for (const control of ['play', 'seek', 'volume', 'scrub']) {
+  test(`swiping from a photo then using video ${control} never navigates`, async ({page}) => {
+    const ids = ['aaaaaaaaaaaa', 'bbbbbbbbbbbb', 'cccccccccccc'];
+    const photos = ids.map((id, index) => ({id, title: `Photo ${index}`, description: '', caps: {download: false, like: false, flag: false}, zoom_width: 128, original: null, downloads: [], details: [],
+      ...(index === 1 ? {video: {av1: '/v/fixture/av1.mp4', av1_type: av1Type, h264: '/v/fixture/h264.mp4', duration_ms: 1200, scrub: '/i/fixture/scrub.jpeg', vtt: '/v/fixture/scrub.vtt'}} : {})}));
+    const dialog = readFileSync(join(root, 'crates/yhotos-http/templates/default/partials/lightbox.html'), 'utf8').replace(/{%[^%]*%}/g, '');
+    await page.route('http://video.test/**', route => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === '/v/fixture/av1.mp4' || path === '/v/fixture/h264.mp4') {
+        const bytes = path.endsWith('/av1.mp4') ? av1 : readFileSync(join(root, 'fixtures/video/h264.mp4'));
+        const range = route.request().headers().range?.match(/^bytes=(\d+)-(\d*)$/);
+        if (range) {
+          const start = Number(range[1]), end = range[2] ? Number(range[2]) : bytes.length - 1;
+          return route.fulfill({status: 206, contentType: 'video/mp4', headers: {'accept-ranges': 'bytes', 'content-range': `bytes ${start}-${end}/${bytes.length}`}, body: bytes.subarray(start, end + 1)});
+        }
+        return route.fulfill({contentType: 'video/mp4', headers: {'accept-ranges': 'bytes'}, body: bytes});
+      }
+      if (path !== '/') return route.fulfill({status: 404});
+      return route.fulfill({contentType: 'text/html', body: `<!doctype html><style>[data-stage]{width:640px;height:360px}video{width:480px;height:300px}</style><main>${ids.map(id => `<a data-photo-link href="/p/${id}"><picture><img src="/i/fixture/poster.jpeg" width="128" height="96"></picture></a>`).join('')}</main>${dialog}<script id="gallery-data" type="application/json">${JSON.stringify({album: 'fixture', page: 1, sort: 'taken', next_page: null, photos})}</script>`});
+    });
+    await page.goto('http://video.test/');
+    await page.addScriptTag({content: lightbox});
+    // Broken images still supply the real grid structure and typed source URLs.
+    await page.locator('[data-photo-link]').first().dispatchEvent('click', {button: 0});
+    const stage = page.locator('[data-stage]');
+    const box = (await stage.boundingBox())!;
+    await stage.evaluate(element => element.addEventListener('pointerdown', event => { element.setAttribute('data-start-time', String((event as PointerEvent).timeStamp)); }, {once: true}));
+    await page.mouse.move(box.x + 500, box.y + 180);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 400, box.y + 180);
+    // A cancelled/untracked pointer must never reuse the photo's start point.
+    await stage.dispatchEvent('pointerup', {pointerId: 999, clientX: box.x + 350, clientY: box.y + 180});
+    await expect(page).toHaveURL(new RegExp(ids[0]));
+    await page.mouse.up();
+    await expect(page).toHaveURL(new RegExp(ids[1]));
+    const video = page.locator('video');
+    await expect.poll(() => video.evaluate(v => (v as HTMLVideoElement).readyState)).toBeGreaterThanOrEqual(2);
+    await video.evaluate((element, {control, x, y}) => {
+      const video = element as HTMLVideoElement;
+      const time = Number(document.querySelector('[data-stage]')!.getAttribute('data-start-time'));
+      // Native controls retarget their shadow-tree pointers to <video>. Use a
+      // deterministic short gesture, including a large seek/volume drag.
+      const pointer = (type: string, x: number, time: number) => {
+        const event = new PointerEvent(type, {bubbles: true, pointerId: 7, clientX: x, clientY: y});
+        Object.defineProperty(event, 'timeStamp', {value: time}); video.dispatchEvent(event);
+      };
+      pointer('pointerdown', x + 500, time + 100);
+      if (control === 'play') { video.muted = true; void video.play(); }
+      if (control === 'seek') video.currentTime = 0.5;
+      if (control === 'volume') video.volume = 0.25;
+      if (control === 'scrub') { const slider = document.querySelector<HTMLInputElement>('.video-scrub input')!; slider.value = '0.6'; slider.dispatchEvent(new Event('input')); }
+      pointer('pointermove', x + 100, time + 150); pointer('pointerup', x + 100, time + 200);
+    }, {control, x: box.x, y: box.y + 180});
+    await expect(page).toHaveURL(new RegExp(ids[1]));
+    await expect(video).toHaveCount(1);
+    if (control === 'play') await expect.poll(() => video.evaluate(v => (v as HTMLVideoElement).paused)).toBe(false);
+    if (control === 'seek' || control === 'scrub') await expect.poll(() => video.evaluate(v => (v as HTMLVideoElement).currentTime)).toBeCloseTo(control === 'seek' ? 0.5 : 0.6, 1);
+    if (control === 'volume') expect(await video.evaluate(v => (v as HTMLVideoElement).volume)).toBe(0.25);
+    // Explicit lightbox navigation remains available after using controls.
+    await page.locator('[data-next]').click();
+    await expect(page).toHaveURL(new RegExp(ids[2]));
+  });
+}
 
 for (const renderer of ['photo template', 'lightbox island']) {
   test(`${renderer} selects and decodes AV1 ahead of H.264`, async ({page}) => {

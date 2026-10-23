@@ -64,7 +64,7 @@ pub(super) fn build(job: &Job, stage: Stage, info: Option<&Info>) -> Result<Comm
                 "json",
             ]);
         } else {
-            cmd.arg(&job.input).args(["-show_entries", "format=duration:stream=codec_type,codec_name,width,height,color_transfer:stream_side_data=rotation", "-of", "json"]);
+            cmd.arg(&job.input).args(["-show_entries", "format=duration:stream=codec_type,codec_name,width,height,sample_aspect_ratio,color_transfer:stream_side_data=rotation", "-of", "json"]);
         }
         return Ok(cmd);
     }
@@ -148,7 +148,10 @@ pub(super) fn build(job: &Job, stage: Stage, info: Option<&Info>) -> Result<Comm
             cmd.args([
                 "-an",
                 "-vf",
-                &format!("{tone}format=yuvj420p"),
+                &format!(
+                    "{tone}scale={}:{}:flags=lanczos,setsar=1,format=yuvj420p",
+                    info.width, info.height
+                ),
                 "-frames:v",
                 "1",
                 "-c:v",
@@ -161,7 +164,8 @@ pub(super) fn build(job: &Job, stage: Stage, info: Option<&Info>) -> Result<Comm
             "poster.jpeg"
         }
         Stage::Scrub => {
-            cmd.args(["-an", "-vf", &format!("fps=100000/{}:start_time=0,{tone}scale=160:160:force_original_aspect_ratio=decrease,pad=160:160:(ow-iw)/2:(oh-ih)/2,tile=10x10:nb_frames=100:padding=0:margin=0", info.duration_ms), "-frames:v", "1", "-c:v", "mjpeg", "-f", "image2", "-update", "1"]);
+            let (w, h) = dimensions(info, 160);
+            cmd.args(["-an", "-vf", &format!("fps=100000/{}:start_time=0,{tone}scale={w}:{h}:flags=lanczos,setsar=1,pad=160:160:(ow-iw)/2:(oh-ih)/2,tile=10x10:nb_frames=100:padding=0:margin=0", info.duration_ms), "-frames:v", "1", "-c:v", "mjpeg", "-f", "image2", "-update", "1"]);
             "scrub.jpeg"
         }
         Stage::Probe | Stage::Av1Probe => return Err(rejected()),

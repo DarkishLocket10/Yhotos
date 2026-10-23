@@ -21,3 +21,12 @@ Generated locally with the digest-pinned static ffmpeg from `deploy/dev/video-to
 target/video-tools/ffmpeg -v error -f lavfi -i color=c=navy:s=3840x2160:r=5:d=1 -c:v libx265 -preset ultrafast -x265-params pools=1:frame-threads=1:log-level=error -pix_fmt yuv420p -tag:v hvc1 -an -map_metadata -1 4k-landscape.mov
 target/video-tools/ffmpeg -v error -display_rotation:v:0 90 -i 4k-landscape.mov -c copy 4k-portrait.mov
 ```
+
+The anamorphic regressions retain the 128x96 coded frame with SAR 2:1
+(display size 256x96, ratio 8:3), plus a 90-degree rotated copy. Both are
+under 300 KB and use the same synthetic source:
+
+```
+target/video-tools/ffmpeg -v error -i h264.mp4 -vf setsar=2/1 -c:v libx264 -profile:v high -pix_fmt yuv420p -c:a copy -movflags +faststart anamorphic.mp4
+target/video-tools/ffmpeg -v error -display_rotation:v:0 90 -i anamorphic.mp4 -c copy anamorphic-rotated.mov
+```

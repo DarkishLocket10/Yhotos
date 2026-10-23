@@ -2,6 +2,7 @@ use super::{Failure, rejected};
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(super) struct Info {
+    // Square-pixel display dimensions, after SAR normalization and rotation.
     pub width: u32,
     pub height: u32,
     pub duration_ms: u64,
@@ -22,6 +23,7 @@ struct Stream {
     codec_name: Option<String>,
     width: Option<u32>,
     height: Option<u32>,
+    sample_aspect_ratio: Option<String>,
     color_transfer: Option<String>,
     #[serde(default)]
     side_data_list: Vec<SideData>,
@@ -29,6 +31,19 @@ struct Stream {
 #[derive(Deserialize)]
 struct SideData {
     rotation: Option<i32>,
+}
+// Missing SAR means square pixels. An explicit ratio must be positive and
+// bounded, and its square-pixel display geometry must still fit the 8K limits.
+fn display_width(width: u32, sar: Option<&str>) -> Result<u32, Failure> {
+    let Some(sar) = sar else { return Ok(width) };
+    let (num, den) = sar.split_once(':').ok_or_else(rejected)?;
+    let num: u32 = num.parse().map_err(|_| rejected())?;
+    let den: u32 = den.parse().map_err(|_| rejected())?;
+    if !(1..=65535).contains(&num) || !(1..=65535).contains(&den) {
+        return Err(rejected());
+    }
+    u32::try_from((u64::from(width) * u64::from(num)).div_ceil(u64::from(den)))
+        .map_err(|_| rejected())
 }
 // The encoder fixes Main profile, Main tier and 8-bit 4:2:0. Read the actual
 // sequence level from the confined probe rather than guessing from dimensions.
@@ -76,6 +91,10 @@ pub(super) fn parse(bytes: &[u8], max_duration: u32) -> Result<Info, Failure> {
                 {
                     return Err(rejected());
                 }
+                width = display_width(width, s.sample_aspect_ratio.as_deref())?;
+                if width > 7680 || u64::from(width) * u64::from(height) > 7680 * 4320 {
+                    return Err(rejected());
+                }
                 for side in s.side_data_list {
                     if let Some(rotation) = side.rotation {
                         if rotation % 90 != 0 {
@@ -110,7 +129,7 @@ pub(super) fn parse(bytes: &[u8], max_duration: u32) -> Result<Info, Failure> {
 }
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::indexing_slicing)]
+    #![allow(clippy::indexing_slicing, clippy::unwrap_used)]
     use super::*;
     #[test]
     fn rendition_codec_metadata_requires_main_eight_bit_and_a_valid_level() {
@@ -127,6 +146,37 @@ mod tests {
             assert!(av1_level(invalid.to_string().as_bytes()).is_err());
         }
         assert!(av1_level(br#"{"streams":[]}"#).is_err());
+    }
+    #[test]
+    fn sample_aspect_ratio_defines_display_geometry_before_rotation() {
+        for (sar, rotation, expected) in [
+            ("2:1", 0, (256, 96)),
+            ("2:1", 90, (96, 256)),
+            ("2:1", -90, (96, 256)),
+            ("1:2", 180, (64, 96)),
+            ("4:3", 0, (171, 96)),
+        ] {
+            let value = serde_json::json!({"format":{"duration":"1"},"streams":[{"codec_type":"video","codec_name":"h264","width":128,"height":96,"sample_aspect_ratio":sar,"side_data_list":[{"rotation":rotation}]}]});
+            let info = parse(value.to_string().as_bytes(), 1800).ok().unwrap();
+            assert_eq!((info.width, info.height), expected);
+        }
+    }
+    #[test]
+    fn invalid_or_excessive_sample_aspect_ratios_are_rejected() {
+        for sar in [
+            "",
+            "N/A",
+            "0:1",
+            "1:0",
+            "-1:1",
+            "1:2:3",
+            "65536:1",
+            "4294967295:1",
+            "61:1",
+        ] {
+            let value = serde_json::json!({"format":{"duration":"1"},"streams":[{"codec_type":"video","codec_name":"h264","width":128,"height":96,"sample_aspect_ratio":sar}]});
+            assert!(parse(value.to_string().as_bytes(), 1800).is_err(), "{sar}");
+        }
     }
     #[test]
     fn strict_duration_codecs_streams_dimensions_and_rotation() {

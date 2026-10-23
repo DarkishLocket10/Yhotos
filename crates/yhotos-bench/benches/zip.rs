@@ -3,7 +3,7 @@
 //! Production public-router ZIP streaming versus the original-file HTTP baseline.
 //! Requires migrated dev Postgres via `DATABASE_URL`. The 64 MiB local file is
 //! warmed before timing; setup/cleanup are excluded. Bodies are drained frame by
-//! frame without collecting them, including the ZIP producer's duplex buffer.
+//! frame without collecting them, including the ZIP producer's bounded channel.
 //! Server-only CPU is measured over loopback with a separate curl consumer.
 use axum::{
     Router,
@@ -21,6 +21,8 @@ use yhotos_core::{Slug, access::Visibility};
 use yhotos_db::{DatabaseTls, Db, Role, albums, photos};
 use yhotos_http::{AppState, public_router};
 use yhotos_storage::Store;
+#[path = "support/zip_budget.rs"]
+mod zip_budget;
 
 #[global_allocator]
 static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -150,9 +152,12 @@ fn server_cpu(address: SocketAddr, path: &str, zip: bool) -> BenchResult<()> {
         resource::{UsageWho, getrusage},
         time::TimeValLike,
     };
-    let cpu = || -> BenchResult<i64> {
+    let cpu = || -> BenchResult<(i64, i64)> {
         let usage = getrusage(UsageWho::RUSAGE_SELF)?;
-        Ok(usage.user_time().num_microseconds() + usage.system_time().num_microseconds())
+        Ok((
+            usage.user_time().num_microseconds(),
+            usage.system_time().num_microseconds(),
+        ))
     };
     let before = cpu()?;
     let start = std::time::Instant::now();
@@ -188,14 +193,29 @@ fn server_cpu(address: SocketAddr, path: &str, zip: bool) -> BenchResult<()> {
         bytes += FILE_BYTES;
     }
     let wall = start.elapsed().as_secs_f64();
-    let used = (cpu()? - before) as f64 / 1_000_000.0;
+    let after = cpu()?;
+    let user_cpu = (after.0 - before.0) as f64 / 1_000_000.0;
+    let system_cpu = (after.1 - before.1) as f64 / 1_000_000.0;
+    let used = user_cpu + system_cpu;
     eprintln!(
-        "zip_http_server/{} (separate curl paced at 200 MB/s): {bytes} bytes, wall={wall:.6}s, server CPU={used:.6}s, throughput={:.3} MB/s, CPU={:.3}% of one core, CPU normalized to 200 MB/s={:.3}%",
+        "zip_http_server/{} (separate curl paced at 200 MB/s): {bytes} bytes, wall={wall:.6}s, server CPU={used:.6}s (user={user_cpu:.6}s, system={system_cpu:.6}s), throughput={:.3} MB/s, CPU={:.3}% of one core, CPU normalized to 200 MB/s={:.3}%",
         if zip { "store_zip64" } else { "plain_original" },
         bytes as f64 / wall / 1_000_000.0,
         used / wall * 100.0,
         used / bytes as f64 * BUDGET_BYTES_PER_SEC as f64 * 100.0,
     );
+    if zip
+        && !zip_budget::within_budget(
+            bytes,
+            Duration::from_secs_f64(wall),
+            Duration::from_secs_f64(used),
+        )
+    {
+        return Err(std::io::Error::other(
+            "ZIP budget exceeded: requires >=200 MB/s and <10% of one server CPU core",
+        )
+        .into());
+    }
     Ok(())
 }
 

@@ -274,6 +274,60 @@ async fn writer_rejects_unsafe_names_truncation_growth_and_byte_limits() {
     assert!(w.entry("safe".into(), 1, &b"x"[..]).await.is_err());
 }
 #[tokio::test]
+async fn large_entries_keep_crc_and_lengths_across_short_reads() {
+    use std::{
+        pin::Pin,
+        task::{Context, Poll},
+    };
+    use tokio::io::{AsyncRead, ReadBuf};
+    struct Fragmented<'a>(&'a [u8]);
+    impl AsyncRead for Fragmented<'_> {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            _: &mut Context<'_>,
+            out: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            let n = out.remaining().min(self.0.len()).min(65_537);
+            out.put_slice(&self.0[..n]);
+            self.0 = &self.0[n..];
+            Poll::Ready(Ok(()))
+        }
+    }
+    let data: Vec<_> = (0..writer::COPY_BYTES + 137)
+        .map(|n| n.to_le_bytes()[0])
+        .collect();
+    let mut archive = Vec::new();
+    let mut zip = writer::ZipWriter::new(&mut archive, 2 * data.len() as u64 + 1024);
+    for name in ["001-first.bin", "002-second.bin"] {
+        zip.entry(name.into(), data.len() as u64, Fragmented(&data))
+            .await
+            .unwrap();
+    }
+    zip.finish().await.unwrap();
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), archive).unwrap();
+    let checked = std::process::Command::new("unzip")
+        .arg("-t")
+        .arg(file.path())
+        .output()
+        .unwrap();
+    assert!(
+        checked.status.success(),
+        "{}",
+        String::from_utf8_lossy(&checked.stdout)
+    );
+    for name in ["001-first.bin", "002-second.bin"] {
+        let extracted = std::process::Command::new("unzip")
+            .arg("-p")
+            .arg(file.path())
+            .arg(name)
+            .output()
+            .unwrap();
+        assert!(extracted.status.success());
+        assert_eq!(extracted.stdout, data);
+    }
+}
+#[tokio::test]
 async fn zip64_sparse_file_records_64_bit_sizes_offsets_and_end_directory() {
     use std::{
         io::{Seek, Write},

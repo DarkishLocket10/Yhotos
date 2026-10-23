@@ -1,4 +1,6 @@
 //! Authorized, bounded STORE archives; file contents flow directly to the HTTP body.
+mod source;
+mod transport;
 pub mod writer;
 use crate::{
     AppState,
@@ -19,8 +21,6 @@ use std::{
     net::IpAddr,
     sync::{Mutex, OnceLock},
 };
-use tokio::io::AsyncWriteExt;
-use tokio_util::io::ReaderStream;
 use yhotos_core::{AlbumId, ShortId, access::Principal};
 use yhotos_storage::{Area, ContentHash, DerivativeKey};
 #[derive(Default, Deserialize)]
@@ -208,50 +208,48 @@ async fn serve(
     .await
     .map_err(|e| HttpError::Internal(e.into()))?;
     drop(conn);
-    let (reader, mut output) = tokio::io::duplex(256 * 1024);
-    let (finished, result) = tokio::sync::oneshot::channel();
+    let (output, reader, finished) = transport::channel();
     let store = state.store.clone();
     let cap = state.config.zip.max_bytes;
     let lifetime = state.config.transfer_deadline;
-    tokio::spawn(async move {
-        let stream = async {
-            let mut zip = writer::ZipWriter::new(&mut output, cap);
-            for (name, hash, size) in files {
-                let key = DerivativeKey {
-                    hash: &hash,
-                    variant: options.size.name(),
-                    format: "jpeg",
-                    hdr: false,
-                };
-                let original = matches!(options.size, Size::Original);
-                let file = store
-                    .open_read(
-                        if original {
-                            Area::Originals
-                        } else {
-                            Area::Derivatives
-                        },
-                        &hash,
-                        (!original).then_some(&key),
-                    )
-                    .await
-                    .map_err(|_| std::io::Error::other("archive file unavailable"))?;
-                zip.entry(name, size, file).await?;
+    let runtime = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || {
+        runtime.block_on(async move {
+            let stream = async {
+                let mut zip = writer::ZipWriter::new(output, cap);
+                for (name, hash, size) in files {
+                    let key = DerivativeKey {
+                        hash: &hash,
+                        variant: options.size.name(),
+                        format: "jpeg",
+                        hdr: false,
+                    };
+                    let original = matches!(options.size, Size::Original);
+                    let file = store
+                        .open_read(
+                            if original {
+                                Area::Originals
+                            } else {
+                                Area::Derivatives
+                            },
+                            &hash,
+                            (!original).then_some(&key),
+                        )
+                        .await
+                        .map_err(|_| std::io::Error::other("archive file unavailable"))?;
+                    zip.entry(name, size, source::File(Some(file.into_std().await)))
+                        .await?;
+                }
+                zip.finish().await
+            };
+            let complete = matches!(tokio::time::timeout(lifetime, stream).await, Ok(Ok(())));
+            if !complete {
+                tracing::warn!("archive stream incomplete");
             }
-            zip.finish().await
-        };
-        let complete = matches!(tokio::time::timeout(lifetime, stream).await, Ok(Ok(())));
-        if !complete {
-            tracing::warn!("archive stream incomplete");
-        }
-        let _ = finished.send(complete);
-        let _ = output.shutdown().await;
+            let _ = finished.send(complete);
+        });
     });
-    let body = Body::from_stream(GuardedStream::new(
-        ReaderStream::with_capacity(ArchiveReader { reader, result }, 256 * 1024),
-        permit,
-        lifetime,
-    ));
+    let body = Body::from_stream(GuardedStream::new(reader, permit, lifetime));
     let mut response = Response::new(body);
     response.headers_mut().insert(
         header::CONTENT_TYPE,
@@ -272,35 +270,5 @@ async fn serve(
     Ok(response)
 }
 
-// EOF is successful only after the producer has written the central directory.
-// File failures and producer cancellation abort the HTTP body instead of
-// silently completing a truncated archive. No file detail reaches the client.
-struct ArchiveReader {
-    reader: tokio::io::DuplexStream,
-    result: tokio::sync::oneshot::Receiver<bool>,
-}
-impl tokio::io::AsyncRead for ArchiveReader {
-    fn poll_read(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        use std::{future::Future, pin::Pin, task::Poll};
-        if buf.remaining() == 0 {
-            return Poll::Ready(Ok(()));
-        }
-        let before = buf.filled().len();
-        match Pin::new(&mut self.reader).poll_read(cx, buf) {
-            Poll::Ready(Ok(())) if buf.filled().len() == before => {
-                match Pin::new(&mut self.result).poll(cx) {
-                    Poll::Ready(Ok(true)) => Poll::Ready(Ok(())),
-                    Poll::Ready(_) => Poll::Ready(Err(std::io::Error::other("archive incomplete"))),
-                    Poll::Pending => Poll::Pending,
-                }
-            }
-            result => result,
-        }
-    }
-}
 #[cfg(test)]
 mod tests;

@@ -71,6 +71,8 @@ fn containers_rotation_renditions_and_poster() {
         ("h264.mp4", 128, 96),
         ("hevc.mov", 128, 96),
         ("rotated.mov", 96, 128),
+        ("anamorphic.mp4", 256, 96),
+        ("anamorphic-rotated.mov", 96, 256),
     ] {
         let dir = tempfile::tempdir().unwrap();
         let output = invoke(
@@ -98,6 +100,7 @@ fn containers_rotation_renditions_and_poster() {
             assert_eq!(streams[0]["profile"], profile);
             assert_eq!(streams[0]["width"], width);
             assert_eq!(streams[0]["height"], height);
+            assert_eq!(streams[0]["sample_aspect_ratio"], "1:1");
             assert_eq!(streams[1]["codec_name"], "aac");
             let bytes = std::fs::read(dir.path().join(format!("{codec}.mp4"))).unwrap();
             assert!(
@@ -125,6 +128,9 @@ fn containers_rotation_renditions_and_poster() {
             .output()
             .unwrap();
         assert!(poster.status.success());
+        let poster: Value = serde_json::from_slice(&poster.stdout).unwrap();
+        assert_eq!(poster["streams"][0]["width"], width);
+        assert_eq!(poster["streams"][0]["height"], height);
     }
 }
 #[test]
@@ -247,6 +253,8 @@ fn timeout_kills_the_real_ffmpeg_process_group() {
 async fn video_job_publishes_sources_poster_sprite_ready_and_inline_playback(pool: sqlx::PgPool) {
     for (name, width, height) in [
         ("rotated.mov", 96, 128),
+        ("anamorphic.mp4", 256, 96),
+        ("anamorphic-rotated.mov", 96, 256),
         ("4k-landscape.mov", 3840, 2160),
         ("4k-portrait.mov", 2160, 3840),
     ] {
@@ -269,7 +277,7 @@ async fn publish_fixture(pool: &sqlx::PgPool, name: &str, width: i32, height: i3
     let album = albums::create(
         &mut conn,
         None,
-        &Slug::new(&format!("video-{width}")).unwrap(),
+        &Slug::new(&format!("video-{width}-{height}")).unwrap(),
         "Video",
         Visibility::Public,
     )

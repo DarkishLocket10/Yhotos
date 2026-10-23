@@ -1,6 +1,62 @@
 //! STORE-only ZIP writer. Only the copy buffer and central-directory metadata are retained.
 use std::io::{Error, ErrorKind, Result};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+pub(super) const COPY_BYTES: usize = 8 * 1024 * 1024;
+/// A bounded archive source that reads and checksums into an owned copy buffer.
+pub trait Input {
+    /// Returns the buffer, initialized byte count and running CRC, without reading past `len`.
+    fn read(
+        &mut self,
+        buffer: Vec<u8>,
+        len: usize,
+        crc: crc32fast::Hasher,
+    ) -> impl Future<Output = Result<(Vec<u8>, usize, crc32fast::Hasher)>> + Send;
+}
+impl<R: AsyncRead + Unpin + Send> Input for R {
+    async fn read(
+        &mut self,
+        mut buffer: Vec<u8>,
+        len: usize,
+        mut crc: crc32fast::Hasher,
+    ) -> Result<(Vec<u8>, usize, crc32fast::Hasher)> {
+        buffer.resize(len, 0);
+        let n = AsyncReadExt::read(self, buffer.get_mut(..len).ok_or_else(invalid)?).await?;
+        crc.update(buffer.get(..n).ok_or_else(invalid)?);
+        Ok((buffer, n, crc))
+    }
+}
+/// A bounded archive destination that transfers or reuses owned copy buffers.
+pub trait Output {
+    /// Supplies a private copy buffer, which may contain capacity from an earlier archive.
+    fn buffer(&mut self) -> Vec<u8> {
+        Vec::new()
+    }
+    /// Reclaims a buffer after its initialized contents are no longer needed.
+    fn recycle(&mut self, _buffer: Vec<u8>) {}
+    /// Writes archive metadata in order.
+    fn write(&mut self, bytes: &[u8]) -> impl Future<Output = Result<()>> + Send;
+    /// Transfers the initialized prefix, returning a reusable buffer.
+    fn chunk(
+        &mut self,
+        buffer: Vec<u8>,
+        len: usize,
+    ) -> impl Future<Output = Result<Vec<u8>>> + Send;
+    /// Flushes all archive metadata.
+    fn flush(&mut self) -> impl Future<Output = Result<()>> + Send;
+}
+impl<W: AsyncWrite + Unpin + Send> Output for W {
+    async fn write(&mut self, bytes: &[u8]) -> Result<()> {
+        self.write_all(bytes).await
+    }
+    async fn chunk(&mut self, buffer: Vec<u8>, len: usize) -> Result<Vec<u8>> {
+        self.write_all(buffer.get(..len).ok_or_else(invalid)?)
+            .await?;
+        Ok(buffer)
+    }
+    async fn flush(&mut self) -> Result<()> {
+        AsyncWriteExt::flush(self).await
+    }
+}
 struct Entry {
     name: String,
     size: u64,
@@ -13,6 +69,7 @@ pub struct ZipWriter<W> {
     offset: u64,
     entries: Vec<Entry>,
     cap: u64,
+    buffer: Vec<u8>,
 }
 fn invalid() -> Error {
     Error::new(ErrorKind::InvalidData, "archive limit or input mismatch")
@@ -26,14 +83,16 @@ fn u32le(b: &mut Vec<u8>, n: u32) {
 fn u64le(b: &mut Vec<u8>, n: u64) {
     b.extend(n.to_le_bytes());
 }
-impl<W: AsyncWrite + Unpin> ZipWriter<W> {
+impl<W: Output> ZipWriter<W> {
     /// A byte ceiling includes headers, descriptors and the central directory.
-    pub fn new(out: W, cap: u64) -> Self {
+    pub fn new(mut out: W, cap: u64) -> Self {
+        let buffer = out.buffer();
         Self {
             out,
             cap,
             offset: 0,
             entries: Vec::new(),
+            buffer,
         }
     }
     async fn write(&mut self, bytes: &[u8]) -> Result<()> {
@@ -44,19 +103,14 @@ impl<W: AsyncWrite + Unpin> ZipWriter<W> {
         if next > self.cap {
             return Err(invalid());
         }
-        self.out.write_all(bytes).await?;
+        self.out.write(bytes).await?;
         self.offset = next;
         Ok(())
     }
     /// Streams exactly the declared bytes, rejects unsafe names and detects truncated/growing input.
     /// # Errors
     /// Returns IO failures or a violated size/name/byte limit.
-    pub async fn entry(
-        &mut self,
-        name: String,
-        size: u64,
-        mut input: impl AsyncRead + Unpin,
-    ) -> Result<()> {
+    pub async fn entry(&mut self, name: String, size: u64, mut input: impl Input) -> Result<()> {
         if name.is_empty()
             || name.len() > 255
             || name.contains(['/', '\\'])
@@ -92,25 +146,35 @@ impl<W: AsyncWrite + Unpin> ZipWriter<W> {
         }
         self.write(&b).await?;
         let mut crc = crc32fast::Hasher::new();
-        let mut buffer = vec![0; 1024 * 1024];
+        let mut buffer = std::mem::take(&mut self.buffer);
+        buffer.reserve(COPY_BYTES.saturating_sub(buffer.len()));
         let mut remaining = size;
         while remaining > 0 {
-            let len = usize::try_from(remaining.min(buffer.len() as u64)).map_err(|_| invalid())?;
-            let chunk = buffer.get_mut(..len).ok_or_else(invalid)?;
-            let n = input.read(chunk).await?;
+            let len = usize::try_from(remaining.min(COPY_BYTES as u64)).map_err(|_| invalid())?;
+            let (read, n, updated_crc) = input.read(buffer, len, crc).await?;
+            buffer = read;
+            crc = updated_crc;
             if n == 0 {
                 return Err(invalid());
             }
-            let chunk = chunk.get(..n).ok_or_else(invalid)?;
-            crc.update(chunk);
-            self.write(chunk).await?;
+            if n > len || buffer.len() < n {
+                return Err(invalid());
+            }
+            let next = self.offset.checked_add(n as u64).ok_or_else(invalid)?;
+            if next > self.cap {
+                return Err(invalid());
+            }
+            buffer = self.out.chunk(buffer, n).await?;
+            self.offset = next;
             remaining -= n as u64;
         }
-        match input.read_u8().await {
+        match input.read(vec![0], 1, crc32fast::Hasher::new()).await {
+            Ok((_, 0, _)) => {}
             Err(e) if e.kind() == ErrorKind::UnexpectedEof => {}
             Err(e) => return Err(e),
             Ok(_) => return Err(invalid()),
         }
+        self.buffer = buffer;
         let crc = crc.finalize();
         b.clear();
         u32le(&mut b, 0x0807_4b50);
@@ -192,6 +256,7 @@ impl<W: AsyncWrite + Unpin> ZipWriter<W> {
         u32le(&mut b, u32::MAX);
         u16le(&mut b, 0);
         self.write(&b).await?;
+        self.out.recycle(std::mem::take(&mut self.buffer));
         self.out.flush().await
     }
 }
