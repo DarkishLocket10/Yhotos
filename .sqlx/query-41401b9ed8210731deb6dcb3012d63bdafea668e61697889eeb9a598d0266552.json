@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE embeddings SET vector=$1::text::vector WHERE photo_id=$2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "41401b9ed8210731deb6dcb3012d63bdafea668e61697889eeb9a598d0266552"
+}

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO albums(id,slug,title) VALUES($1,'map-bench','Map benchmark')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "10efb3b6f02b5791ac4718928a5c6fd90f49f8640c8b6e6aad054b607c88aac0"
+}

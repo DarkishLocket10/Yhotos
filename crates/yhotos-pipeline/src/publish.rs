@@ -11,8 +11,8 @@ use yhotos_jobs::{Job, Queue};
 use yhotos_storage::{Area, ContentHash, DerivativeKey, TempDir};
 
 pub(crate) struct Verified {
-    dir: TempDir,
-    hashes: Vec<ContentHash>,
+    pub(crate) dir: TempDir,
+    pub(crate) hashes: Vec<ContentHash>,
 }
 impl Ingest {
     pub(crate) async fn published_outputs_exist(
@@ -64,10 +64,10 @@ impl Ingest {
         &self,
         dir: &Path,
         plans: &[Planned],
-        report: &Report,
+        outputs: &[crate::protocol::OutputReport],
     ) -> Result<Verified, JobError> {
         let bad = || JobError::Fatal("codec output verification failed".into());
-        if report.outputs.len() != plans.len() {
+        if outputs.len() != plans.len() {
             return Err(bad());
         }
         let verified = self
@@ -76,7 +76,7 @@ impl Ingest {
             .map_err(|_| retry("temporary storage unavailable"))?;
         let mut hashes = Vec::new();
         for plan in plans {
-            let mut matching = report.outputs.iter().filter(|o| o.name == plan.name);
+            let mut matching = outputs.iter().filter(|o| o.name == plan.name);
             let output = matching.next().ok_or_else(bad)?;
             if matching.next().is_some()
                 || output.bytes == 0

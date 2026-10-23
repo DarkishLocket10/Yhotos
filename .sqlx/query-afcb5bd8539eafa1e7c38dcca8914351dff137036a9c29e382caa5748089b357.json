@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE photos SET visibility='restricted',place_id=$1 WHERE short_id=$2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "afcb5bd8539eafa1e7c38dcca8914351dff137036a9c29e382caa5748089b357"
+}

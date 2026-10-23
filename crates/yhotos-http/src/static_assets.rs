@@ -57,7 +57,39 @@ static PASSKEY: LazyLock<Option<Asset>> = LazyLock::new(|| {
 pub(crate) fn passkey_url() -> Result<&'static str, HttpError> {
     Ok(&required(PASSKEY.as_ref())?.url)
 }
+static SEARCH: LazyLock<Option<Asset>> = LazyLock::new(|| {
+    Asset::new(
+        "search",
+        "js",
+        "js/search.js",
+        "text/javascript; charset=utf-8",
+    )
+});
+pub(crate) fn search_url() -> Result<&'static str, HttpError> {
+    Ok(&required(SEARCH.as_ref())?.url)
+}
 
+static MAP: LazyLock<Option<Asset>> =
+    LazyLock::new(|| Asset::new("map", "js", "js/map.js", "text/javascript; charset=utf-8"));
+static MAP_WORKER: LazyLock<Option<Asset>> = LazyLock::new(|| {
+    Asset::new(
+        "map-worker",
+        "js",
+        "js/map-worker.js",
+        "text/javascript; charset=utf-8",
+    )
+});
+static MAP_CSS: LazyLock<Option<Asset>> =
+    LazyLock::new(|| Asset::new("map", "css", "js/maplibre.css", "text/css; charset=utf-8"));
+pub(crate) fn map_script_url() -> Result<&'static str, HttpError> {
+    Ok(&required(MAP.as_ref())?.url)
+}
+pub(crate) fn map_worker_url() -> Result<&'static str, HttpError> {
+    Ok(&required(MAP_WORKER.as_ref())?.url)
+}
+pub(crate) fn map_css_url() -> Result<&'static str, HttpError> {
+    Ok(&required(MAP_CSS.as_ref())?.url)
+}
 macro_rules! island_asset {
     ($static:ident, $function:ident, $name:literal) => {
         static $static: LazyLock<Option<Asset>> = LazyLock::new(|| {
@@ -107,6 +139,10 @@ pub(crate) async fn serve(Path(path): Path<String>) -> Result<Response, HttpErro
         required(CSS.as_ref())?,
         required(JS.as_ref())?,
         required(PASSKEY.as_ref())?,
+        required(SEARCH.as_ref())?,
+        required(MAP.as_ref())?,
+        required(MAP_WORKER.as_ref())?,
+        required(MAP_CSS.as_ref())?,
         required(LIGHTBOX.as_ref())?,
         required(PREFETCH.as_ref())?,
         required(TRANSITIONS.as_ref())?,

@@ -20,6 +20,8 @@ const MAX_UPLOAD_BYTES: u64 = 2 << 30;
 pub struct Config {
     /// Public socket to bind.
     pub public_listen: SocketAddr,
+    /// Fixed internal ML host:port, never controlled by requests.
+    pub ml_address: String,
     /// Specific admin bind address, mandatory only with the admin feature.
     pub admin_listen: Option<SocketAddr>,
     /// Public login connection string, never logged.
@@ -52,6 +54,73 @@ pub struct Config {
     pub log_format: LogFormat,
     /// CPU worker limits and trusted codec executable.
     pub worker: Worker,
+    /// Browser-only vector tile source, validated once at startup.
+    pub map_tiles: MapTiles,
+}
+/// A vector tile template with a single fixed HTTPS origin, or a local path.
+#[derive(Clone, Debug)]
+pub struct MapTiles {
+    /// Validated template; only x, y and z placeholders are accepted.
+    pub template: String,
+    /// CSP source for the browser, absent for same-origin tiles.
+    pub origin: Option<String>,
+}
+impl Default for MapTiles {
+    fn default() -> Self {
+        Self {
+            template: "https://tiles.openfreemap.org/planet/latest/{z}/{x}/{y}.pbf".into(),
+            origin: Some("https://tiles.openfreemap.org".into()),
+        }
+    }
+}
+impl MapTiles {
+    /// Accepts a same-origin path or HTTPS URL without credentials or fragments.
+    ///
+    /// # Errors
+    /// Rejects wildcards, subdomain templates and unknown placeholders.
+    pub fn parse(value: &str) -> Result<Self, &'static str> {
+        let invalid = "map_tiles: expected a local path or fixed HTTPS tile template";
+        if value.len() > 2048
+            || value.chars().any(|c| c.is_control() || c.is_whitespace())
+            || !["{z}", "{x}", "{y}"]
+                .iter()
+                .all(|part| value.contains(part))
+        {
+            return Err(invalid);
+        }
+        let replaced = value
+            .replace("{z}", "0")
+            .replace("{x}", "0")
+            .replace("{y}", "0");
+        if replaced.contains(['{', '}', '*', '\\', '\'', '"', '<', '>']) {
+            return Err(invalid);
+        }
+        let origin = if value.starts_with('/') && !value.starts_with("//") {
+            if value.contains('#') {
+                return Err(invalid);
+            }
+            None
+        } else {
+            let url = Url::parse(&replaced).map_err(|_| invalid)?;
+            if url.scheme() != "https"
+                || url.host_str().is_none()
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || url.fragment().is_some()
+                || value
+                    .split('/')
+                    .nth(2)
+                    .is_some_and(|host| host.contains('{'))
+            {
+                return Err(invalid);
+            }
+            Some(url.origin().ascii_serialization())
+        };
+        Ok(Self {
+            template: value.into(),
+            origin,
+        })
+    }
 }
 /// Positive per-minute capacities for independent request classes.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -121,6 +190,7 @@ pub enum LogFormat {
 #[derive(Serialize)]
 struct Defaults {
     public_listen: &'static str,
+    ml_address: &'static str,
     admin_listen: Option<SocketAddr>,
     database_url_admin: Option<String>,
     database_url_worker: Option<String>,
@@ -133,11 +203,13 @@ struct Defaults {
     upload: Upload,
     log_format: LogFormat,
     worker: Worker,
+    map_tiles: &'static str,
 }
 impl Default for Defaults {
     fn default() -> Self {
         Self {
             public_listen: "0.0.0.0:8080",
+            ml_address: "ml:8090",
             admin_listen: None,
             database_url_admin: None,
             database_url_worker: None,
@@ -157,6 +229,7 @@ impl Default for Defaults {
             },
             log_format: LogFormat::Json,
             worker: Worker::default(),
+            map_tiles: "https://tiles.openfreemap.org/planet/latest/{z}/{x}/{y}.pbf",
         }
     }
 }
@@ -202,6 +275,20 @@ impl Config {
         let f = Figment::from(Serialized::defaults(Defaults::default())).merge(provider);
         let mut errors = Vec::new();
         let public_listen = read::<SocketAddr>(&f, "public_listen", &mut errors);
+        let ml_address = read::<String>(&f, "ml_address", &mut errors);
+        if let Some(address) = &ml_address {
+            let valid = address.rsplit_once(':').is_some_and(|(host, port)| {
+                !host.is_empty()
+                    && host.len() <= 253
+                    && host
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'.'))
+                    && port.parse::<u16>().is_ok_and(|v| v > 0)
+            });
+            if !valid {
+                errors.push("ml_address: must be an internal host and port".into());
+            }
+        }
         let admin_listen = read::<Option<SocketAddr>>(&f, "admin_listen", &mut errors);
         let database_url_public = read::<SecretString>(&f, "database_url_public", &mut errors);
         let database_url_admin =
@@ -223,6 +310,15 @@ impl Config {
         let chunk_bytes = read::<u32>(&f, "upload.chunk_bytes", &mut errors);
         let log_format = read::<LogFormat>(&f, "log_format", &mut errors);
         let worker = read::<Worker>(&f, "worker", &mut errors);
+        let map_tiles = read::<String>(&f, "map_tiles", &mut errors).and_then(|value| {
+            match MapTiles::parse(&value) {
+                Ok(tiles) => Some(tiles),
+                Err(error) => {
+                    errors.push(error.into());
+                    None
+                }
+            }
+        });
         if let Some(w) = &worker
             && (w.concurrency == 0
                 || w.concurrency > 1024
@@ -370,6 +466,7 @@ impl Config {
             chunk_bytes,
             log_format,
             worker,
+            map_tiles,
         ) {
             (
                 Some(public_listen),
@@ -392,7 +489,9 @@ impl Config {
                 Some(chunk_bytes),
                 Some(log_format),
                 Some(worker),
+                Some(map_tiles),
             ) => Ok(Self {
+                ml_address: ml_address.unwrap_or_else(|| "ml:8090".into()),
                 public_listen,
                 admin_listen,
                 database_url_public,
@@ -417,6 +516,7 @@ impl Config {
                 },
                 log_format,
                 worker,
+                map_tiles,
             }),
             _ => Err(ConfigError(vec!["configuration is incomplete".into()])),
         }
@@ -674,6 +774,46 @@ mod tests {
                 Config::from_figment(valid(dir.path()).merge(("admin_listen", address))).is_ok(),
                 "{address}"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod map_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::MapTiles;
+    #[test]
+    fn fixed_tile_origin_and_local_templates_only() {
+        assert!(
+            MapTiles::parse("/tiles/{z}/{x}/{y}.pbf")
+                .unwrap()
+                .origin
+                .is_none()
+        );
+        assert_eq!(
+            MapTiles::parse("https://tiles.example:8443/{z}/{x}/{y}.pbf")
+                .unwrap()
+                .origin
+                .as_deref(),
+            Some("https://tiles.example:8443")
+        );
+        let credential = uuid::Uuid::now_v7();
+        assert!(
+            MapTiles::parse(&format!(
+                "https://user:{credential}@example.test/{{z}}/{{x}}/{{y}}"
+            ))
+            .is_err()
+        );
+        for value in [
+            "http://tiles.example/{z}/{x}/{y}",
+            "https://{x}.example/{z}/{y}",
+            "//example.test/{z}/{x}/{y}",
+            "https://*.test/{z}/{x}/{y}",
+            "/tiles/{z}/{x}/{y}/{s}",
+            "/tiles/{z}/{x}/{y}#fragment",
+            "/tiles/{z}/{x}/{y}\\test",
+        ] {
+            assert!(MapTiles::parse(value).is_err());
         }
     }
 }

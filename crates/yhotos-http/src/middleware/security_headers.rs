@@ -2,7 +2,7 @@
 //! nonce-bearing CSP; encoding the 16 random nonce bytes uses a stack buffer.
 
 use axum::{
-    extract::Request,
+    extract::{Request, State},
     http::{HeaderValue, header},
     middleware::Next,
     response::{IntoResponse, Response},
@@ -65,14 +65,48 @@ pub fn cross_origin_resource(path: &str) -> bool {
         .any(|prefix| path.starts_with(prefix))
 }
 
-pub(crate) async fn secure(mut request: Request, next: Next) -> Response {
+// Only map documents and their dedicated worker may contact the configured tile origin.
+fn map_policy(policy: &HeaderValue, origin: Option<&str>) -> Option<HeaderValue> {
+    let mut text = policy.to_str().ok()?.to_owned();
+    if let Some(origin) = origin {
+        text = text
+            .replace(
+                "img-src 'self' data:",
+                &format!("img-src 'self' data: {origin}"),
+            )
+            .replace(
+                "connect-src 'self'",
+                &format!("connect-src 'self' {origin}"),
+            );
+    }
+    text.push_str("; worker-src 'self'");
+    HeaderValue::from_str(&text).ok()
+}
+
+pub(crate) async fn secure(
+    State(state): State<crate::AppState>,
+    mut request: Request,
+    next: Next,
+) -> Response {
     let cross_origin = cross_origin_resource(request.uri().path());
     let path = request.uri().path();
     let auth_page =
         path.starts_with("/login") || path.starts_with("/u/") || path.starts_with("/admin/");
+    let is_map =
+        path == "/map" || crate::static_assets::map_worker_url().is_ok_and(|worker| path == worker);
     let share_page = path.starts_with("/s/");
     let nonce = Nonce::generate();
-    let policy = nonce.as_ref().ok().and_then(|value| value.policy().ok());
+    let policy = nonce
+        .as_ref()
+        .ok()
+        .and_then(|value| value.policy().ok())
+        .and_then(|policy| {
+            if is_map {
+                map_policy(&policy, state.config.map_tiles.origin.as_deref())
+            } else {
+                Some(policy)
+            }
+        });
     let mut response = match nonce {
         Ok(nonce) if policy.is_some() => {
             request.extensions_mut().insert(nonce);

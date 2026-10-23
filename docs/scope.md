@@ -93,7 +93,7 @@ Tooling: libvips (via Rust bindings) for decode, color management (lcms2), resiz
 - Likes overview: who liked what, most liked.
 - Users and groups: create, disable, reset temporary password, assign groups, see sessions.
 - Share link management.
-- Face management (admin only): clusters, name people, merge, hide; person search.
+- Face management (admin only): clusters, name people, merge, hide; person search; per-person opt-in to public "More of this face" browsing.
 - Theme editor (section 5.8).
 - Analytics dashboard (section 5.6).
 - Job queue view: derivative generation, ML, video transcodes, with retry.
@@ -105,7 +105,7 @@ Tooling: libvips (via Rust bindings) for decode, color management (lcms2), resiz
 - OCR text search.
 - Structured filters: camera, lens, focal length, aperture, ISO, date range, place (reverse-geocoded offline), dominant color, orientation, file type, RAW/HDR flags.
 - "More like this" and duplicate detection.
-- Faces: detection and clustering for all photos, but naming and person search are admin-only. Public and account users never see face data.
+- Faces: detection and clustering for all photos; naming, merging and person search are admin-only. For people the admin opts in individually (off by default), any visitor can click a face on a photo they can already see (face chips under the photo and hover boxes over it) and open "More of this face": the other photos they can see with that person, never with a name (task 024).
 
 ### 5.6 Analytics (first-party, server-side)
 - Collected from day one: page views, photo views, lightbox opens, downloads by size, zip downloads, search queries, referrers, countries and cities, device class, share-link opens.
@@ -114,7 +114,7 @@ Tooling: libvips (via Rust bindings) for decode, color management (lcms2), resiz
 
 ### 5.7 ML worker
 - Separate service on tower, GPU (GTX 1080 Ti, pinned to a CUDA runtime that still supports Pascal), no internet access, consumes a job queue, writes to Postgres.
-- Models (candidates, final choice by benchmark): SigLIP or CLIP ViT-L/14 for embeddings; InsightFace (ArcFace) for faces; RapidOCR/PaddleOCR for text; zero-shot tagging from the embedding model or RAM++; offline reverse geocoding from GeoNames.
+- Models (candidates, final choice by benchmark): SigLIP or CLIP ViT-L/14 for embeddings; OpenCV Zoo YuNet + SFace for faces; RapidOCR/PaddleOCR for text; zero-shot tagging from the embedding model or RAM++; offline reverse geocoding from GeoNames.
 - Never in the request path. Query embedding at search time is the one online call, and it is small.
 
 ### 5.8 Theming

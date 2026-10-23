@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO photos(id,album_id,short_id,title,original_hash,original_name,original_bytes,mime,kind,status,visibility,camera_model) VALUES($1,$2,$3,'sunset','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','photo.jpg',1,'image/jpeg','image','ready',$4::text::visibility,'Test camera')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a9ff40ceec091788df01491580b0d80b67b25dba666f0987a1fb9056e32066b0"
+}

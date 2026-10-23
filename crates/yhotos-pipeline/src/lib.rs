@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 //! Ingest commits only verified, immutable outputs and atomically queues follow-up work.
+mod faces;
 mod host;
+pub use faces::FaceCrop;
 mod plan;
 mod protocol;
 mod publish;
@@ -155,7 +157,7 @@ impl Ingest {
                 pause.resume.notified().await;
             }
             let placeholder = self.validate_report(&report)?;
-            let verified = self.verify_outputs(dir.path(),&outputs,&report).await?;
+            let verified = self.verify_outputs(dir.path(),&outputs,&report.outputs).await?;
             self.publish(photo_id,&photo.original_hash,photo.generation,&marker,&report,&outputs,&verified,&placeholder,followup_priority).await
         }.await;
         if let Err(error) = &result {

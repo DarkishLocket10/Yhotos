@@ -84,12 +84,14 @@ async fn mutate(
 }
 fn config(dir: &std::path::Path, url: secrecy::SecretString) -> BenchResult<&'static Config> {
     Ok(Box::leak(Box::new(Config {
+        ml_address: "127.0.0.1:1".into(),
         public_listen: "127.0.0.1:1".parse()?,
         admin_listen: None,
         database_url_public: url,
         database_url_admin: None,
         database_url_worker: None,
         worker: yhotos_config::Worker::default(),
+        map_tiles: yhotos_config::MapTiles::default(),
         admin_base_url: None,
         data_dir: dir.to_owned(),
         public_base_url: "https://example.test".parse()?,

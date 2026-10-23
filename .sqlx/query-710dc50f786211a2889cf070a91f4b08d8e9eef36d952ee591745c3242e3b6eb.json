@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO persons(id,name) VALUES($1,'Search benchmark person')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "710dc50f786211a2889cf070a91f4b08d8e9eef36d952ee591745c3242e3b6eb"
+}

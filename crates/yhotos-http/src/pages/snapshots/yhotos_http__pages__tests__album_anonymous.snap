@@ -20,7 +20,7 @@ expression: "snapshot_html(render_album(&anonymous, 1, PageSort::Taken,\n&contex
 <meta property="og:image:height" content="1365">
 <meta property="og:type" content="website">
 </head>
-<body><header class="site-header"><a href="/">Yhotos</a><span>Photo gallery</span></header><main><nav aria-label="Breadcrumb"><ol class="breadcrumbs"><li><a href="/">Home</a></li><li><a href="/a/gallery">Fixture gallery</a></li></ol></nav><h1>Fixture gallery</h1><p>Photos from the garden</p>
+<body><header class="site-header"><a href="/">Yhotos</a><span>Photo gallery</span><nav aria-label="Gallery"><a href="/map">Map</a> <a href="/calendar">Calendar</a></nav></header><main><nav aria-label="Breadcrumb"><ol class="breadcrumbs"><li><a href="/">Home</a></li><li><a href="/a/gallery">Fixture gallery</a></li></ol></nav><h1>Fixture gallery</h1><p>Photos from the garden</p>
 
 <form method="get" class="sort-form"><label for="sort">Sort photos</label><select name="sort" id="sort">
 <option value="taken" selected>Date taken</option><option value="posted">Date posted</option><option value="name">Name</option><option value="manual">Manual order</option></select><button type="submit">Apply sorting</button></form>
@@ -64,5 +64,5 @@ expression: "snapshot_html(render_album(&anonymous, 1, PageSort::Taken,\n&contex
 <section id="lightbox-info" aria-label="Photo details" hidden><p data-description></p><dl data-details></dl></section><ul id="lightbox-downloads" aria-label="Download sizes" hidden></ul>
 <p id="lightbox-status" role="status" aria-live="polite"></p>
 </dialog>
-<script type="module" nonce="fixture-nonce" src="/static/lightbox.fixture.js"></script><script type="module" nonce="fixture-nonce" src="/static/prefetch.fixture.js"></script><script type="module" nonce="fixture-nonce" src="/static/transitions.fixture.js"></script><footer>Yhotos photo gallery</footer></body>
+<script type="module" nonce="fixture-nonce" src="/static/lightbox.fixture.js"></script><script type="module" nonce="fixture-nonce" src="/static/prefetch.fixture.js"></script><script type="module" nonce="fixture-nonce" src="/static/transitions.fixture.js"></script><footer>Yhotos photo gallery · Place data: <a href="https://www.geonames.org/">GeoNames</a> (<a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>)</footer></body>
 </html>

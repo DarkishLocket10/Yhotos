@@ -21,6 +21,32 @@ fn codec(c: &mut Criterion) {
     c.bench_function("codec/identify_tiff", |b| {
         b.iter(|| yhotos_codec::identify(black_box(&tiff), &limits).unwrap());
     });
+    let face_source = root().join("images/photo.jpg");
+    let face_id = yhotos_codec::identify(&face_source, &limits).unwrap();
+    let face_working = yhotos_codec::decode(&face_source, &face_id, &limits).unwrap();
+    let face_output = tempfile::NamedTempFile::new().unwrap();
+    c.bench_function("codec/face_crop_256_jpeg", |b| {
+        b.iter(|| {
+            let crop =
+                yhotos_codec::crop_face(black_box(&face_working), black_box([0.1, 0.1, 0.5, 0.6]))
+                    .unwrap();
+            yhotos_codec::encode(
+                &crop,
+                Encode::Jpeg {
+                    quality: 90,
+                    progressive: true,
+                    chroma_subsampling: false,
+                    hdr: false,
+                },
+                EncodeOpts {
+                    keep_icc: false,
+                    strip_metadata: true,
+                },
+                face_output.path(),
+            )
+            .unwrap()
+        });
+    });
     let alpha = root().join("images/alpha.png");
     let alpha_id = yhotos_codec::identify(&alpha, &limits).unwrap();
     c.bench_function("codec/decode_alpha", |b| {

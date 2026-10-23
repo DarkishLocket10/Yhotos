@@ -21,6 +21,7 @@ dist/
 *.swp
 
 # Test artefacts
+__pycache__/
 /fixtures/large/
 /bench-results/
 /deploy/dev/reports/

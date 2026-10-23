@@ -1,0 +1,78 @@
+{
+  "photos": 10000,
+  "embedding_dimensions": 768,
+  "warm_samples": 1000,
+  "scope": "Three concurrent database candidate lists and Rust reciprocal rank fusion; query embedding and HTML rendering excluded.",
+  "first_implementation_p99_ms": 2288.567417,
+  "final_p99_ms": 30.207861,
+  "budget_ms": 50,
+  "parser_ns": "464.65 ns 482.57 ns 501.04 ns",
+  "criterion_fused": "17.674 ms 19.373 ms 20.658 ms",
+  "postgres_options": {
+    "jit": "off",
+    "hnsw.ef_search": 200,
+    "hnsw.iterative_scan": "strict_order",
+    "hnsw.max_scan_tuples": 20000
+  },
+  "fixture_notes": "Fresh isolated local dev database, 10k ready photos with UUIDv7 ids, random 768-dimensional vectors, title matches, and no derivative or OCR rows. Existing-database run also recorded separately.",
+  "gpu_timing": "Unverified. Combined four-job GPU timing and full offline pipeline validation on tower are task 023 staging checks per the maintainer decision.",
+  "before_review_p99_ms": 27.47875,
+  "criterion_fused_before_review": "17.605 ms 17.858 ms 17.921 ms",
+  "warmed_existing_database_p99_ms": 39.12575,
+  "semantic_exact_limit": 200,
+  "semantic_eligible_sample_limit": 201,
+  "face_embedding_dimensions": 128,
+  "crop_benchmark": {
+    "name": "codec/face_crop_256_jpeg",
+    "before": "Absent",
+    "after_ms": [
+      9.8479,
+      10.169,
+      10.499
+    ],
+    "scope": "Crop, resize and JPEG encode from an already decoded local photo fixture; excludes decode, subprocess startup and storage."
+  },
+  "docker_build": "Unverified; deferred to task 023 per the maintainer decision.",
+  "explain_scope": "Full visibility-aware semantic candidate query with anonymous principal, no filters and a 768-dimensional unit-axis query vector; embeddings_vector HNSW scan returns 200 rows.",
+  "semantic_query_sha256": "cd815dd3153f9dd0360229fb79241c1e52db2827752967da4d89ca09e74d1f9a",
+  "post_merge_semantic_explain_ms": 13.984,
+  "post_merge_explain_fixture_notes": "10k ready photos with random UUIDs and random 768-dimensional embeddings, anonymous principal and no filters. Transaction rolled back after measurement; HNSW scan returned 200 rows.",
+  "pre_merge_p99_ms": 36.709458,
+  "pre_merge_parser_ns": "401.40 ns 426.45 ns 445.09 ns",
+  "pre_merge_criterion_fused": "20.095 ms 20.769 ms 21.951 ms",
+  "post_merge_loaded_p99_ms": 63.424266,
+  "post_merge_benchmark_context": "Measured after repository, public-feature, Python and fuzz checks completed, with VACUUM ANALYZE before seeding 10k ready photos. The separate loaded measurement overlapped validation runs and is recorded for comparison only.",
+  "post_merge_benchmark_command": "SQLX_OFFLINE=true CARGO_BUILD_JOBS=2 cargo bench -p yhotos-bench --bench search -- --sample-size 10 --measurement-time 1 --warm-up-time 1",
+  "review_revision": {
+    "fixture": "10000 ready photos with random 768-dimensional embeddings and one assigned face per photo; one non-hidden person; no derivative or OCR rows.",
+    "command": "SQLX_OFFLINE=true CARGO_BUILD_JOBS=2 cargo bench -p yhotos-bench --bench search -- --sample-size 10 --measurement-time 1 --warm-up-time 1",
+    "fused_p99_before_ms": 28.667231,
+    "fused_p99_after_ms": 28.155814,
+    "fused_warm_samples": 1000,
+    "fused_criterion_after_ms": [
+      14.988,
+      15.356,
+      15.684
+    ],
+    "person_first_page_before_ms": [
+      3.4444,
+      3.455,
+      3.4723
+    ],
+    "person_first_page_after_ms": [
+      10.076,
+      10.29,
+      10.597
+    ],
+    "person_page_100_after_ms": [
+      11.663,
+      11.953,
+      12.264
+    ],
+    "person_scope": "One database round trip and deserialization. After includes the exact 10000-photo total, with metadata limited to 60 photos per page; before permanently stopped at 60 without a total.",
+    "fused_scope": "Three concurrent candidate queries and reciprocal rank fusion; query embedding and HTML rendering excluded.",
+    "hnsw_distance_scan_index": "embeddings_vector",
+    "hnsw_distance_scan_rows": 200,
+    "hnsw_distance_scan_execution_ms": 4.385
+  }
+}

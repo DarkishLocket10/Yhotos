@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "CREATE TEMP TABLE places (LIKE public.places INCLUDING ALL)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "9d4656b3380fbad7df54d17d9e218c954f166f0d3d8a71a918b54ab5b5992810"
+}

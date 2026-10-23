@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO events(id,kind,visitor_hash,extra) VALUES ($1,'search',$2,$3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bytea",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d077de6ca3378dd3ae907aa2a981d41eaf9e4d6c77b26ceb15d3384edfde87d8"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO places(id,name,admin1,country,lat,lon) SELECT id,'Place '||lpad(sort_order::text,4,'0'),'ON','CA',43.65,-79.38 FROM photos",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "300595c5b4021f0e4df2edb347445fc29c707a02aa5f474e2d67e0b56ff3490f"
+}

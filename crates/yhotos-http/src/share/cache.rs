@@ -21,6 +21,10 @@ pub(crate) struct Shares {
     sessions: Cache<(u64, u64, [u8; 32]), Option<Arc<LinkSession>>>,
     recency: moka::sync::Cache<(u64, uuid::Uuid, yhotos_core::ShareLinkId, i64), ()>,
     salt: Mutex<Salt>,
+    /// Test-only offset added to this process's clock, to simulate a database clock that
+    /// lags the application's. Absent from non-test builds.
+    #[cfg(test)]
+    clock_skew_micros: std::sync::atomic::AtomicI64,
 }
 struct Salt {
     day: i64,
@@ -60,6 +64,8 @@ impl Shares {
                 day: i64::MIN,
                 bytes: Zeroizing::new([0; 32]),
             }),
+            #[cfg(test)]
+            clock_skew_micros: std::sync::atomic::AtomicI64::new(0),
         }
     }
     pub(crate) fn epoch(&self) -> u64 {
@@ -161,6 +167,19 @@ impl Shares {
             }
         }
     }
+    /// Wall-clock microseconds used for share expiry decisions.
+    // `self` carries the test-only clock offset; non-test builds only read the clock.
+    #[cfg_attr(not(test), allow(clippy::unused_self))]
+    fn now_micros(&self) -> i128 {
+        let now = OffsetDateTime::now_utc().unix_timestamp_nanos() / 1000;
+        #[cfg(test)]
+        let now = now + i128::from(self.clock_skew_micros.load(Ordering::SeqCst));
+        now
+    }
+    #[cfg(test)]
+    pub(crate) fn set_clock_skew_for_tests(&self, micros: i64) {
+        self.clock_skew_micros.store(micros, Ordering::SeqCst);
+    }
     pub(crate) async fn session(
         &self,
         state: &AppState,
@@ -169,6 +188,9 @@ impl Shares {
         if !auth::required(state)?.caching() {
             self.invalidate();
         }
+        // At most one expiry-driven reload per request: the database prunes with its own
+        // clock, and a lagging database clock must never turn this into a query loop.
+        let mut reloaded = false;
         loop {
             let version = self.epoch.load(Ordering::SeqCst);
             let session_version = self.session_version(hash);
@@ -192,21 +214,25 @@ impl Shares {
             if version == self.epoch.load(Ordering::SeqCst)
                 && session_epoch == session_version.load(Ordering::SeqCst)
             {
-                if session.as_ref().is_some_and(|s| {
-                    s.links.iter().any(|l| {
-                        l.expires_at.is_some_and(|t| {
-                            i128::from(t) <= OffsetDateTime::now_utc().unix_timestamp_nanos() / 1000
-                        })
-                    })
-                }) {
+                let now = self.now_micros();
+                let expired = |l: &SessionLink| l.expires_at.is_some_and(|t| i128::from(t) <= now);
+                let Some(current) = session.as_ref().filter(|s| s.links.iter().any(expired)) else {
+                    return Ok(session);
+                };
+                if !reloaded {
                     // Expiry is checked even on a warm session. Reload only the
                     // small grant set so expired memberships are also pruned.
+                    reloaded = true;
                     self.sessions
                         .invalidate(&(version, session_epoch, hash))
                         .await;
                     continue;
                 }
-                return Ok(session);
+                // The reload still carries a link this process considers expired (clock
+                // skew). Fail closed for this request without querying again.
+                let mut live = LinkSession::clone(current);
+                live.links.retain(|l| !expired(l));
+                return Ok(Some(Arc::new(live)));
             }
         }
     }

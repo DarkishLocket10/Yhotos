@@ -466,6 +466,7 @@ async fn csrf_tokens_are_generated_validated_and_body_is_replayed() {
 async fn auth_posts_share_a_bucket_and_get_forms_use_the_cheap_bucket() {
     let state = state(false, 600);
     let config = Box::leak(Box::new(Config {
+        ml_address: "127.0.0.1:1".into(),
         rate_limits: yhotos_config::RateLimits {
             auth_per_min: 1,
             ..state.config.rate_limits
@@ -514,4 +515,45 @@ async fn auth_posts_share_a_bucket_and_get_forms_use_the_cheap_bucket() {
         app.oneshot(second).await.unwrap().status(),
         StatusCode::TOO_MANY_REQUESTS
     );
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn map_tile_csp_does_not_weaken_share_page_headers(pool: sqlx::PgPool) {
+    let initial = state(false, 600);
+    let worker = crate::static_assets::map_worker_url().unwrap();
+    let app = public_router(AppState::new(
+        initial.config,
+        pool,
+        initial.store.clone(),
+        None,
+    ));
+    for path in [
+        "/map",
+        worker,
+        "/s/invalid",
+        "/s/invalid/unlock",
+        "/map/tiles.json?bbox=-80,43,-79,44&zoom=1",
+        "/map/photos.json?lon=0&lat=0",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(request(path, "127.0.0.1:1"))
+            .await
+            .unwrap();
+        let headers = response.headers();
+        security(headers, path == worker);
+        let csp = headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap();
+        if path == "/map" || path == worker {
+            assert!(csp.contains("img-src 'self' data: https://tiles.openfreemap.org"));
+            assert!(csp.contains("connect-src 'self' https://tiles.openfreemap.org"));
+            assert!(csp.contains("worker-src 'self'"));
+        } else {
+            assert!(!csp.contains("openfreemap"), "{path}");
+            assert!(!csp.contains("worker-src"), "{path}");
+        }
+        if path.starts_with("/s/") {
+            assert_eq!(headers[header::CACHE_CONTROL], "private, no-store");
+            assert_eq!(headers[header::REFERRER_POLICY], "no-referrer");
+        }
+    }
 }

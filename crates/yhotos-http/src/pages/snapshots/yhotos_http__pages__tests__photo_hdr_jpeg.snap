@@ -20,7 +20,7 @@ expression: snapshot_html(detail)
 <meta property="og:image:height" content="1365">
 <meta property="og:type" content="article">
 </head>
-<body><header class="site-header"><a href="/">Yhotos</a><span>Photo gallery</span></header><main class="photo-page"><nav aria-label="Breadcrumb"><ol class="breadcrumbs"><li><a href="/">Home</a></li><li><a href="/a/gallery">Fixture gallery</a></li></ol></nav><h1>Photo 01</h1><figure class="photo-image"><picture>
+<body><header class="site-header"><a href="/">Yhotos</a><span>Photo gallery</span><nav aria-label="Gallery"><a href="/map">Map</a> <a href="/calendar">Calendar</a></nav></header><main class="photo-page"><nav aria-label="Breadcrumb"><ol class="breadcrumbs"><li><a href="/">Home</a></li><li><a href="/a/gallery">Fixture gallery</a></li></ol></nav><h1>Photo 01</h1><figure class="photo-image"><picture>
 
 
 
@@ -34,10 +34,11 @@ expression: snapshot_html(detail)
 <source type="image/avif" srcset="/i/22a3e0e373d4af995786f78be8d28a6396eb57b451ad0d5173c6bc90d6b51897/small.avif 640w, /i/87f57d9aad1683052ee00428a56caaa120b8b00ac4112ebe36d2a315e557a474/medium.avif 1280w, /i/24d58d5f002e73354750dc552ada9b3b8e7808b4fc075b0c4c73cbd386ff5157/large.avif 2048w" sizes="100vw">
 <img src="/i/dbe20967102be0a87131e9be345f342b10e32adcde50dafbd98d00c30388febd/medium.jpeg" srcset="/i/3b2b250ebd7cbd209b5be1bab8741021edc11ebd74c187ff81f5bfdd3592e5c3/small.jpeg 640w, /i/dbe20967102be0a87131e9be345f342b10e32adcde50dafbd98d00c30388febd/medium.jpeg 1280w, /i/64124e39b9341b76e3e5d01e18c0bbd1330332b8b80a4c4531488a2d5201c636/large.jpeg 2048w" sizes="100vw" width="1500" height="1000" loading="eager" decoding="async" alt="Photo 01" data-thumbhash="AAgCBwAAAAAAAAAAAAAAAAAAAAAAAAAA">
 </picture><figcaption>Garden detail</figcaption></figure>
+<p><a href="/search?like=aaaaaaaaaaab">More like this</a></p>
 <nav aria-label="Photo navigation" class="pagination"></nav>
 <details><summary>Download photo</summary><ul><li><a href="/o/d14d9d7024a954714409ca8c6a9a0bf5325886e537a8ca32375820af184e4eab/garden.jpeg" download>Download original</a></li><li><a href="/i/3b2b250ebd7cbd209b5be1bab8741021edc11ebd74c187ff81f5bfdd3592e5c3/small.jpeg?download=1" download>Download small (640 × 426)</a></li><li><a href="/i/dbe20967102be0a87131e9be345f342b10e32adcde50dafbd98d00c30388febd/medium.jpeg?download=1" download>Download medium (1280 × 853)</a></li><li><a href="/i/64124e39b9341b76e3e5d01e18c0bbd1330332b8b80a4c4531488a2d5201c636/large.jpeg?download=1" download>Download large (2048 × 1365)</a></li></ul></details>
 <section aria-label="Photo details"><h2>Photo details</h2><dl><dt>Date taken</dt><dd>2026-01-01T00:00:00+00:00</dd><dt>Camera manufacturer</dt><dd>Fixture</dd><dt>Camera model</dt><dd>Camera</dd><dt>ISO sensitivity</dt><dd>100</dd></dl></section>
 <p><a href="https://www.openstreetmap.org/?mlat=43.65&#38;mlon=-79.38#map=14/43.65/-79.38" rel="noreferrer">View photo location on OpenStreetMap</a></p>
 <script type="application/json" nonce="fixture-nonce" id="photo-data">[JSON island data]</script>
-</main><script type="module" nonce="fixture-nonce" src="/static/prefetch.fixture.js"></script><script type="module" nonce="fixture-nonce" src="/static/transitions.fixture.js"></script><footer>Yhotos photo gallery</footer></body>
+</main><script type="module" nonce="fixture-nonce" src="/static/prefetch.fixture.js"></script><script type="module" nonce="fixture-nonce" src="/static/transitions.fixture.js"></script><footer>Yhotos photo gallery · Place data: <a href="https://www.geonames.org/">GeoNames</a> (<a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>)</footer></body>
 </html>

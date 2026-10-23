@@ -120,11 +120,13 @@ async fn grant_matrix_catalog_and_forbidden_statements(pool: PgPool) {
     .fetch_all(&pool)
     .await
     .unwrap();
-    assert_eq!(rows.len(), 34 * 3);
+    // Includes uploads, the gazetteer and private face run/crop tables.
+    assert_eq!(rows.len(), 37 * 3);
     for row in rows {
         let actual = (row.select, row.insert, row.update, row.delete);
         let expected = match row.role.as_str() {
             "yhotos_admin" => (true, true, true, true),
+            "yhotos_worker" if row.table == "gazetteer" => (true, false, false, false),
             "yhotos_worker" => {
                 let allowed = ![
                     "users",
@@ -151,8 +153,18 @@ async fn grant_matrix_catalog_and_forbidden_statements(pool: PgPool) {
                 (true, true, true, true)
             }
             "yhotos_public" => (
-                !["user_mfa", "audit_log", "uploads", "completed_uploads"]
-                    .contains(&row.table.as_str()),
+                ![
+                    "user_mfa",
+                    "audit_log",
+                    "faces",
+                    "persons",
+                    "face_runs",
+                    "face_crops",
+                    "gazetteer",
+                    "uploads",
+                    "completed_uploads",
+                ]
+                .contains(&row.table.as_str()),
                 [
                     "events",
                     "likes",
