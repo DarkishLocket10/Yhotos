@@ -33,6 +33,12 @@ Connect Postgres and the HTTP containers to the internal yhotos-internal Docker
 network before starting deploy/compose.yml. Do not attach ML to an egress-enabled
 network. Supply the worker login with TLS verification and its CA certificate.
 The data directory is read-only; the worker resolves only large SDR JPEG keys.
+Embedded ICC profiles are converted to sRGB before resizing, normalization, face
+alignment or OCR channel ordering. Embedding and tag jobs share this conversion;
+direct image-model calls enforce it too. Untagged images are assumed sRGB, and
+invalid or oversized (over 1 MiB) profiles fail the job. The codec resolves NCLX
+source metadata to an ICC profile before encoding these JPEG derivatives, so
+NCLX originals follow the same conversion without decoding originals in ML.
 Set YHOTOS_DATA_GID to the storage writer's group (default 10001) so the non-root
 ML user can traverse its directories and read 0640 derivatives.
 HTTP uses YHOTOS_ML_ADDRESS=ml:8090, 100 ms total timeout, a thousand-entry ten-minute

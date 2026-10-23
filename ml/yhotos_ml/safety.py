@@ -4,13 +4,16 @@ import os
 import re
 import stat
 import unicodedata
+from io import BytesIO
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 from numpy.typing import NDArray
-from PIL import Image
+from PIL import Image, ImageCms
 
 Image.MAX_IMAGE_PIXELS = 2048 * 2048
+SRGB = ImageCms.createProfile("sRGB")
 
 
 def text(value: str, cap: int = 4096) -> str:
@@ -30,8 +33,27 @@ def vector(value: NDArray[np.float32], dimensions: int) -> NDArray[np.float32]:
     return np.asarray(output / norm, dtype=np.float32)
 
 
+def srgb(image: Image.Image) -> Image.Image:
+    """Return sRGB pixels; reject invalid ICC data and assume sRGB only when untagged."""
+    profile = image.info.get("icc_profile")
+    if profile is None:
+        image.load()
+        return image if image.mode == "RGB" else image.convert("RGB")
+    if not isinstance(profile, bytes) or not 0 < len(profile) <= 1024 * 1024:
+        raise ValueError("invalid image color profile")
+    try:
+        source = ImageCms.ImageCmsProfile(BytesIO(profile))
+        output = cast(Image.Image, ImageCms.profileToProfile(image, source, SRGB, outputMode="RGB"))
+    except (ImageCms.PyCMSError, OSError, ValueError) as error:
+        raise ValueError("invalid image color profile") from error
+    # Pixels now have a single canonical meaning. Drop metadata so later model
+    # entrypoints do not apply the source transform again (including after resize).
+    output.info.clear()
+    return output
+
+
 def derivative(root: Path, digest: str) -> Image.Image:
-    """Open only a canonical, non-symlink SDR large JPEG, never an original."""
+    """Return sRGB pixels from a canonical non-symlink SDR large JPEG, never an original."""
     if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
         raise ValueError("invalid derivative key")
     root = root.resolve(strict=True)
@@ -54,4 +76,4 @@ def derivative(root: Path, digest: str) -> Image.Image:
         with Image.open(source) as image:
             if image.format != "JPEG" or max(image.size) > 2048:
                 raise ValueError("invalid derivative image")
-            return image.convert("RGB")
+            return srgb(image)

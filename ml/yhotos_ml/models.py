@@ -13,7 +13,7 @@ from numpy.typing import NDArray
 from PIL import Image
 from rapidocr_onnxruntime import RapidOCR
 
-from .safety import text, vector
+from .safety import srgb, text, vector
 from .tokenizer import Tokenizer
 
 EMBED_MODEL = "siglip-base-patch16-224@4649052661e53c7000355844105f8a1792088239"
@@ -71,6 +71,7 @@ class Models:
         return vector(np.asarray(outputs[1], dtype=np.float32), 768)
 
     def embed_image(self, image: Image.Image) -> NDArray[np.float32]:
+        image = srgb(image)
         pixels = np.asarray(image.resize((224, 224), Image.Resampling.BICUBIC), dtype=np.float32)
         pixels = np.transpose(pixels / 127.5 - 1, (2, 0, 1))[None]
         with self.lock:
@@ -87,6 +88,7 @@ class Models:
         return [(text(self.labels[int(i)], 80), min(1, max(0, float(scores[i])))) for i in np.argsort(-scores)[:12] if scores[i] >= 0.25]
 
     def read_text(self, image: Image.Image) -> str:
+        image = srgb(image)
         with self.lock:
             result, _ = self.ocr(np.asarray(image)[:, :, ::-1], use_cls=False)
         if result is None:
@@ -95,6 +97,7 @@ class Models:
         return text(" ".join(row[1] for row in rows))
 
     def faces(self, image: Image.Image) -> list[Face]:
+        image = srgb(image)
         width, height = image.size
         # YuNet's ONNX graph fixes its input to 640x640. It consumes BGR 0..255.
         scale = min(640 / width, 640 / height)
