@@ -1,9 +1,11 @@
+import type {VideoData} from "./video.js";
 export interface Sources { all: string }
 export interface Photo {
   id: string; title: string; description: string;
   image: { src: string; jpeg: Sources; avif: Sources; jxl: Sources; hdr_jpeg: Sources; hdr_avif: Sources; hdr_jxl: Sources; width: number; height: number };
   caps: { download: boolean; like: boolean; flag: boolean };
   zoom_width: number;
+  video?: VideoData;
   original: string | null; downloads: { href: string; label: string }[]; details: [string, string][];
   state?: { liked: boolean; flagged: boolean; like_count?: number };
 }

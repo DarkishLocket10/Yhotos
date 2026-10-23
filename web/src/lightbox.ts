@@ -1,3 +1,4 @@
+import {createVideo} from "./lib/video.js";
 import { PageCursor, mergePhotos, parseGallery, hydrateGrid, swipeDirection, type Photo, type Gallery } from "./lib/gallery.js";
 import { containedWidth, safeMediaUrl, zoomSourceSet, DecodedMedia } from "./lib/media.js";
 import { enhance, plainClick, reducedData } from "./lib/lifecycle.js";
@@ -22,6 +23,7 @@ enhance(signal => {
   const stage = $<HTMLDivElement>("[data-stage]"), picture = $<HTMLPictureElement>("[data-picture]");
   const status = $<HTMLParagraphElement>("[role=status]");
   const origin = location.href;
+  let playback: AbortController | null = null;
   let index = 0, generation = 0, opener: HTMLElement | null = null, timer: ReturnType<typeof setInterval> | undefined;
   let scale = 1, tx = 0, ty = 0;
   const upgrades = new DecodedMedia();
@@ -44,7 +46,7 @@ enhance(signal => {
     return containedWidth(box?.clientWidth || stage.clientWidth, box?.clientHeight || stage.clientHeight, photo.image.width, photo.image.height);
   }
   function upgradeImage(): void {
-    if (!dialog.open) return;
+    if (!dialog.open || photos[index].video) return;
     const photo = photos[index], width = displayWidth(), pixels = width * scale * devicePixelRatio;
     const original = photo.caps.download && pixels > photo.zoom_width && photo.original ? safeMediaUrl(photo.original) : null;
     const sets = (["hdr_jxl", "hdr_avif", "hdr_jpeg", "jxl", "avif", "jpeg"] as const).map(key => zoomSourceSet(photo.image[key].all, pixels));
@@ -68,6 +70,7 @@ enhance(signal => {
     }).catch(() => setStatus("Higher resolution is unavailable.")).finally(() => upgrade.remove());
   }
   function zoom(value: number): void {
+    if (photos[index].video) return;
     pause();
     const photo = photos[index], cap = Math.max(1, photo.zoom_width / (displayWidth() * devicePixelRatio));
     scale = Math.max(1, Math.min(value, photo.caps.download ? 12 : cap));
@@ -110,6 +113,7 @@ enhance(signal => {
     for (const download of photo.downloads) { const url = safeMediaUrl(download.href); if (!url) continue; const li = document.createElement("li"), a = document.createElement("a"); a.href = url; a.download = ""; a.textContent = download.label; li.append(a); downloads?.append(li); }
   }
   function render(seed?: HTMLImageElement): void {
+    playback?.abort(); playback = null; picture.hidden = false;
     const photo = photos[index], version = ++generation;
     scale = 1; tx = 0; ty = 0; upgrades.reset(); lastTap = null; pointers.clear();
     $("#lightbox-title").textContent = photo.title;
@@ -129,6 +133,12 @@ enhance(signal => {
     const previewUrl = safeMediaUrl(initial?.currentSrc || initial?.src || photo.image.src);
     if (previewUrl) { preview.src = previewUrl; picture.replaceChildren(preview); transform(); }
     else picture.replaceChildren();
+    $("[data-zoom]").hidden = !!photo.video;
+    if (photo.video) {
+      playback = new AbortController();
+      const player = createVideo(photo.video, photo.image.src, photo.image.width, photo.image.height, playback.signal);
+      if (player) { picture.hidden = true; stage.append(player); }
+    }
     upgradeImage();
     $<HTMLButtonElement>("[data-previous]").disabled = index === 0;
     $<HTMLButtonElement>("[data-next]").disabled = index === photos.length - 1 && cursor.next === null;
@@ -156,6 +166,7 @@ enhance(signal => {
   }
   function close(): void {
     if (!dialog.open) return;
+    playback?.abort(); playback = null; picture.hidden = false;
     pause(); generation++; upgrades.reset(); if (document.fullscreenElement === dialog) void document.exitFullscreen().catch(() => {}); dialog.close();
     document.documentElement.classList.remove("lightbox-open");
     document.body.querySelectorAll<HTMLElement>("[data-lightbox-inert]").forEach(el => { el.inert = false; delete el.dataset.lightboxInert; });
@@ -184,10 +195,11 @@ enhance(signal => {
   }, { signal, capture: true });
   dialog.addEventListener("keydown", event => {
     if (!(event.target instanceof Element) || !event.target.closest("[data-slideshow]")) pause();
+    if (event.target instanceof Element && event.target.closest(".video-player")) return;
     if (event.key === "ArrowRight") { event.preventDefault(); void navigate(1); }
     if (event.key === "ArrowLeft") { event.preventDefault(); void navigate(-1); }
     if (event.key === "Tab") {
-      const focusable = [...dialog.querySelectorAll<HTMLElement>("button:not(:disabled), a[href]")].filter(e => !e.hidden && e.getClientRects().length);
+      const focusable = [...dialog.querySelectorAll<HTMLElement>("button:not(:disabled), a[href], video[controls], input")].filter(e => !e.hidden && e.getClientRects().length);
       const first = focusable[0], last = focusable.at(-1);
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
       if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
@@ -208,8 +220,9 @@ enhance(signal => {
   dialog.addEventListener("pointerdown", event => { if (!(event.target instanceof Element) || !event.target.closest("[data-slideshow]")) pause(); }, { signal });
   document.addEventListener("visibilitychange", () => { if (document.hidden) pause(); }, { signal });
   stage.addEventListener("dragstart", event => event.preventDefault(), { signal });
-  stage.addEventListener("wheel", event => { event.preventDefault(); void zoom(scale * Math.exp(-event.deltaY * .002)); }, { signal, passive: false });
+  stage.addEventListener("wheel", event => { if (photos[index].video) return; event.preventDefault(); void zoom(scale * Math.exp(-event.deltaY * .002)); }, { signal, passive: false });
   stage.addEventListener("pointerdown", event => {
+    if (photos[index].video) return;
     pause(); stage.setPointerCapture(event.pointerId); pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
     if (pointers.size === 1) start = { x: event.clientX, y: event.clientY, time: event.timeStamp };
     if (pointers.size === 2) { lastTap = null; const [a, b] = [...pointers.values()]; pinch = Math.hypot(a.x - b.x, a.y - b.y); }

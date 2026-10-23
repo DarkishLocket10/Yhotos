@@ -641,6 +641,19 @@ pub struct PageDerivative {
     pub h: u32,
 }
 
+/// Immutable video rendition metadata exposed only after photo authorization.
+#[derive(Clone, Debug, serde::Deserialize)]
+pub struct PageVideo {
+    /// Closed codec vocabulary, validated by rendering.
+    pub codec: String,
+    /// Content hash, validated before building a URL.
+    pub hash: String,
+    /// Positive duration in milliseconds, bounded by video ingest.
+    pub duration_ms: u64,
+    /// AV1 sequence level index; absent for renditions predating level metadata.
+    #[serde(default)]
+    pub av1_level: Option<u8>,
+}
 /// Only page-relevant metadata; no grants, secrets or internal paths are rendered.
 #[derive(Clone, Debug, serde::Deserialize)]
 pub struct PagePhoto {
@@ -681,6 +694,9 @@ pub struct PagePhoto {
     pub thumbhash: Option<String>,
     /// All available responsive representations.
     pub derivatives: Vec<PageDerivative>,
+    /// Available inline video sources, empty for images.
+    #[serde(default)]
+    pub video: Vec<PageVideo>,
     /// Capture date as stored text, escaped when rendered.
     #[serde(default)]
     pub taken_at: Option<String>,

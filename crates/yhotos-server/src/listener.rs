@@ -70,7 +70,7 @@ mod tests {
         .unwrap()
     }
 
-    async fn fixture(pool: PgPool) -> (tempfile::TempDir, AppState, String) {
+    async fn fixture(pool: PgPool, zip: bool) -> (tempfile::TempDir, AppState, String) {
         const BYTES: u64 = 64 * 1024 * 1024;
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(dir.path()).unwrap();
@@ -125,13 +125,17 @@ mod tests {
             )
             .unwrap(),
         ));
-        let path = format!("/o/{}/original.jpg", put.hash);
+        let path = if zip {
+            format!("/zip?album={}&size=original", album.id)
+        } else {
+            format!("/o/{}/original.jpg", put.hash)
+        };
         (dir, AppState::new(config, pool, store, None), path)
     }
 
     #[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
     async fn stalled_receiver_times_out_and_releases_stream_capacity(pool: PgPool) {
-        let (_dir, state, path) = fixture(pool).await;
+        let (_dir, state, path) = fixture(pool, false).await;
         let write_timeout = state.config.write_timeout;
         let app = public_router(state);
         // Warm metadata before timing; do not leave a response body holding a slot.
@@ -193,6 +197,65 @@ mod tests {
         assert!(get_range(address, &path).await.starts_with("HTTP/1.1 206"));
         drop(stalled);
         let _ = shutdown_tx.send(());
+        timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+    #[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+    async fn stalled_zip_releases_its_slot_via_socket_write_timeout(pool: PgPool) {
+        let (_dir, state, path) = fixture(pool, true).await;
+        let app = public_router(state);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            axum::serve(
+                WriteTimeoutListener::new(listener, Duration::from_secs(1)).tap_io(|_| {}),
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .with_graceful_shutdown(async {
+                let _ = rx.await;
+            })
+            .await
+            .unwrap();
+        });
+        let mut stalled = TcpStream::connect(address).await.unwrap();
+        stalled
+            .write_all(format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n").as_bytes())
+            .await
+            .unwrap();
+        let probe = || async {
+            let mut socket = TcpStream::connect(address).await.unwrap();
+            socket
+                .write_all(
+                    format!("HEAD {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                        .as_bytes(),
+                )
+                .await
+                .unwrap();
+            let mut response = String::new();
+            socket.read_to_string(&mut response).await.unwrap();
+            response
+        };
+        let start = Instant::now();
+        while !probe().await.starts_with("HTTP/1.1 429") {
+            assert!(start.elapsed() < Duration::from_millis(500));
+            sleep(Duration::from_millis(5)).await;
+        }
+        loop {
+            let response = probe().await;
+            if response.starts_with("HTTP/1.1 200") {
+                break;
+            }
+            assert!(response.starts_with("HTTP/1.1 429"));
+            assert!(start.elapsed() < Duration::from_millis(1800));
+            sleep(Duration::from_millis(10)).await;
+        }
+        // The stalled socket remains open; recovery must come from the transport.
+        assert!(start.elapsed() < Duration::from_millis(1800));
+        drop(stalled);
+        let _ = tx.send(());
         timeout(Duration::from_secs(2), server)
             .await
             .unwrap()

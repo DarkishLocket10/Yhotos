@@ -126,3 +126,27 @@ pub fn initialize(concurrency: u8) -> Result<u8, CodecError> {
     crate::native::init_with_concurrency(concurrency)?;
     crate::native::concurrency()
 }
+
+/// Debug-only regression probe: a sandboxed video parser cannot fork a process.
+/// # Errors
+/// Returns an error if fork succeeds or fails for anything except the filter's EPERM.
+#[cfg(all(target_os = "linux", debug_assertions))]
+pub fn check_no_fork() -> Result<(), CodecError> {
+    // SAFETY: this probe runs single-threaded before exec. If a broken policy
+    // permits fork, the child calls only async-signal-safe _exit; the parent
+    // immediately reaps it. The Linux video-policy integration test exercises it.
+    unsafe {
+        let pid = libc::fork();
+        if pid == 0 {
+            libc::_exit(0);
+        }
+        if pid > 0 {
+            libc::waitpid(pid, std::ptr::null_mut(), 0);
+            return Err(CodecError::Options);
+        }
+        if std::io::Error::last_os_error().raw_os_error() != Some(libc::EPERM) {
+            return Err(CodecError::Io);
+        }
+    }
+    Ok(())
+}

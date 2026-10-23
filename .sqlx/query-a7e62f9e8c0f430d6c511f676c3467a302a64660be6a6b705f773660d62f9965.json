@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "CREATE TEMP SEQUENCE video_payload_reads",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "a7e62f9e8c0f430d6c511f676c3467a302a64660be6a6b705f773660d62f9965"
+}

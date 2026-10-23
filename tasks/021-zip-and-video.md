@@ -36,7 +36,7 @@ Areas: `crates/yhotos-http/src/zip/`, `crates/yhotos-codec-host/` (video entry p
 - Records `zip_download` analytics events (task 017 consumes them).
 
 ### Video
-- Host: `yhotos-codec-host --video` runs `ffprobe`/`ffmpeg` (as subprocesses spawned by the host before applying seccomp is not allowed; instead the host is invoked in a video mode whose seccomp profile allows `execve` of exactly the configured ffmpeg path, and ffmpeg itself runs under the same rlimits, no network, Landlock confinement to input and out_dir). Probe first with strict limits (duration <= 30 min from config, resolution <= 8K, streams count <= 4, known codecs only); reject anything else.
+- Host: `yhotos-codec-host --video` supervises direct ffprobe/ffmpeg execs. Before exec each child sets AS/CPU/FSIZE/NOFILE/CORE rlimits, no-new-privileges, parent-death SIGKILL, its own process group, and closes non-stdio descriptors. Landlock ABI v3 is mandatory: input read-only, output directory read/write, EXECUTE on exactly the configured ffmpeg/ffprobe files, static ELF ffmpeg/ffprobe binaries are required and checked for absence of PT_INTERP at startup, so they need no loader/library-directory grants. Dynamically linked parsers are refused because Landlock would require an additional execute grant on their loader. Missing confinement fails closed with a recorded reason. Seccomp permits execve/execveat and inspected pthread clone flags, returns ENOSYS for clone3, and denies fork/vfork, networking, ptrace, mount and other non-allowlisted calls. The supervisor kills the child process group on timeout. Probe first with strict limits (duration <= 30 min from config, resolution <= 8K, streams count <= 4, known codecs only); reject anything else.
 - Renditions: H.264 High profile MP4, max 1080p long edge, CRF 21, `+faststart`; AV1 (SVT-AV1) MP4, source resolution up to 2160p, CRF 30, `+faststart`; audio AAC 160k in both. Poster JPEG at 10 % into the video (and AVIF/JXL variants through the normal image path). Scrub sheet: 10x10 sprite at 160 px plus a WebVTT index.
 - Pipeline: `VideoTranscode` job runs the host with a longer timeout (config, default 30 min) and lower priority than image ingest; writes `video_renditions` rows; marks the photo ready.
 - Playback: grid shows the poster with a play badge and duration; lightbox uses `<video controls preload="metadata" poster=...>` with `<source>` AV1 then H.264; scrub preview uses the sprite. `/v/` routes from task 008 serve renditions with range support.
@@ -49,7 +49,7 @@ Areas: `crates/yhotos-http/src/zip/`, `crates/yhotos-codec-host/` (video entry p
 ## Acceptance
 
 - [ ] All tests above pass; codec CI job runs video tests with ffmpeg in the image.
-- [ ] Manual: a 1-minute 4K iPhone video uploads, transcodes, and plays in the lightbox on desktop and mobile (record timings).
+- [ ] Manual (staging task 023, pending): a 1-minute 4K iPhone video uploads, transcodes, and plays in the lightbox on desktop and mobile (record timings).
 - [ ] `scripts/check.sh` passes.
 
 ## Security notes

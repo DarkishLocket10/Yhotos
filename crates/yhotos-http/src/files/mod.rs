@@ -4,7 +4,9 @@
 //! Axum/Hyper expose no safe file/sendfile body; reads use bounded 256 KiB chunks.
 
 pub mod range;
-mod streams;
+mod scrub;
+pub(crate) use scrub::index_response;
+pub(crate) mod streams;
 
 use crate::{
     AppState,
@@ -196,7 +198,7 @@ pub(crate) async fn video(
     .await
 }
 
-fn may_view(principal: &Principal<'_>, owner: &OwnerRow) -> bool {
+pub(crate) fn may_view(principal: &Principal<'_>, owner: &OwnerRow) -> bool {
     let Some((leaf, parents)) = owner.albums.split_first() else {
         return false;
     };
@@ -238,31 +240,12 @@ async fn serve(
     let owners = lookup(state, &selector).await?;
     // Prefer an anonymously visible owner so shared public content has stable
     // cache policy even when another owner is restricted or the viewer is admin.
-    let public_owner = owners
-        .iter()
-        .find(|row| may_view(&Principal::Anonymous, row));
     let downloading = selector.area == Area::Originals
         || request
             .uri()
             .query()
             .is_some_and(|q| q.split('&').any(|p| p == "download=1"));
-    // A link bearer uses only its scopes/capabilities. A separate account
-    // retains its own access; ordinary anonymous requests retain public access.
-    let direct = links.0.is_empty() || matches!(principal, Principal::User { .. });
-    let owner = public_owner
-        .filter(|_| direct)
-        .or_else(|| owners.iter().find(|row| direct && may_view(principal, row)))
-        .or_else(|| {
-            owners.iter().find(|row| {
-                links.0.iter().any(|link| {
-                    link.caps.view
-                        && (!downloading || link.caps.download)
-                        && may_view(&link.principal(), row)
-                })
-            })
-        })
-        .ok_or(HttpError::NotFound)?;
-    let public = public_owner.is_some() && links.0.is_empty();
+    let (owner, public) = authorize(&owners, principal, links, downloading)?;
     let key = DerivativeKey {
         hash: &selector.hash,
         variant: &selector.variant,
@@ -534,3 +517,29 @@ fn sanitize_filename(name: &str) -> String {
 
 #[cfg(test)]
 pub(crate) mod tests;
+
+fn authorize<'a>(
+    owners: &'a [OwnerRow],
+    principal: &Principal<'_>,
+    links: &Links,
+    downloading: bool,
+) -> Result<(&'a OwnerRow, bool), HttpError> {
+    let direct = links.0.is_empty() || matches!(principal, Principal::User { .. });
+    let public = owners
+        .iter()
+        .find(|row| may_view(&Principal::Anonymous, row));
+    let owner = public
+        .filter(|_| direct)
+        .or_else(|| owners.iter().find(|row| direct && may_view(principal, row)))
+        .or_else(|| {
+            owners.iter().find(|row| {
+                links.0.iter().any(|link| {
+                    link.caps.view
+                        && (!downloading || link.caps.download)
+                        && may_view(&link.principal(), row)
+                })
+            })
+        })
+        .ok_or(HttpError::NotFound)?;
+    Ok((owner, public.is_some() && links.0.is_empty()))
+}

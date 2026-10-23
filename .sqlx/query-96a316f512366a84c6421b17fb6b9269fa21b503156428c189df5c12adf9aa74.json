@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO photos(id,short_id,album_id,title,original_hash,original_name,original_bytes,mime,kind,width,height,sort_order)\n              SELECT id,short,$3,'Album benchmark',$4,'fixture.mp4',1,'video/mp4',\n                CASE WHEN n%5=0 THEN 'video'::media_kind ELSE 'image'::media_kind END,1920,1080,n::int\n              FROM unnest($1::uuid[],$2::text[]) WITH ORDINALITY t(id,short,n)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "TextArray",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "96a316f512366a84c6421b17fb6b9269fa21b503156428c189df5c12adf9aa74"
+}

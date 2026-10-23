@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                WITH changed AS (\n                    UPDATE jobs SET locked_at=NULL,locked_by=NULL,\n                        run_after=now()+make_interval(secs=>least(3600,30*power(2,least(attempts,7)))),\n                        finished_at=CASE WHEN attempts>=max_attempts THEN now() ELSE NULL END,\n                        error='worker lock expired'\n                    WHERE kind=$1 AND locked_at<$2 AND finished_at IS NULL\n                    RETURNING kind,payload,finished_at\n                )\n                UPDATE photos SET status=CASE WHEN changed.finished_at IS NULL THEN 'pending'::photo_status ELSE 'failed'::photo_status END,\n                    failure_reason=CASE WHEN changed.finished_at IS NULL THEN NULL ELSE 'worker lock expired' END\n                FROM changed WHERE changed.kind IN ('ingest','video.transcode')\n                    AND photos.id=CASE WHEN pg_input_is_valid(changed.payload->>'photo_id','uuid') THEN (changed.payload->>'photo_id')::uuid END\n                    AND photos.original_hash=changed.payload->>'original_hash'\n                    AND photos.generation=CASE WHEN pg_input_is_valid(changed.payload->>'generation','bigint') THEN (changed.payload->>'generation')::bigint END\n                    AND photos.status<>'ready' AND photos.deleted_at IS NULL\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8ae3a385f6f7d85a36c400dc618e833c1e7ac26785d180db2123f4fb42e611ba"
+}

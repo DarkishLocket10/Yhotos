@@ -75,7 +75,7 @@ struct Cell {
     index: usize,
     href: String,
     image: Image,
-    badge: &'static str,
+    badge: String,
 }
 struct Row {
     cells: Vec<Cell>,
@@ -107,7 +107,8 @@ fn path(value: &str) -> Result<String, HttpError> {
     Ok(format!("/a/{value}"))
 }
 fn derivative_url(d: &PageDerivative) -> Option<String> {
-    if d.hash.len() != 64
+    if d.variant == "scrub"
+        || d.hash.len() != 64
         || !d
             .hash
             .bytes()
@@ -397,11 +398,7 @@ fn photo_rows(photos: &[PagePhoto], sort: PageSort, styles: &mut String) -> Vec<
                             row_index == 0,
                             true,
                         ),
-                        badge: match p.kind.as_str() {
-                            "raw" => "RAW",
-                            "video" => "Play video",
-                            _ => "",
-                        },
+                        badge: badge(p),
                     }
                 })
                 .collect();
@@ -456,6 +453,7 @@ pub fn render_place(
 #[derive(Template)]
 #[template(path = "default/album.html")]
 struct AlbumTemplate<'a> {
+    album_id: yhotos_core::AlbumId,
     context: &'a PageContext<'a>,
     title: &'a str,
     description: &'a str,
@@ -521,6 +519,7 @@ pub(crate) fn render_album_for(
     }
     let island = grid_island(page, &rows, number, sort, identity, links)?;
     AlbumTemplate {
+        album_id: page.album.id,
         context,
         title: &page.album.title,
         description: &page.album.description,
@@ -564,9 +563,10 @@ struct PhotoTemplate<'a> {
     actions: Option<Actions<'a>>,
     exif: Vec<(&'static str, String)>,
     map: Option<String>,
-    badge: &'static str,
+    badge: String,
     island: String,
     scripts: Vec<&'static str>,
+    video: Option<Video>,
 }
 fn filename(value: &str) -> String {
     use std::fmt::Write;
@@ -739,12 +739,15 @@ fn render_photo_with_controls(
                 flag: controls.as_ref().is_some_and(|c| c.flag),
             },
         )?)?,
-        scripts: photo_scripts(controls.as_ref().is_some_and(|c| c.like || c.flag))?,
-        badge: match p.kind.as_str() {
-            "raw" => "RAW",
-            "video" => "Play video",
-            _ => "",
+        scripts: {
+            let mut scripts = photo_scripts(controls.as_ref().is_some_and(|c| c.like || c.flag))?;
+            if video(p).is_some() {
+                scripts.push(crate::static_assets::video_url()?);
+            }
+            scripts
         },
+        badge: badge(p),
+        video: video(p),
     }
     .render()
     .map_err(|e| HttpError::Internal(e.into()))
@@ -890,6 +893,8 @@ struct PhotoData<'a> {
     original: Option<String>,
     zoom_width: u32,
     caps: Caps,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    video: Option<Video>,
 }
 pub(crate) fn island_photo(p: &PagePhoto, caps: Caps) -> Result<serde_json::Value, HttpError> {
     serde_json::to_value(photo_data(p, &image(p, "100vw".into(), true, false), caps)?)
@@ -970,6 +975,7 @@ fn photo_data<'a>(
         original: downloads.first().map(|d| d.href.clone()),
         downloads,
         caps,
+        video: video(p),
         zoom_width: [
             image.jpeg.max_width,
             image.avif.max_width,
@@ -1023,4 +1029,83 @@ fn grid_island(
             .collect::<Result<Vec<_>, _>>()?,
     };
     json_script(&data)
+}
+
+#[derive(serde::Serialize)]
+struct Video {
+    av1: String,
+    av1_type: String,
+    h264: String,
+    duration_ms: u64,
+    scrub: String,
+    vtt: String,
+}
+fn video(p: &PagePhoto) -> Option<Video> {
+    if p.kind != "video" {
+        return None;
+    }
+    let source = |codec| {
+        p.video.iter().find(|v| {
+            v.codec == codec
+                && v.duration_ms > 0
+                && v.duration_ms <= 1_800_000
+                && v.hash.parse::<yhotos_storage::ContentHash>().is_ok()
+        })
+    };
+    let av1 = source("av1")?;
+    let h264 = source("h264")?;
+    let scrub = p.derivatives.iter().find(|d| {
+        d.variant == "scrub"
+            && d.format == "jpeg"
+            && !d.hdr
+            && d.w == 1600
+            && d.h == 1600
+            && d.hash.parse::<yhotos_storage::ContentHash>().is_ok()
+    })?;
+    let scrub = format!("/i/{}/scrub.jpeg", scrub.hash);
+    Some(Video {
+        av1: format!("/v/{}/av1.mp4", av1.hash),
+        // Main profile, Main tier, 8-bit 4:2:0 are fixed by the encoder. The
+        // sequence level comes from its output, not from the source dimensions.
+        av1_type: match av1.av1_level {
+            Some(level @ 0..=23) => format!("video/mp4; codecs=\"av01.0.{level:02}M.08\""),
+            None => "video/mp4".into(),
+            _ => return None,
+        },
+        h264: format!("/v/{}/h264.mp4", h264.hash),
+        duration_ms: h264.duration_ms,
+        scrub,
+        vtt: format!("/v/{}/scrub.vtt", h264.hash),
+    })
+}
+fn badge(p: &PagePhoto) -> String {
+    match p.kind.as_str() {
+        "raw" => "RAW".into(),
+        "video" => video(p).map_or_else(
+            || "Play video".into(),
+            |v| {
+                format!(
+                    "Play video {}:{:02}",
+                    v.duration_ms / 60_000,
+                    (v.duration_ms / 1000) % 60
+                )
+            },
+        ),
+        _ => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod video_tests {
+    use super::*;
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn square_video_poster_never_uses_the_square_scrub_sheet_as_an_image() {
+        let id = yhotos_core::PhotoId::new();
+        let photo:PagePhoto=serde_json::from_value(serde_json::json!({"id":id,"short_id":yhotos_core::ShortId::from_photo_id(id),"album_id":yhotos_core::AlbumId::new(),"title":"Square video","description":"","original_hash":"a".repeat(64),"original_name":"video.mp4","kind":"video","width":128,"height":128,"orientation":1,"dominant_colors":[],"derivatives":[{"variant":"medium","format":"jpeg","hdr":false,"hash":"b".repeat(64),"w":128,"h":128},{"variant":"scrub","format":"jpeg","hdr":false,"hash":"c".repeat(64),"w":1600,"h":1600}],"video":[{"codec":"av1","hash":"d".repeat(64),"duration_ms":1000},{"codec":"h264","hash":"e".repeat(64),"duration_ms":1000}]})).unwrap();
+        let image = image(&photo, "100vw".into(), true, false);
+        assert!(!image.src.contains("scrub"));
+        assert!(!image.jpeg.all.contains("scrub"));
+        assert!(video(&photo).is_some());
+    }
 }

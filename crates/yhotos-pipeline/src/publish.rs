@@ -158,7 +158,7 @@ impl Ingest {
             hashes,
         })
     }
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)] // One fenced transaction publishes the complete media generation.
     pub(crate) async fn publish(
         &self,
         photo: PhotoId,
@@ -170,6 +170,7 @@ impl Ingest {
         verified: &Verified,
         placeholder: &[u8],
         followup_priority: i32,
+        video: Option<&crate::video::Assets>,
     ) -> Result<(), JobError> {
         let (taken, taken_local) =
             crate::timestamp::capture_time(&report.metadata, &self.default_timezone)?;
@@ -215,6 +216,15 @@ impl Ingest {
                     .map_err(|_| JobError::Fatal("invalid output size".into()))?,
             );
         }
+        if let Some(video) = video {
+            ids.push(uuid::Uuid::now_v7());
+            variants.push("scrub".into());
+            formats.push("jpeg".into());
+            hashes.push(video.scrub.to_string());
+            widths.push(1600);
+            heights.push(1600);
+            sizes.push(video.scrub_bytes);
+        }
         let id = &report.identity;
         let m = &report.metadata;
         let (w, h) = if id.orientation >= 5 {
@@ -252,12 +262,24 @@ impl Ingest {
         // Remove only obsolete plan entries; upsert preserves identities of retained entries.
         sqlx::query!("DELETE FROM derivatives WHERE photo_id=$1 AND (hdr OR (variant,format) NOT IN (SELECT * FROM UNNEST($2::text[],$3::text[])))",photo.0,&variants,&formats).execute(&mut *tx).await.map_err(|_|retry("derivative cleanup failed"))?;
         sqlx::query!("INSERT INTO derivatives(id,photo_id,variant,format,hdr,hash,width,height,bytes) SELECT id,$1,variant,format,false,hash,width,height,bytes FROM UNNEST($2::uuid[],$3::text[],$4::text[],$5::text[],$6::int[],$7::int[],$8::bigint[]) AS d(id,variant,format,hash,width,height,bytes) ON CONFLICT(photo_id,variant,format,hdr) DO UPDATE SET hash=excluded.hash,width=excluded.width,height=excluded.height,bytes=excluded.bytes",photo.0,&ids,&variants,&formats,&hashes,&widths,&heights,&sizes).execute(&mut *tx).await.map_err(|_|retry("derivative publication failed"))?;
+        if let Some(video) = video {
+            sqlx::query!("DELETE FROM video_renditions WHERE photo_id=$1", photo.0)
+                .execute(&mut *tx)
+                .await
+                .map_err(|_| retry("video cleanup failed"))?;
+            for r in &video.renditions {
+                sqlx::query!("INSERT INTO video_renditions(id,photo_id,codec,hash,width,height,bytes,duration_ms,hls,av1_level) VALUES($1,$2,$3,$4,$5,$6,$7,$8,false,$9)",uuid::Uuid::now_v7(),photo.0,r.codec,r.hash.to_string(),r.width,r.height,r.bytes,i64::try_from(video.info.duration_ms).map_err(|_|JobError::Fatal("invalid video duration".into()))?,r.av1_level).execute(&mut *tx).await.map_err(|_|retry("video publication failed"))?;
+            }
+        }
         let mut followups = vec![
             Job::MlEmbed { photo_id: photo },
             Job::MlFaces { photo_id: photo },
             Job::MlOcr { photo_id: photo },
             Job::MlTags { photo_id: photo },
         ];
+        if video.is_some() {
+            followups.clear();
+        }
         if m.gps.is_some() {
             followups.push(Job::GeoReverse { photo_id: photo });
         }

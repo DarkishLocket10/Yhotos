@@ -135,9 +135,10 @@ impl Queue {
                         queue: self.clone(),
                         shutdown: cancel.clone(),
                     };
+                    let claim_timeout = queue.claim_timeout(kind);
                     tasks.spawn(async move {
                         let finished = queue
-                            .run_claim(&row, &token, handler.as_ref(), &ctx, kind.timeout())
+                            .run_claim(&row, &token, handler.as_ref(), &ctx, claim_timeout)
                             .await;
                         (row.id, finished)
                     });
@@ -269,7 +270,7 @@ impl Queue {
                         )
                         UPDATE photos SET status=CASE WHEN changed.finished_at IS NULL THEN 'pending'::photo_status ELSE 'failed'::photo_status END,
                             failure_reason=CASE WHEN changed.finished_at IS NULL THEN NULL ELSE $4 END
-                        FROM changed WHERE changed.kind='ingest'
+                        FROM changed WHERE changed.kind IN ('ingest','video.transcode')
                             AND photos.id=CASE WHEN pg_input_is_valid(changed.payload->>'photo_id','uuid') THEN (changed.payload->>'photo_id')::uuid END
                             AND photos.original_hash=changed.payload->>'original_hash'
                             AND photos.generation=CASE WHEN pg_input_is_valid(changed.payload->>'generation','bigint') THEN (changed.payload->>'generation')::bigint END
@@ -303,7 +304,8 @@ impl Queue {
     /// Returns database failures.
     pub async fn sweep_stale(&self, kinds: &[JobKind]) -> Result<(), JobsError> {
         for kind in kinds {
-            let cutoff = OffsetDateTime::now_utc() - kind.timeout() - Duration::from_secs(60);
+            let cutoff =
+                OffsetDateTime::now_utc() - self.claim_timeout(*kind) - Duration::from_secs(60);
             let name = kind.as_str();
             sqlx::query!(r#"
                 WITH changed AS (
@@ -316,7 +318,7 @@ impl Queue {
                 )
                 UPDATE photos SET status=CASE WHEN changed.finished_at IS NULL THEN 'pending'::photo_status ELSE 'failed'::photo_status END,
                     failure_reason=CASE WHEN changed.finished_at IS NULL THEN NULL ELSE 'worker lock expired' END
-                FROM changed WHERE changed.kind='ingest'
+                FROM changed WHERE changed.kind IN ('ingest','video.transcode')
                     AND photos.id=CASE WHEN pg_input_is_valid(changed.payload->>'photo_id','uuid') THEN (changed.payload->>'photo_id')::uuid END
                     AND photos.original_hash=changed.payload->>'original_hash'
                     AND photos.generation=CASE WHEN pg_input_is_valid(changed.payload->>'generation','bigint') THEN (changed.payload->>'generation')::bigint END

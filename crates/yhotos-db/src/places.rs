@@ -123,6 +123,7 @@ pub async fn page_for(
         'total',(SELECT count(*) FROM selected),
         'photos',coalesce((SELECT jsonb_agg(to_jsonb(p)||jsonb_build_object(
           'thumbhash',encode(p.placeholder,'base64'),
+          'video',CASE WHEN p.kind='video' THEN coalesce((SELECT jsonb_agg(jsonb_build_object('codec',v.codec,'hash',v.hash,'duration_ms',v.duration_ms,'av1_level',v.av1_level) ORDER BY v.codec) FROM video_renditions v WHERE v.photo_id=p.id AND NOT v.hls),'[]'::jsonb) ELSE '[]'::jsonb END,
           'derivatives',coalesce((SELECT jsonb_agg(jsonb_build_object(
             'variant',d.variant,'format',d.format,'hdr',d.hdr,'hash',d.hash,'w',d.width,'h',d.height)
             ORDER BY d.width,d.format,d.hdr) FROM derivatives d WHERE d.photo_id=p.id),'[]'::jsonb))

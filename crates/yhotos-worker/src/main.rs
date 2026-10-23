@@ -69,7 +69,11 @@ async fn run(process_deadline: &mut Option<std::time::Instant>) -> Result<()> {
         ..QueueConfig::default()
     };
     let shutdown_grace = queue_config.shutdown_grace;
-    let queue = Queue::with_config(db.pool().clone(), queue_config)?;
+    let queue = Queue::with_config(db.pool().clone(), queue_config)?.with_video_timeout(
+        Duration::from_secs(
+            u64::from(config.worker.video_timeout) + u64::from(config.worker.codec_timeout) + 60,
+        ),
+    )?;
     let (stop, shutdown) = tokio::sync::oneshot::channel();
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .context("SIGTERM handler unavailable")?;
@@ -139,6 +143,13 @@ fn build_ingest(
     ingest.plan.validate()?;
     ingest.codec_timeout = Duration::from_secs(u64::from(config.worker.codec_timeout));
     ingest.concurrency_per_host = config.worker.vips_concurrency;
+    ingest.video = yhotos_pipeline::video::Settings {
+        ffmpeg: config.worker.ffmpeg_path.clone(),
+        ffprobe: config.worker.ffprobe_path.clone(),
+        timeout: config.worker.video_timeout,
+        max_duration: config.worker.video_max_duration,
+        threads: config.worker.vips_concurrency.min(16),
+    };
     ingest.default_timezone = jiff::tz::TimeZone::get(&config.worker.default_timezone)
         .map_err(|_| anyhow::anyhow!("invalid worker default timezone"))?;
     Ok(ingest)

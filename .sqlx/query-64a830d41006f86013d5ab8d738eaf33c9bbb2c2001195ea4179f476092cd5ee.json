@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "-- Task 007 queued placeholder video jobs using only photo_id. Upgrade those\n-- unfinished envelopes before task 021's generation-fenced handler claims them.\nUPDATE jobs AS j\nSET payload = jsonb_build_object(\n    'photo_id', p.id,\n    'original_hash', p.original_hash,\n    'generation', p.generation\n)\nFROM photos AS p\nWHERE j.kind = 'video.transcode'\n  AND j.finished_at IS NULL\n  AND j.payload = jsonb_build_object('photo_id', p.id);\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "64a830d41006f86013d5ab8d738eaf33c9bbb2c2001195ea4179f476092cd5ee"
+}

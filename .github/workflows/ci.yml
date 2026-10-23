@@ -24,7 +24,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install native codec development libraries
-        run: sudo apt-get update && sudo apt-get install -y libvips-dev libvips-tools liblcms2-dev libclang-dev libjxl-dev libheif-plugin-aomenc libheif-plugin-aomdec libheif-plugin-libde265
+        run: sudo apt-get update && sudo apt-get install -y unzip libvips-dev libvips-tools liblcms2-dev libclang-dev libjxl-dev libheif-plugin-aomenc libheif-plugin-aomdec libheif-plugin-libde265
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -44,6 +44,12 @@ jobs:
           npm run check
       - name: Test offline gazetteer importer
         run: python3 -m unittest discover -s deploy/geo -p 'test_*.py'
+      - name: Test browser video source selection
+        run: |
+          deploy/dev/video-tools.sh
+          cd web
+          npx playwright install --with-deps chromium
+          npm run e2e -- video.spec.ts
       - name: Test bundled islands
         run: node --test crates/yhotos-http/tests/passkey_redirect.mjs crates/yhotos-http/tests/upload.mjs
 
@@ -71,7 +77,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install native codec development libraries
-        run: sudo apt-get update && sudo apt-get install -y libvips-dev libvips-tools liblcms2-dev libclang-dev libjxl-dev libheif-plugin-aomenc libheif-plugin-aomdec libheif-plugin-libde265
+        run: sudo apt-get update && sudo apt-get install -y unzip libvips-dev libvips-tools liblcms2-dev libclang-dev libjxl-dev libheif-plugin-aomenc libheif-plugin-aomdec libheif-plugin-libde265
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -81,6 +87,8 @@ jobs:
         run: cargo sqlx migrate run --source crates/yhotos-db/migrations
       - name: Test gazetteer import against PostgreSQL
         run: python3 -m unittest discover -s deploy/geo -p 'test_*.py'
+      - name: Extract pinned static video parsers
+        run: deploy/dev/video-tools.sh
       - name: Test workspace
         run: cargo test --workspace --all-features
       - name: Test public build without admin routes

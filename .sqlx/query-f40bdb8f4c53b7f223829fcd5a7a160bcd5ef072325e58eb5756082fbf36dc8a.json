@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT currval($1::text::regclass) AS \"reads!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "reads!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "f40bdb8f4c53b7f223829fcd5a7a160bcd5ef072325e58eb5756082fbf36dc8a"
+}

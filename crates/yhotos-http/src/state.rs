@@ -8,7 +8,11 @@ use yhotos_storage::Store;
 
 /// Immutable startup handles; each request clones only one reference count.
 #[derive(Clone)]
-pub struct AppState(Arc<AppResources>);
+pub struct AppState(Arc<Shared>);
+struct Shared {
+    resources: AppResources,
+    zips: Arc<crate::files::streams::Streams>,
+}
 
 /// Resources borrowed through `AppState`, without cloning store paths or caches.
 pub struct AppResources {
@@ -26,7 +30,7 @@ pub struct AppResources {
 impl Deref for AppState {
     type Target = AppResources;
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.0.resources
     }
 }
 impl AppState {
@@ -51,6 +55,13 @@ impl AppState {
 impl From<AppResources> for AppState {
     /// Shares supplied resources, including original/video stream caps.
     fn from(resources: AppResources) -> Self {
-        Self(Arc::new(resources))
+        let zips = crate::files::streams::Streams::new(1, resources.config.zip.concurrency);
+        Self(Arc::new(Shared { resources, zips }))
+    }
+}
+
+impl AppState {
+    pub(crate) fn zip_streams(&self) -> &Arc<crate::files::streams::Streams> {
+        &self.0.zips
     }
 }

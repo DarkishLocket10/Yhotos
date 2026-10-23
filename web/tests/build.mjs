@@ -1,2 +1,2 @@
 import { build } from 'esbuild';
-await build({ entryPoints: ['src/lib/gallery.ts', 'src/lib/cache.ts', 'src/lib/media.ts', 'src/thumbhash.ts'], outdir: 'dist/test', outbase: 'src', bundle: true, platform: 'node', format: 'esm', target: 'node22' });
+await build({ entryPoints: ['src/lib/gallery.ts', 'src/lib/cache.ts', 'src/lib/media.ts', 'src/lib/video.ts', 'src/thumbhash.ts'], outdir: 'dist/test', outbase: 'src', bundle: true, platform: 'node', format: 'esm', target: 'node22' });

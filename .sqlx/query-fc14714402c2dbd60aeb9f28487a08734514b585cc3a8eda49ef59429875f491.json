@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO video_renditions(id,photo_id,codec,hash,width,height,bytes,duration_ms)\n              SELECT gen_random_uuid(),p.id,v.codec,$1,CASE WHEN v.codec='h264' THEN 1080 ELSE 1920 END,CASE WHEN v.codec='h264' THEN 608 ELSE 1080 END,1000,1200\n              FROM photos p CROSS JOIN (VALUES ('av1'),('h264')) v(codec) WHERE p.kind='video'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fc14714402c2dbd60aeb9f28487a08734514b585cc3a8eda49ef59429875f491"
+}

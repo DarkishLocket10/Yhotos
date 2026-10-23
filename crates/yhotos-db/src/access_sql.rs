@@ -134,30 +134,41 @@ macro_rules! gallery_page_query {
         $crate::visible_page_query!(@with $identity; [r#",
       selected AS (SELECT a.* FROM visible_albums a CROSS JOIN identity i
         WHERE a.path=$8::text OR ($8::text IS NULL AND a.id=ANY(i.shared_albums))),
-      summaries AS (
+      page_albums AS MATERIALIZED (
+        SELECT a.* FROM visible_albums a
+        WHERE a.id=(SELECT id FROM selected) OR a.parent_id=(SELECT id FROM selected)
+      ), page_photos AS MATERIALIZED (
+        SELECT p.id,p.album_id,p.sort_order,p.title,p.taken_at,p.posted_at
+        FROM visible_photos p WHERE p.album_id IN (SELECT id FROM page_albums)
+          OR p.id IN (SELECT cover_photo_id FROM page_albums)
+      ), summaries AS (
         SELECT a.id,a.title,a.description,a.path,a.sort_order,
-          (SELECT count(*) FROM visible_photos p WHERE p.album_id=a.id) AS count,
+          (SELECT count(*) FROM page_photos p WHERE p.album_id=a.id) AS count,
           (SELECT to_jsonb(p) || jsonb_build_object('thumbhash',encode(p.placeholder,'base64'),
+          'video',CASE WHEN p.kind='video' THEN coalesce((SELECT jsonb_agg(jsonb_build_object('codec',v.codec,'hash',v.hash,'duration_ms',v.duration_ms,'av1_level',v.av1_level) ORDER BY v.codec) FROM video_renditions v WHERE v.photo_id=p.id AND NOT v.hls),'[]'::jsonb) ELSE '[]'::jsonb END,
             'derivatives',coalesce((SELECT jsonb_agg(jsonb_build_object(
               'variant',d.variant,'format',d.format,'hdr',d.hdr,'hash',d.hash,'w',d.width,'h',d.height)
               ORDER BY d.width,d.format,d.hdr) FROM derivatives d WHERE d.photo_id=p.id),'[]'::jsonb))
-           FROM visible_photos p WHERE p.album_id=a.id OR p.id=a.cover_photo_id
-           ORDER BY (p.id=a.cover_photo_id) DESC NULLS LAST,p.sort_order,p.id LIMIT 1) AS cover
-        FROM visible_albums a WHERE a.id=(SELECT id FROM selected) OR a.parent_id=(SELECT id FROM selected)
+           FROM (SELECT id FROM page_photos p WHERE p.album_id=a.id OR p.id=a.cover_photo_id
+           ORDER BY (p.id=a.cover_photo_id) DESC NULLS LAST,p.sort_order,p.id LIMIT 1) cover
+           JOIN visible_photos p ON p.id=cover.id) AS cover
+        FROM page_albums a
       ), ordered AS (
-        SELECT p.*,row_number() OVER (ORDER BY
+        SELECT p.id,row_number() OVER (ORDER BY
           CASE WHEN $7='taken' THEN coalesce(taken_at,posted_at) END DESC,
           CASE WHEN $7='posted' THEN posted_at END DESC,
           CASE WHEN $7='name' THEN title END COLLATE "C" ASC,
           CASE WHEN $7='manual' THEN sort_order END ASC, id ASC) AS position
-        FROM visible_photos p WHERE p.album_id=(SELECT id FROM selected)
+        FROM page_photos p WHERE p.album_id=(SELECT id FROM selected)
       ), slice AS (
-        SELECT * FROM ordered ORDER BY position LIMIT 60 OFFSET $6
+        SELECT p.*,s.position FROM (SELECT * FROM ordered ORDER BY position LIMIT 60 OFFSET $6) s
+        JOIN visible_photos p ON p.id=s.id
       ), album_payload AS (SELECT jsonb_build_object(
         'album',(SELECT to_jsonb(s) FROM summaries s WHERE s.id=a.id), 'chain',a.chain,
         'children',coalesce((SELECT jsonb_agg(to_jsonb(s) ORDER BY s.sort_order,s.id) FROM summaries s WHERE s.id<>a.id),'[]'::jsonb),
         'total',(SELECT count(*) FROM ordered),
         'photos',coalesce((SELECT jsonb_agg(to_jsonb(p) || jsonb_build_object('thumbhash',encode(p.placeholder,'base64'),
+          'video',CASE WHEN p.kind='video' THEN coalesce((SELECT jsonb_agg(jsonb_build_object('codec',v.codec,'hash',v.hash,'duration_ms',v.duration_ms,'av1_level',v.av1_level) ORDER BY v.codec) FROM video_renditions v WHERE v.photo_id=p.id AND NOT v.hls),'[]'::jsonb) ELSE '[]'::jsonb END,
           'derivatives',coalesce((SELECT jsonb_agg(jsonb_build_object(
             'variant',d.variant,'format',d.format,'hdr',d.hdr,'hash',d.hash,'w',d.width,'h',d.height)
             ORDER BY d.width,d.format,d.hdr) FROM derivatives d WHERE d.photo_id=p.id),'[]'::jsonb)) ORDER BY p.position)
@@ -175,6 +186,7 @@ macro_rules! gallery_page_query {
           CASE WHEN $7='manual' THEN sort_order END ASC, id ASC)
       ), photo_payload AS (SELECT jsonb_build_object(
         'photo', to_jsonb(p) || jsonb_build_object('thumbhash',encode(p.placeholder,'base64'),
+          'video',CASE WHEN p.kind='video' THEN coalesce((SELECT jsonb_agg(jsonb_build_object('codec',v.codec,'hash',v.hash,'duration_ms',v.duration_ms,'av1_level',v.av1_level) ORDER BY v.codec) FROM video_renditions v WHERE v.photo_id=p.id AND NOT v.hls),'[]'::jsonb) ELSE '[]'::jsonb END,
           'derivatives',coalesce((SELECT jsonb_agg(jsonb_build_object(
             'variant',d.variant,'format',d.format,'hdr',d.hdr,'hash',d.hash,'w',d.width,'h',d.height)
             ORDER BY d.width,d.format,d.hdr) FROM derivatives d WHERE d.photo_id=p.id),'[]'::jsonb)),

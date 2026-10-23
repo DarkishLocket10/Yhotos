@@ -205,6 +205,7 @@ fn config(
         public_base_url: "https://example.test".parse()?,
         session_key: master.into(),
         trust_proxy: false,
+        zip: yhotos_config::Zip::default(),
         global_stream_cap: 64,
         write_timeout: std::time::Duration::from_secs(30),
         transfer_deadline: std::time::Duration::from_mins(30),
