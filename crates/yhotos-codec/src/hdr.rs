@@ -383,6 +383,7 @@ pub fn validate_gain_map_metadata(bytes: &[u8]) -> Result<(), CodecError> {
     let _ = crate::gain_container::iso(bytes);
     if bytes.get(4..8) == Some(b"ftyp") {
         let _ = crate::gain_container::heif(bytes, &limits);
+        let _ = crate::gain_container::heif_sdr(bytes);
     }
     if bytes.starts_with(b"\xff\xd8")
         && crate::hdr_jpeg::extract(bytes).is_ok()

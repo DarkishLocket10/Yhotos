@@ -7,6 +7,8 @@
 )]
 //! The binary is exercised as a subprocess so rlimits never affect the test runner.
 use serde_json::{Value, json};
+#[path = "../../yhotos-codec/test-support/gain_mutations.rs"]
+mod gain_mutations;
 use std::{
     io::Write,
     path::{Path, PathBuf},
@@ -549,5 +551,56 @@ fn malformed_gain_metadata_never_fails_an_sdr_ingest() {
             "{name}"
         );
         assert_eq!(std::fs::read_dir(out.path()).unwrap().count(), 6, "{name}");
+    }
+}
+
+#[test]
+fn every_gain_map_mutation_preserves_host_sdr_outputs_and_reason() {
+    let input = tempfile::NamedTempFile::new().unwrap();
+    for case in gain_mutations::cases() {
+        std::fs::write(input.path(), &case.bytes).unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let job = json!({"input":input.path(),"out_dir":out.path(),"outputs":[
+            {"name":"base.jpg","resize":{"long_edge":24,"square":false},"encode":{"Jpeg":{"quality":90,"progressive":true,"chroma_subsampling":false,"hdr":false}},"keep_icc":true},
+            {"name":"base.jxl","resize":{"long_edge":24,"square":false},"encode":{"Jxl":{"distance":1.0,"effort":1,"hdr":false}},"keep_icc":true},
+            {"name":"base.jpg.hdr","resize":{"long_edge":24,"square":false},"encode":{"Jpeg":{"quality":90,"progressive":true,"chroma_subsampling":false,"hdr":true}},"keep_icc":true}
+        ],"want":["identity","metadata","thumbhash","dominant_colors"]});
+        let result = invoke(&job, &[]);
+        assert!(
+            result.status.success(),
+            "{}: {}",
+            case.name,
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let report: Value = serde_json::from_slice(&result.stdout).unwrap();
+        assert!(
+            !report["hdr_skipped_reason"].is_null(),
+            "{}: {report}",
+            case.name
+        );
+        assert_eq!(
+            report["outputs"].as_array().unwrap().len(),
+            2,
+            "{}: {report}",
+            case.name
+        );
+        assert_eq!(
+            report["skipped_outputs"],
+            json!([{"name":"base.jpg.hdr","reason":report["hdr_skipped_reason"]}]),
+            "{}",
+            case.name
+        );
+        for name in ["base.jpg", "base.jxl"] {
+            let path = out.path().join(name);
+            let id = yhotos_codec::identify(&path, &yhotos_codec::Limits::default()).unwrap();
+            assert!(!id.has_gain_map, "{}: {name}", case.name);
+            yhotos_codec::decode(&path, &id, &yhotos_codec::Limits::default()).unwrap();
+        }
+        assert_eq!(
+            std::fs::read_dir(out.path()).unwrap().count(),
+            2,
+            "{}",
+            case.name
+        );
     }
 }

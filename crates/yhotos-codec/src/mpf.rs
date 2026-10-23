@@ -21,6 +21,7 @@ impl Index<'_> {
 
 // base is the file offset of the TIFF byte-order field, immediately after MPF\0.
 // Entries are at most 64, non-overlapping, and wholly inside the original file.
+#[allow(clippy::too_many_lines)] // Directory and image entries share one bounded TIFF view.
 pub(crate) fn images(
     bytes: &[u8],
     base: u64,
@@ -51,7 +52,7 @@ pub(crate) fn images(
     if index.number(end, 4)? != 0 {
         return Err(CodecError::Decode);
     }
-    let (mut total, mut entries) = (None, None);
+    let (mut total, mut entries, mut version) = (None, None, false);
     for n in 0..count {
         let pos = directory + 2 + n * 12;
         let tag = index.number(pos, 2)?;
@@ -59,6 +60,13 @@ pub(crate) fn images(
         let len = index.number(pos + 4, 4)?;
         let value = index.number(pos + 8, 4)?;
         match tag {
+            0xb000 => {
+                if version || kind != 7 || len != 4 || bytes.get(pos + 8..pos + 12) != Some(b"0100")
+                {
+                    return Err(CodecError::Decode);
+                }
+                version = true;
+            }
             0xb001 => {
                 if total.is_some() || kind != 4 || len != 1 {
                     return Err(CodecError::Decode);
@@ -73,6 +81,9 @@ pub(crate) fn images(
             }
             _ => {}
         }
+    }
+    if !version {
+        return Err(CodecError::Decode);
     }
     let total = total.ok_or(CodecError::Decode)?;
     if total == 0 || total > 64 {

@@ -3,8 +3,13 @@
 
 mod bmff;
 mod gain_container;
+#[cfg(test)]
+#[path = "../test-support/gain_mutations.rs"]
+mod gain_mutations;
 mod hdr;
 mod hdr_jpeg;
+#[cfg(test)]
+mod hdr_malformed;
 mod headers;
 pub use hdr::{HdrSkippedReason, validate_gain_map, validate_gain_map_metadata};
 mod metadata;

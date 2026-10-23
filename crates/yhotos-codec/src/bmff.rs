@@ -6,7 +6,7 @@ use crate::Limits;
 #[cfg(feature = "raw")]
 use std::path::Path;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::File,
     io::{Read, Seek, SeekFrom},
 };
@@ -24,6 +24,7 @@ pub(crate) struct Nclx {
 pub(crate) struct HeifInfo {
     pub(crate) gain_map: bool,
     pub(crate) nclx: Option<Nclx>,
+    pub(crate) sdr_only: bool,
 }
 
 const MAX_BOXES: usize = 4096;
@@ -41,6 +42,7 @@ struct BoxHeader {
 #[derive(Clone, Copy)]
 enum Context {
     Top,
+    Opaque,
     Meta,
     Info,
     References(bool), // 32-bit item ids
@@ -55,10 +57,13 @@ struct GainMap {
     derived: BTreeMap<u32, [u32; 2]>,
     references: usize,
     signature: bool,
-    properties: Vec<Option<Nclx>>,
+    properties: Vec<Result<Option<Nclx>, CodecError>>,
     associations: BTreeMap<u32, Vec<u16>>,
     association_count: usize,
     ipco: bool,
+    optional_error: bool,
+    auxiliary: BTreeSet<u32>,
+    alpha_properties: BTreeSet<u16>,
 }
 
 impl Walker {
@@ -155,6 +160,9 @@ impl Walker {
     ) -> Result<(), CodecError> {
         let width = if wide { 4 } else { 2 };
         let from = self.item_id(head.payload, head.end, wide)?;
+        if &head.kind == b"auxl" {
+            gain.auxiliary.insert(from);
+        }
         let count = usize::from(u16::from_be_bytes(
             self.read(head.payload + width, head.end)?,
         ));
@@ -203,6 +211,15 @@ impl Walker {
                 ..
             } = head;
             match (context, &kind) {
+                (Context::Top, b"ftyp") if self.optional_fallback => {
+                    let mut at = payload;
+                    while at + 4 <= box_end {
+                        if at != payload + 4 && self.read::<4>(at, box_end)? == *b"tmap" {
+                            info.gain_map = true;
+                        }
+                        at += 4;
+                    }
+                }
                 (Context::Top, b"meta") => {
                     self.metadata_remaining = self
                         .metadata_remaining
@@ -236,7 +253,15 @@ impl Walker {
                         &mut meta,
                         info,
                     )?;
-                    info.gain_map |= meta.found();
+                    info.gain_map |= meta.found()
+                        || self.optional_fallback
+                            && (meta.optional_error
+                                || meta.auxiliary.iter().any(|id| {
+                                    !meta.associations.get(id).is_some_and(|indices| {
+                                        indices.iter().any(|i| meta.alpha_properties.contains(i))
+                                    })
+                                })
+                                || meta.items.values().any(|k| k == b"tmap"));
                     if let Some(nclx) = meta.primary_nclx()?
                         && info.nclx.replace(nclx).is_some()
                     {
@@ -267,12 +292,35 @@ impl Walker {
                         return Err(CodecError::Decode);
                     }
                 }
-                (Context::Info, b"infe") => self.item(payload, box_end, gain)?,
+                (Context::Info, b"infe") => {
+                    let result = self.item(payload, box_end, gain);
+                    self.optional_result(result, gain)?;
+                }
                 (Context::Meta, b"iref") => {
-                    let version = self.version(payload, box_end)?;
-                    if version > 1 {
-                        return Err(CodecError::Decode);
-                    }
+                    let version = match self.version(payload, box_end) {
+                        Ok(version @ 0..=1) => version,
+                        Ok(_) | Err(CodecError::Decode) if self.optional_fallback => {
+                            gain.optional_error = true;
+                            // Never hand an unknown reference layout to native
+                            // code. The SDR projection must prove its own graph.
+                            info.sdr_only = true;
+                            if box_end - payload >= 4 {
+                                self.heif_chain(
+                                    payload + 4,
+                                    box_end,
+                                    depth + 1,
+                                    Context::Opaque,
+                                    gain,
+                                    info,
+                                )?;
+                            }
+                            offset = box_end;
+                            count += 1;
+                            continue;
+                        }
+                        Err(error) => return Err(error),
+                        Ok(_) => return Err(CodecError::Decode),
+                    };
                     self.heif_chain(
                         payload + 4,
                         box_end,
@@ -282,7 +330,10 @@ impl Walker {
                         info,
                     )?;
                 }
-                (Context::References(wide), _) => self.references(&head, wide, gain)?,
+                (Context::References(wide), _) => {
+                    let result = self.references(&head, wide, gain);
+                    self.optional_result(result, gain)?;
+                }
                 (Context::Meta, b"iprp") => {
                     self.heif_chain(payload, box_end, depth + 1, Context::Properties, gain, info)?;
                 }
@@ -302,12 +353,22 @@ impl Walker {
                 }
                 (Context::Properties, b"ipma") => self.associations(payload, box_end, gain)?,
                 (Context::PropertyValues, b"colr") => {
-                    let nclx = self.nclx(payload, box_end)?;
+                    let nclx = self.nclx(payload, box_end);
+                    if !self.optional_fallback && nclx.is_err() {
+                        nclx?;
+                        return Err(CodecError::Decode);
+                    }
                     gain.properties.push(nclx);
                 }
                 (Context::PropertyValues, b"auxC") => {
-                    gain.properties.push(None);
-                    self.version(payload, box_end)?;
+                    gain.properties.push(Ok(None));
+                    let result = self.version(payload, box_end).map(|_| ());
+                    self.optional_result(result, gain)?;
+                    if box_end - payload < 4 {
+                        offset = box_end;
+                        count += 1;
+                        continue;
+                    }
                     let (start, bytes) = self.metadata.as_ref().ok_or(CodecError::Decode)?;
                     let from =
                         usize::try_from(payload + 4 - start).map_err(|_| CodecError::Limits)?;
@@ -315,8 +376,19 @@ impl Walker {
                     gain.signature |= crate::headers::has_gain_signature(
                         bytes.get(from..to).ok_or(CodecError::Decode)?,
                     );
+                    if matches!(
+                        bytes.get(from..to),
+                        Some(
+                            b"urn:mpeg:hevc:2015:auxid:1\0"
+                                | b"urn:mpeg:mpegB:cicp:systems:auxiliary:alpha\0"
+                        )
+                    ) {
+                        gain.alpha_properties.insert(
+                            u16::try_from(gain.properties.len()).map_err(|_| CodecError::Limits)?,
+                        );
+                    }
                 }
-                (Context::PropertyValues, _) => gain.properties.push(None),
+                (Context::PropertyValues, _) => gain.properties.push(Ok(None)),
                 _ => {} // Pixel payloads, unknown properties and UUIDs stay opaque.
             }
             offset = box_end;
@@ -324,11 +396,30 @@ impl Walker {
         }
         Ok(count)
     }
+    fn optional_result(
+        &self,
+        result: Result<(), CodecError>,
+        gain: &mut GainMap,
+    ) -> Result<(), CodecError> {
+        match result {
+            // The enclosing box extent has already passed header(). Semantic
+            // errors must never prevent the native loader from reading the base.
+            // Resource budgets and structural box errors remain hard failures.
+            Err(CodecError::Decode | CodecError::Unsupported) if self.optional_fallback => {
+                gain.optional_error = true;
+                Ok(())
+            }
+            result => result,
+        }
+    }
 }
 impl GainMap {
     fn primary_nclx(&self) -> Result<Option<Nclx>, CodecError> {
         let mut nclx = None;
         for (&id, properties) in &self.associations {
+            if Some(id) != self.primary {
+                continue;
+            }
             for &index in properties {
                 if index == 0 {
                     continue;
@@ -337,8 +428,8 @@ impl GainMap {
                     .properties
                     .get(usize::from(index - 1))
                     .ok_or(CodecError::Decode)?;
-                if Some(id) == self.primary
-                    && let Some(profile) = property
+                let property = property.as_ref().map_err(|_| CodecError::Decode)?;
+                if let Some(profile) = property
                     && nclx.replace(*profile).is_some()
                 {
                     return Err(CodecError::Unsupported);
@@ -364,16 +455,21 @@ impl GainMap {
 }
 
 pub(crate) fn gain_map(file: File) -> Result<bool, CodecError> {
-    Ok(heif_info(file)?.gain_map)
+    Ok(heif_info_inner(file, false)?.gain_map)
 }
 
 pub(crate) fn heif_info(file: File) -> Result<HeifInfo, CodecError> {
+    heif_info_inner(file, true)
+}
+
+fn heif_info_inner(file: File, optional_fallback: bool) -> Result<HeifInfo, CodecError> {
     let len = file.metadata().map_err(|_| CodecError::Io)?.len();
     let mut walker = Walker {
         file,
         remaining: MAX_BOXES,
         metadata_remaining: MAX_METADATA,
         metadata: None,
+        optional_fallback,
         #[cfg(feature = "raw")]
         seen: [false; 3],
         #[cfg(feature = "raw")]
@@ -399,6 +495,7 @@ struct Walker {
     remaining: usize,
     metadata_remaining: u64,
     metadata: Option<(u64, Vec<u8>)>,
+    optional_fallback: bool,
     #[cfg(feature = "raw")]
     seen: [bool; 3],
     #[cfg(feature = "raw")]
@@ -673,6 +770,7 @@ pub(crate) fn preview(
         remaining: MAX_BOXES,
         metadata_remaining: MAX_METADATA,
         metadata: None,
+        optional_fallback: false,
         seen: [false; 3],
         limits: limits.clone(),
         preview: None,
@@ -763,6 +861,7 @@ pub(crate) fn video_dimensions(
         remaining: MAX_BOXES,
         metadata_remaining: MAX_METADATA,
         metadata: None,
+        optional_fallback: false,
         #[cfg(feature = "raw")]
         seen: [false; 3],
         #[cfg(feature = "raw")]

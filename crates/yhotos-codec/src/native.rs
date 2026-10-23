@@ -113,6 +113,7 @@ impl Image {
         } else {
             None
         };
+        let input_path = path;
         let path = path_string(path)?;
         // Dispatch only to the decoder selected by our magic sniffer. Generic
         // foreign_find_load probes unrelated fallback loaders (including Magick
@@ -122,16 +123,34 @@ impl Image {
         if matches!(kind, Kind::Heif) {
             return Err(CodecError::Unsupported);
         }
-        let image = operation!(|out| match kind {
-            Kind::Jpeg => ffi::vips_jpegload(path.as_ptr(), out, c"fail_on".as_ptr(), 3i32, END),
-            Kind::Png => ffi::vips_pngload(path.as_ptr(), out, c"fail_on".as_ptr(), 3i32, END),
-            Kind::Tiff => ffi::vips_tiffload(path.as_ptr(), out, c"fail_on".as_ptr(), 3i32, END),
-            Kind::Heif | Kind::Avif =>
-                ffi::vips_heifload(path.as_ptr(), out, c"fail_on".as_ptr(), 3i32, END),
-            Kind::Jxl => ffi::vips_jxlload(path.as_ptr(), out, c"fail_on".as_ptr(), 3i32, END),
-            Kind::Webp => ffi::vips_webpload(path.as_ptr(), out, c"fail_on".as_ptr(), 3i32, END),
-            _ => -1,
-        })?;
+        let image = if info.as_ref().is_some_and(|i| i.sdr_only) {
+            Err(CodecError::Decode)
+        } else {
+            operation!(|out| match kind {
+                Kind::Jpeg =>
+                    ffi::vips_jpegload(path.as_ptr(), out, c"fail_on".as_ptr(), 3i32, END),
+                Kind::Png => ffi::vips_pngload(path.as_ptr(), out, c"fail_on".as_ptr(), 3i32, END),
+                Kind::Tiff =>
+                    ffi::vips_tiffload(path.as_ptr(), out, c"fail_on".as_ptr(), 3i32, END),
+                Kind::Heif | Kind::Avif =>
+                    ffi::vips_heifload(path.as_ptr(), out, c"fail_on".as_ptr(), 3i32, END),
+                Kind::Jxl => ffi::vips_jxlload(path.as_ptr(), out, c"fail_on".as_ptr(), 3i32, END),
+                Kind::Webp =>
+                    ffi::vips_webpload(path.as_ptr(), out, c"fail_on".as_ptr(), 3i32, END),
+                _ => -1,
+            })
+        };
+        let image = match image {
+            Ok(image) => image,
+            Err(error) if info.as_ref().is_some_and(|i| i.gain_map) => {
+                let bytes = crate::hdr::read(input_path, &crate::Limits::default())?;
+                let Ok(bytes) = crate::gain_container::heif_sdr(&bytes) else {
+                    return Err(error);
+                };
+                Self::heif_source(&bytes)?
+            }
+            Err(error) => return Err(error),
+        };
         if let Some(info) = &info {
             // SAFETY: image owns a live private header; this bounded scalar is copied.
             unsafe {
@@ -148,6 +167,33 @@ impl Image {
             return image.with_profile(nclx_profile(nclx)?);
         }
         Ok(image)
+    }
+    fn heif_source(bytes: &[u8]) -> Result<Self, CodecError> {
+        // SAFETY: blob_copy owns a copy of the bounded container. The source
+        // refs the blob and the lazy loader refs the source, so both remain live
+        // through header probing and later pixel evaluation. Local references
+        // are released exactly once on both success and failure. Mutation tests
+        // decode and encode after this function's source buffer has been freed.
+        let source = unsafe {
+            let blob = NonNull::new(ffi::vips_blob_copy(bytes.as_ptr().cast(), bytes.len()))
+                .ok_or(CodecError::Decode)?;
+            let source = NonNull::new(ffi::vips_source_new_from_blob(blob.as_ptr()));
+            ffi::vips_area_unref(blob.as_ptr().cast());
+            source.ok_or(CodecError::Decode)?
+        };
+        let result = operation!(|out| ffi::vips_heifload_source(
+            source.as_ptr(),
+            out,
+            c"fail_on".as_ptr(),
+            3i32,
+            END
+        ));
+        // SAFETY: release the unique local source reference after the loader
+        // has taken its own reference (or failed).
+        unsafe {
+            ffi::g_object_unref(source.as_ptr().cast());
+        }
+        result
     }
     pub(crate) fn gain_jpeg(
         bytes: &[u8],

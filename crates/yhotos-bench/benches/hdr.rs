@@ -38,6 +38,28 @@ fn main() -> Result<(), Box<dyn Error>> {
     criterion.bench_function("hdr/decode_jpeg_gain_map", |b| {
         b.iter(|| yhotos_codec::decode(black_box(&input), &id, &Limits::default()));
     });
+    let avif = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/images/gain-map.avif");
+    let mut broken_avif = std::fs::read(&avif)?;
+    let reference = broken_avif
+        .windows(4)
+        .position(|bytes| bytes == b"dimg")
+        .ok_or("missing tmap reference")?;
+    broken_avif
+        .get_mut(reference + 10..reference + 12)
+        .ok_or("missing gain target")?
+        .fill(0);
+    let malformed = tempfile::NamedTempFile::new()?;
+    std::fs::write(malformed.path(), broken_avif)?;
+    for (form, path) in [("valid", avif.as_path()), ("dangling", malformed.path())] {
+        criterion.bench_function(&format!("hdr/identify_avif_tmap/{form}"), |b| {
+            b.iter(|| yhotos_codec::identify(black_box(path), &Limits::default()));
+        });
+        if let Ok(identity) = yhotos_codec::identify(path, &Limits::default()) {
+            criterion.bench_function(&format!("hdr/decode_avif_tmap/{form}"), |b| {
+                b.iter(|| yhotos_codec::decode(black_box(path), &identity, &Limits::default()));
+            });
+        }
+    }
     for (form, name) in [
         ("plain", "gain-map.jxl"),
         ("compressed", "gain-map-brob.jxl"),

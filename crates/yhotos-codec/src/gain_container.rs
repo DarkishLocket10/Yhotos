@@ -6,6 +6,8 @@
 )] // Cursor reads and fixed channel indices are bounded.
 use crate::{CodecError, Limits, hdr::Metadata};
 use std::collections::BTreeMap;
+mod sdr;
+pub(crate) use sdr::heif_sdr;
 
 pub(crate) fn jxl_present(path: &std::path::Path) -> Result<bool, CodecError> {
     use std::io::{Read, Seek, SeekFrom};
@@ -439,7 +441,7 @@ pub(crate) fn heif(bytes: &[u8], limits: &Limits) -> Result<HeifGain, CodecError
         if c.num(2)? != 0 {
             return Err(CodecError::Unsupported);
         }
-        if types.insert(id, c.take(4)?).is_some() {
+        if id == 0 || types.insert(id, c.take(4)?).is_some() || !info.data[c.at..].contains(&0) {
             return Err(CodecError::Decode);
         }
     }
@@ -453,29 +455,51 @@ pub(crate) fn heif(bytes: &[u8], limits: &Limits) -> Result<HeifGain, CodecError
     let mut derived = None;
     let mut aux = Vec::new();
     let mut metadata_owners = BTreeMap::new();
+    let mut references = 4096_usize;
+    let mut seen = std::collections::BTreeSet::new();
     for reference in boxes(&refs[4..], &mut budget)? {
         let mut c = Cursor::new(reference.data);
         let from = c.num(width)? as u32;
         let count = c.num(2)?;
-        if count > 4096 {
-            return Err(CodecError::Limits);
+        references = references
+            .checked_sub(count as usize)
+            .ok_or(CodecError::Limits)?;
+        if !types.contains_key(&from) || !seen.insert((reference.kind, from)) {
+            return Err(CodecError::Decode);
         }
+        let mut targets = Vec::new();
+        for _ in 0..count {
+            let target = c.num(width)? as u32;
+            if !types.contains_key(&target) || target == from || targets.contains(&target) {
+                return Err(CodecError::Decode);
+            }
+            targets.push(target);
+        }
+        if c.at != reference.data.len() {
+            return Err(CodecError::Decode);
+        }
+        let mut targets = targets.into_iter();
         if reference.kind == b"dimg" && types.get(&from) == Some(&b"tmap".as_slice()) && count == 2
         {
-            let base = c.num(width)? as u32;
-            let gain = c.num(width)? as u32;
+            let base = targets.next().ok_or(CodecError::Decode)?;
+            let gain = targets.next().ok_or(CodecError::Decode)?;
             if base != primary
                 || gain == base
-                || !types.contains_key(&gain)
+                || !matches!(types.get(&gain), Some(&b"av01" | &b"hvc1" | &b"grid"))
                 || derived.replace((from, gain)).is_some()
             {
                 return Err(CodecError::Decode);
             }
-        } else if reference.kind == b"auxl" && count == 1 && c.num(width)? == u64::from(primary) {
+        } else if reference.kind == b"auxl" && targets.next() == Some(primary) && count == 1 {
+            if !matches!(types.get(&from), Some(&b"hvc1" | &b"av01" | &b"grid")) {
+                return Err(CodecError::Decode);
+            }
             aux.push(from);
         } else if reference.kind == b"cdsc"
             && count == 1
-            && metadata_owners.insert(from, c.num(width)? as u32).is_some()
+            && metadata_owners
+                .insert(from, targets.next().ok_or(CodecError::Decode)?)
+                .is_some()
         {
             return Err(CodecError::Decode);
         }
@@ -501,17 +525,25 @@ pub(crate) fn heif(bytes: &[u8], limits: &Limits) -> Result<HeifGain, CodecError
     let mut apple = None;
     let mut transforms = BTreeMap::<u32, Vec<u8>>::new();
     let mut associations = 4096_usize;
+    let mut associated = std::collections::BTreeSet::new();
     for _ in 0..count {
         let id = c.num(if version == 0 { 2 } else { 4 })? as u32;
+        if !types.contains_key(&id) || !associated.insert(id) {
+            return Err(CodecError::Decode);
+        }
         let count = c.num(1)?;
         associations = associations
             .checked_sub(count as usize)
             .ok_or(CodecError::Limits)?;
+        let mut indices = std::collections::BTreeSet::new();
         for _ in 0..count {
             let index = c.num(if flags == 0 { 1 } else { 2 })? as usize
                 & if flags == 0 { 127 } else { 32767 };
             if index == 0 {
                 continue;
+            }
+            if !indices.insert(index) {
+                return Err(CodecError::Decode);
             }
             let p = properties.get(index - 1).ok_or(CodecError::Decode)?;
             if p.kind == b"irot" || p.kind == b"imir" {
@@ -535,12 +567,15 @@ pub(crate) fn heif(bytes: &[u8], limits: &Limits) -> Result<HeifGain, CodecError
                 }
                 item_transforms.push(orientation);
             }
-            if aux.contains(&id)
-                && p.kind == b"auxC"
-                && p.data.get(4..) == Some(b"urn:com:apple:photo:2020:aux:hdrgainmap\0")
-                && apple.replace(id).is_some()
-            {
-                return Err(CodecError::Decode);
+            if aux.contains(&id) && p.kind == b"auxC" {
+                if p.data.get(..4) != Some(&[0; 4]) {
+                    return Err(CodecError::Decode);
+                }
+                if p.data.get(4..) == Some(b"urn:com:apple:photo:2020:aux:hdrgainmap\0")
+                    && apple.replace(id).is_some()
+                {
+                    return Err(CodecError::Decode);
+                }
             }
         }
     }
