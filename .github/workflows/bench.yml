@@ -7,7 +7,25 @@ concurrency:
   group: bench-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: scripts/ci-changes.sh
+
   perf:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
@@ -33,7 +51,8 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Install native codec development libraries
-        run: sudo apt-get update && sudo apt-get install -y libvips-dev libvips-tools liblcms2-dev libclang-dev libjxl-dev libheif-plugin-aomenc libheif-plugin-aomdec libheif-plugin-libde265
+        timeout-minutes: 16
+        run: scripts/ci-apt.sh
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - run: cargo install sqlx-cli --version 0.9.0 --locked --no-default-features --features postgres,rustls
       - name: Create isolated base and head databases
@@ -56,7 +75,7 @@ jobs:
           retention-days: 14
   comment:
     # Fork PRs keep read-only tokens; the table remains available as an artifact.
-    if: always() && github.event.pull_request.head.repo.full_name == github.repository
+    if: always() && needs.perf.result != 'skipped' && github.event.pull_request.head.repo.full_name == github.repository
     needs: perf
     runs-on: ubuntu-24.04
     permissions:

@@ -33,7 +33,7 @@ request() {
         --dump-header "$tmp/headers" --output "$tmp/body" --write-out '%{http_code}' "$base$path")
     check_headers
 }
-for key in home album photo derivative; do
+for key in home album photo derivative search; do
     request "$(jq -er --arg key "$key" '.[$key] | strings' "$routes")"
     [[ "$status" == 200 ]] || fail "$key status $status"
 done

@@ -59,7 +59,7 @@ class SmokeTests(unittest.TestCase):
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             routes = pathlib.Path(directory) / "routes.json"
-            routes.write_text(json.dumps({"home": "/", "album": "/album", "photo": "/photo", "derivative": "/i/hash/small.jpeg", "restricted": "/restricted", "missing": "/missing"}))
+            routes.write_text(json.dumps({"home": "/", "album": "/album", "photo": "/photo", "search": "/search?q=garden", "derivative": "/i/hash/small.jpeg", "restricted": "/restricted", "missing": "/missing"}))
             result = subprocess.run(["bash", "scripts/security-smoke.sh"], cwd=ROOT,
                 env={**os.environ, "YHOTOS_BENCH_URL": f"http://127.0.0.1:{server.server_port}", "YHOTOS_BENCH_ROUTES": str(routes)}, capture_output=True, text=True)
             server.shutdown()
@@ -82,6 +82,54 @@ class SmokeTests(unittest.TestCase):
         for kwargs in ({"cookie": True}, {"duplicate": True}, {"mismatch": True}):
             with self.subTest(kwargs=kwargs):
                 self.assertNotEqual(self.smoke(**kwargs).returncode, 0)
+
+
+class SearchTests(unittest.TestCase):
+    def smoke(self, fault=None):
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *_):
+                pass
+
+            def do_GET(self):
+                semantic = self.path.endswith("?like=seed")
+                photos = [{"id": f"photo{i}", "title": f"Garden view {i}", "score": 2 / 61}
+                          for i in range(59 if semantic else 60)]
+                if fault == "private":
+                    photos[0]["id"] = "private"
+                elif fault == "seed" and semantic:
+                    photos[0]["id"] = "seed"
+                elif fault == "single-list":
+                    for photo in photos:
+                        photo["score"] = 1 / 61
+                data = {"total": len(photos), "photos": photos}
+                if fault == "no-embeddings" and semantic:
+                    data = {"total": 0, "photos": []}
+                self.send_response_only(200)
+                self.end_headers()
+                self.wfile.write(json.dumps(data).encode())
+
+        with http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server, tempfile.TemporaryDirectory() as directory:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            routes = pathlib.Path(directory) / "routes.json"
+            routes.write_text(json.dumps({"photo": "/p/seed", "restricted": "/p/private", "photos": 60,
+                "search_text": "/search?q=garden", "search_semantic": "/search?like=seed",
+                "search": "/search?q=garden&like=seed"}))
+            result = subprocess.run(["bash", "scripts/search-smoke.sh"], cwd=ROOT,
+                env={**os.environ, "YHOTOS_BENCH_URL": f"http://127.0.0.1:{server.server_port}",
+                     "YHOTOS_BENCH_ROUTES": str(routes)}, capture_output=True, text=True)
+            server.shutdown()
+            thread.join()
+            return result
+
+    def test_seeded_search_passes(self):
+        result = self.smoke()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_missing_embeddings_and_visibility_and_fusion_failures_are_rejected(self):
+        for fault in ("no-embeddings", "private", "seed", "single-list"):
+            with self.subTest(fault=fault):
+                self.assertNotEqual(self.smoke(fault).returncode, 0)
 
 
 class LoadTests(unittest.TestCase):
@@ -155,7 +203,13 @@ class FuzzTests(unittest.TestCase):
     def test_crashes_fail_but_do_not_skip_remaining_targets(self):
         result, commands = self.run_fuzz("Cargo.lock", "identify")
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(commands.count("fuzz run"), 5)
+        self.assertEqual(commands.count("fuzz run"), 7)
+
+    def test_current_search_and_map_parsers_run_when_their_crate_changes(self):
+        result, commands = self.run_fuzz("crates/yhotos-http/src/search/query.rs")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("run search_query", commands)
+        self.assertIn("run map_bbox", commands)
 
     def test_unrelated_changes_skip_parsers(self):
         result, commands = self.run_fuzz("docs/process.md")

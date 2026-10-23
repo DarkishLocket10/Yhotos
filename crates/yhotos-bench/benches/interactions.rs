@@ -37,6 +37,20 @@ static NEXT_IP: AtomicU32 = AtomicU32::new(0);
 
 type BenchResult<T> = Result<T, Box<dyn Error>>;
 
+async fn interaction_rows(db: &Db, photo: PhotoId, action: &str) -> BenchResult<Vec<Uuid>> {
+    let row = sqlx::query!(
+        r#"SELECT ARRAY(SELECT id FROM likes WHERE photo_id=$1 ORDER BY id) AS "likes!", ARRAY(SELECT id FROM flags WHERE photo_id=$1 ORDER BY id) AS "flags!""#,
+        photo.0
+    )
+    .fetch_one(db.pool())
+    .await?;
+    Ok(if action == "flag" {
+        row.flags
+    } else {
+        row.likes
+    })
+}
+
 async fn mutate(
     app: &Router,
     short: &ShortId,
@@ -223,6 +237,13 @@ fn main() -> BenchResult<()> {
     for count in [60, 10_000] {
         let (user, album, short, cookie) = runtime.block_on(seed(&db, count))?;
         let result = (|| -> BenchResult<()> {
+            let photo = runtime
+                .block_on(async {
+                    let mut conn = db.pool().acquire().await?;
+                    yhotos_db::photos::get_by_short_id(&mut conn, &short).await
+                })?
+                .ok_or("missing photo")?
+                .id;
             for (method, action) in [("POST", "like"), ("DELETE", "like"), ("POST", "flag")] {
                 for retry in [false, true] {
                     let name = if retry {
@@ -234,13 +255,9 @@ fn main() -> BenchResult<()> {
                     // deletion is fixture maintenance through a bound SQLx statement.
                     let measure = || -> BenchResult<Duration> {
                         if action == "flag" {
-                            let mut conn = runtime.block_on(db.pool().acquire())?;
-                            let page = runtime
-                                .block_on(yhotos_db::photos::get_by_short_id(&mut conn, &short))?
-                                .ok_or("missing photo")?;
                             runtime.block_on(
-                                sqlx::query!("DELETE FROM flags WHERE photo_id=$1", page.id as _)
-                                    .execute(&mut *conn),
+                                sqlx::query!("DELETE FROM flags WHERE photo_id=$1", photo as _)
+                                    .execute(db.pool()),
                             )?;
                             if retry {
                                 runtime.block_on(mutate(&app, &short, &cookie, method, action))?;
@@ -253,9 +270,26 @@ fn main() -> BenchResult<()> {
                             };
                             runtime.block_on(mutate(&app, &short, &cookie, prepare, action))?;
                         }
+                        let before = runtime.block_on(interaction_rows(&db, photo, action))?;
                         let start = Instant::now();
                         runtime.block_on(mutate(&app, &short, &cookie, method, action))?;
-                        Ok(start.elapsed())
+                        let elapsed = start.elapsed();
+                        let after = runtime.block_on(interaction_rows(&db, photo, action))?;
+                        // Verify persisted rows outside timing, so a response that only
+                        // repeats the requested state cannot masquerade as a real write.
+                        let valid = if retry {
+                            before == after
+                        } else if method == "DELETE" {
+                            before.len() == 1 && after.is_empty()
+                        } else {
+                            before.is_empty() && after.len() == 1
+                        };
+                        if !valid {
+                            return Err(
+                                format!("{name} did not perform its declared mutation").into()
+                            );
+                        }
+                        Ok(elapsed)
                     };
                     for _ in 0..20 {
                         measure()?;

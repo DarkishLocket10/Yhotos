@@ -1,0 +1,15 @@
+{
+	admin off
+	auto_https disable_redirects
+	skip_install_trust
+	persist_config off
+}
+
+# Reproduce compressed edge delivery for browser budgets, without caching or
+# changing the origin measured by the load and security scripts.
+https://localhost:8443 {
+	tls internal
+	header -Server
+	encode gzip
+	reverse_proxy 127.0.0.1:8080
+}

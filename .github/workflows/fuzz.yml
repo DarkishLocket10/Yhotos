@@ -10,11 +10,28 @@ concurrency:
   group: fuzz-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: scripts/ci-changes.sh
+
   fuzz:
+    needs: changes
     # Untrusted PR code NEVER runs on tower, including PRs carrying labels.
     runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-24.04' || fromJSON('["self-hosted","tower"]') }}
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
-    timeout-minutes: 240
+    if: needs.changes.outputs.code == 'true' && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main')
+    timeout-minutes: 360
     env:
       FUZZ_TOOLCHAIN: nightly-2026-10-20
       FUZZ_SECONDS: ${{ github.event_name == 'pull_request' && '60' || '1800' }}
@@ -27,7 +44,8 @@ jobs:
           persist-credentials: false
       - name: Install native libraries (hosted PR runner only)
         if: github.event_name == 'pull_request'
-        run: sudo apt-get update && sudo apt-get install -y libvips-dev libvips-tools liblcms2-dev libclang-dev libjxl-dev libheif-plugin-aomenc libheif-plugin-aomdec libheif-plugin-libde265
+        timeout-minutes: 16
+        run: scripts/ci-apt.sh
       - name: Install pinned fuzz tools
         run: |
           rustup toolchain install "$FUZZ_TOOLCHAIN" --profile minimal

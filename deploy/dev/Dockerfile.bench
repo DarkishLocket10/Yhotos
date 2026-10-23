@@ -3,6 +3,7 @@ WORKDIR /workspace
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY .sqlx ./.sqlx
 COPY crates ./crates
+COPY ml/labels.txt ./ml/labels.txt
 ENV SQLX_OFFLINE=true
 # Separate invocations keep the public server free of benchmark-only admin features.
 RUN cargo build --locked --release -p yhotos-bench --bins \

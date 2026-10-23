@@ -9,13 +9,15 @@ if [[ ${1:-} == --changed ]]; then
     changed=$(git diff --name-only "$2" HEAD)
 fi
 failed=0
-for target in identify token_parse safe_join range_header tus_headers; do
+for target in identify token_parse safe_join range_header tus_headers search_query map_bbox; do
     case "$target" in
         identify) paths='^crates/(yhotos-codec|yhotos-core)/';;
         token_parse) paths='^crates/(yhotos-auth|yhotos-core)/';;
         safe_join) paths='^crates/(yhotos-storage|yhotos-core)/';;
         range_header) paths='^crates/(yhotos-http|yhotos-storage)/';;
         tus_headers) paths='^crates/(yhotos-http|yhotos-config|yhotos-core)/';;
+        search_query) paths='^crates/(yhotos-http|yhotos-db|yhotos-core)/';;
+        map_bbox) paths='^crates/(yhotos-http|yhotos-db|yhotos-core)/';;
     esac
     if [[ "$changed" != all ]] && ! grep -Eq "$paths|^fuzz/|^Cargo\.(toml|lock)$|^rust-toolchain.toml$|^scripts/fuzz-smoke.sh$|^\.github/workflows/fuzz.yml$" <<< "$changed"; then
         continue

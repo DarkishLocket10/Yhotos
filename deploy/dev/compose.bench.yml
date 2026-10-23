@@ -10,6 +10,7 @@ services:
     command: [postgres, -c, listen_addresses=127.0.0.1]
     ports:
       - '127.0.0.1:${YHOTOS_BENCH_PORT:-18018}:8080'
+      - '127.0.0.1:${YHOTOS_LIGHTHOUSE_PORT:-18019}:8443'
     healthcheck:
       test: [CMD, pg_isready, -U, yhotos, -d, yhotos_bench]
       interval: 2s
@@ -66,6 +67,28 @@ services:
     security_opt: [no-new-privileges:true]
     healthcheck:
       test: [CMD, bash, -c, 'exec 3<>/dev/tcp/127.0.0.1/8080; printf "GET /healthz HTTP/1.0\r\n\r\n" >&3; cat <&3 | grep -q "^ok$$"']
+      interval: 2s
+      timeout: 5s
+      retries: 30
+  edge:
+    build:
+      context: ../..
+      dockerfile: deploy/dev/Dockerfile.bench-edge
+    network_mode: service:postgres
+    depends_on:
+      server:
+        condition: service_healthy
+    user: '1000:1000'
+    volumes:
+      - ./Caddyfile.bench:/etc/caddy/Caddyfile:ro
+    tmpfs:
+      - /data:mode=1777
+      - /config:mode=1777
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: [CMD-SHELL, 'wget --no-check-certificate -q -O - https://localhost:8443/healthz | grep -qx ok']
       interval: 2s
       timeout: 5s
       retries: 30

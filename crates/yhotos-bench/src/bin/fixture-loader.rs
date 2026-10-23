@@ -191,7 +191,34 @@ async fn main() -> Result<()> {
             ];
             let hash = original.hash.to_string();
             let len = i64::try_from(original.bytes)?;
-            sqlx::query!("UPDATE photos SET original_hash=$4,original_bytes=$5,width=2048,height=1365,dominant_colors=ARRAY[6191729],placeholder=$2,sort_order=$3 WHERE id=$1",photo_id.0,placeholder,index,hash,len).execute(&mut *conn).await?;
+            sqlx::query!("UPDATE photos SET original_hash=$4,original_bytes=$5,width=2048,height=1365,dominant_colors=ARRAY[6191729],placeholder=$2,sort_order=$3,status='ready' WHERE id=$1",photo_id.0,placeholder,index,hash,len).execute(&mut *conn).await?;
+            // Synthetic, finite 768-dimensional vectors exercise the real pgvector
+            // retrieval path without model weights, downloads, or a fake HTTP route.
+            let coordinate = usize::try_from(index)? % 767 + 1;
+            let vector: Vec<f32> = (0..768)
+                .map(|dimension| match dimension {
+                    0 => 1.0,
+                    n if n == coordinate => 0.25,
+                    _ => 0.0,
+                })
+                .collect();
+            let vector = serde_json::to_string(&vector)?;
+            sqlx::query!(
+                "INSERT INTO embeddings(photo_id,model,vector) VALUES($1,$2,$3::text::vector) ON CONFLICT (photo_id) DO UPDATE SET model=excluded.model,vector=excluded.vector",
+                photo_id.0,
+                yhotos_db::search::EMBED_MODEL,
+                vector
+            )
+            .execute(&mut *conn)
+            .await?;
+            sqlx::query!(
+                "INSERT INTO ocr_text(id,photo_id,text) VALUES($1,$2,$3) ON CONFLICT (photo_id) DO UPDATE SET text=excluded.text",
+                uuid::Uuid::now_v7(),
+                photo_id.0,
+                "garden"
+            )
+            .execute(&mut *conn)
+            .await?;
             for (variant, width, height, hash, len) in &representations {
                 if index == 0 && *variant == "small" {
                     derivative = Some(format!("/i/{hash}/small.jpeg"));
@@ -200,13 +227,20 @@ async fn main() -> Result<()> {
             }
         }
     }
+    let public_photo = public_photo.context("missing public photo")?;
+    let seed = public_photo
+        .strip_prefix("/p/")
+        .context("invalid photo route")?;
     let routes = serde_json::json!({
         "home": "/", "album": "/a/gallery-fixture",
-        "photo": public_photo.context("missing public photo")?,
+        "photo": public_photo,
         "restricted": restricted_photo.context("missing restricted photo")?,
         "missing": format!("/p/{}", yhotos_core::ShortId::from_photo_id(yhotos_core::PhotoId::new())),
         "derivative": derivative.context("missing derivative")?,
-        "search": "/search?q=garden", "photos": count
+        "search": format!("/search?q=garden&like={seed}"),
+        "search_text": "/search?q=garden",
+        "search_semantic": format!("/search?like={seed}"),
+        "photos": count
     });
     let output =
         std::env::var("YHOTOS_FIXTURE_ROUTES").context("YHOTOS_FIXTURE_ROUTES is required")?;

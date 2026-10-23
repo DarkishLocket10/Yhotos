@@ -1,27 +1,31 @@
 name: Lighthouse and security smoke
 on:
   pull_request:
-    paths:
-      - 'crates/yhotos-http/**'
-      - 'crates/yhotos-server/**'
-      - 'crates/yhotos-bench/**'
-      - 'web/**'
-      - '**/templates/**'
-      - 'deploy/dev/**'
-      - 'scripts/*smoke*'
-      - 'scripts/security-headers.json'
-      - 'scripts/bench-stack.sh'
-      - 'scripts/lighthouse.sh'
-      - 'lighthouserc.json'
-      - '.github/workflows/lighthouse.yml'
-      - 'Cargo.lock'
 permissions:
   contents: read
 concurrency:
   group: lighthouse-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: scripts/ci-changes.sh
+
   lighthouse:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:

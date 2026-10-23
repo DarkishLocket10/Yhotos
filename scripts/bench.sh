@@ -32,9 +32,13 @@ monitor_pid=$!
 # shellcheck disable=SC2016 # awk evaluates fields inside the container.
 cpu_usage() { bench_compose exec -T server awk '$1 == "usage_usec" {print $2}' /sys/fs/cgroup/cpu.stat; }
 for scenario in album photo derivative search mixed; do
+    # The 100-view concurrency budget applies to albums. Keep search below its
+    # production 16-request admission cap so this measures work rather than 429s.
+    concurrency=100
+    case "$scenario" in search|mixed) concurrency=4;; esac
     cpu_before=$(cpu_usage)
     time_before=$(date +%s%N)
-    oha --no-tui --output-format json -z "${YHOTOS_LOAD_DURATION:-30s}" -w -c 100 \
+    oha --no-tui --output-format json -z "${YHOTOS_LOAD_DURATION:-30s}" -w -c "$concurrency" \
         -H 'Cache-Control: no-cache' --urls-from-file "bench-results/$scenario.urls" > "bench-results/$scenario.json"
     time_after=$(date +%s%N)
     cpu_after=$(cpu_usage)

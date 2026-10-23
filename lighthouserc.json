@@ -6,7 +6,7 @@
         "onlyCategories": [
           "performance"
         ],
-        "chromeFlags": "--headless --no-sandbox",
+        "chromeFlags": "--headless --no-sandbox --ignore-certificate-errors",
         "formFactor": "mobile",
         "screenEmulation": {
           "mobile": true,
@@ -62,7 +62,14 @@
             "aggregationMethod": "pessimistic"
           }
         ],
-        "http-status-code": "error"
+        "http-status-code": "error",
+        "resource-summary:document:size": [
+          "error",
+          {
+            "maxNumericValue": 29999,
+            "aggregationMethod": "pessimistic"
+          }
+        ]
       }
     },
     "upload": {

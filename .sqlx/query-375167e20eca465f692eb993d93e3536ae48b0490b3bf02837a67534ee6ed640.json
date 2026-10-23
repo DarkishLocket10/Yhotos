@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT ARRAY(SELECT id FROM likes WHERE photo_id=$1 ORDER BY id) AS \"likes!\", ARRAY(SELECT id FROM flags WHERE photo_id=$1 ORDER BY id) AS \"flags!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "likes!",
+        "type_info": "UuidArray",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "flags!",
+        "type_info": "UuidArray",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "375167e20eca465f692eb993d93e3536ae48b0490b3bf02837a67534ee6ed640"
+}
