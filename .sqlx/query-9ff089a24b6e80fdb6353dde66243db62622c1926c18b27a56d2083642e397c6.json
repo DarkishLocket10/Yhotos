@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO album_grants(id,album_id,principal_kind,principal_id) VALUES($1,$2,'user',$3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9ff089a24b6e80fdb6353dde66243db62622c1926c18b27a56d2083642e397c6"
+}

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO photo_tags(id,photo_id,tag_id,source) VALUES($1,$2,$3,'manual')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c886ecb23dc8055848327d14e7803f967961540ecc7d87ed9dc2c5e8ac16ea6d"
+}

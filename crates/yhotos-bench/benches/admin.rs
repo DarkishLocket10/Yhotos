@@ -117,6 +117,50 @@ fn admin(c: &mut Criterion) {
             });
         });
     }
+    let photo = *photos.first().unwrap();
+    runtime.block_on(async {
+        sqlx::query!("INSERT INTO gazetteer(geonameid,name,admin1,country,lat,lon,population) VALUES(2147483000,'Benchmark city','Ontario','CA',43.7,-79.4,1000000) ON CONFLICT DO NOTHING").execute(&mut *tx).await.unwrap();
+        sqlx::query!("UPDATE photos SET gps_lat=43.7,gps_lon=-79.4 WHERE id=$1",photo.0).execute(&mut *tx).await.unwrap();
+    });
+    group.bench_function("geocode_and_invalidate", |b| {
+        b.iter_custom(|n| {
+            let mut elapsed = Duration::ZERO;
+            for _ in 0..n {
+                runtime.block_on(async {
+                    let mut iteration = sqlx::Connection::begin(&mut *tx).await.unwrap();
+                    let started = Instant::now();
+                    yhotos_db::places::reverse(&mut iteration, photo)
+                        .await
+                        .unwrap();
+                    elapsed += started.elapsed();
+                    iteration.rollback().await.unwrap();
+                });
+            }
+            elapsed
+        });
+    });
+    let purge: library::Command = serde_json::from_value(json!({
+        "op":"purge","kind":"photo","id":photo,"confirmation":"PURGE"
+    }))
+    .unwrap();
+    let destination = b.id;
+    group.bench_function("purge_pending_replacement", |b| {
+        b.iter_custom(|n| {
+            let mut elapsed = Duration::ZERO;
+            for _ in 0..n {
+                runtime.block_on(async {
+                    let mut iteration = sqlx::Connection::begin(&mut *tx).await.unwrap();
+                    sqlx::query!("UPDATE photos SET deleted_at=now() WHERE id=$1",photo.0).execute(&mut *iteration).await.unwrap();
+                    sqlx::query!("INSERT INTO uploads(id,user_id,album_id,filename,declared_bytes,mime_hint,tmp_path,replace_photo_id) VALUES($1,$2,$3,'pending.jpeg',100,'image/jpeg',$4,$5)",uuid::Uuid::now_v7(),user.id.0,destination.0,uuid::Uuid::new_v4().to_string(),photo.0).execute(&mut *iteration).await.unwrap();
+                    let started = Instant::now();
+                    black_box(library::execute_in(&mut iteration,user.id,&purge).await.unwrap());
+                    elapsed += started.elapsed();
+                    iteration.rollback().await.unwrap();
+                });
+            }
+            elapsed
+        });
+    });
     group.finish();
     runtime.block_on(tx.rollback()).unwrap();
     runtime.block_on(pool.close());

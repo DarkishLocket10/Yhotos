@@ -241,3 +241,23 @@ pub async fn patch_deadline(conn: &mut PgConnection, seconds: u32) -> Result<(),
     sqlx::query!("SELECT set_config('idle_in_transaction_session_timeout',$1,true) AS idle,set_config('statement_timeout',$1,true) AS statement",&value).fetch_one(conn).await?;
     Ok(())
 }
+
+/// Locks a bounded batch of cancelled upload files until their cleanup commits.
+/// # Errors
+/// Returns database failures. Stored identifiers still require storage validation.
+pub async fn cancelled(conn: &mut PgConnection) -> Result<Vec<String>, DbError> {
+    Ok(sqlx::query_scalar!(
+        "SELECT tmp_path FROM upload_gc ORDER BY tmp_path LIMIT 100 FOR UPDATE SKIP LOCKED"
+    )
+    .fetch_all(conn)
+    .await?)
+}
+/// Acknowledges cancellation cleanup only after the temporary directory is absent.
+/// # Errors
+/// Returns database failures; callers retain the cleanup lock through this deletion.
+pub async fn cancellation_done(conn: &mut PgConnection, temp: &str) -> Result<(), DbError> {
+    sqlx::query!("DELETE FROM upload_gc WHERE tmp_path=$1", temp)
+        .execute(conn)
+        .await?;
+    Ok(())
+}

@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT gps_lat,gps_lon,place_id,album_id FROM photos WHERE id=$1 AND deleted_at IS NULL AND NOT place_overridden FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "gps_lat",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "gps_lat"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "gps_lon",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "gps_lon"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "place_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "place_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "album_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "album_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "ff82589e29a8879bf2a53f12aeeae5580152e01f80189cf715471c312bcdf224"
+}

@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE photos SET status='ready',gps_lat=43.7,gps_lon=-79.4,gps_overridden=$2,place_id=$3,place_overridden=$4 WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bool",
+        "Uuid",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ff9c2f3b8933c67297e101c41d61ceafbee86d9581373071d1156f4cd95b8164"
+}

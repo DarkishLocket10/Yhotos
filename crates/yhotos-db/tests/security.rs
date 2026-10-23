@@ -120,8 +120,8 @@ async fn grant_matrix_catalog_and_forbidden_statements(pool: PgPool) {
     .fetch_all(&pool)
     .await
     .unwrap();
-    // Includes share-session memberships, uploads, admin trash/cache tables and the gazetteer.
-    assert_eq!(rows.len(), 38 * 3);
+    // Includes share-session memberships, uploads and cancellation cleanup, trash/cache and gazetteer.
+    assert_eq!(rows.len(), 39 * 3);
     for row in rows {
         let actual = (row.select, row.insert, row.update, row.delete);
         let expected = match row.role.as_str() {
@@ -157,6 +157,7 @@ async fn grant_matrix_catalog_and_forbidden_statements(pool: PgPool) {
                     "user_mfa",
                     "audit_log",
                     "uploads",
+                    "upload_gc",
                     "completed_uploads",
                     "original_trash",
                     "original_gc",

@@ -243,12 +243,12 @@ impl Ingest {
             .begin()
             .await
             .map_err(|_| retry("ingest transaction failed"))?;
-        let changed=sqlx::query!("UPDATE photos SET width=$3,height=$4,orientation=1,original_orientation=$5,is_hdr=$6,has_gain_map=$6,icc_name=$7,camera_make=$8,camera_model=$9,lens=$10,focal_mm=$11,aperture=$12,shutter=$13,iso=$14,gps_lat=CASE WHEN gps_overridden THEN gps_lat ELSE $15 END,gps_lon=CASE WHEN gps_overridden THEN gps_lon ELSE $16 END,taken_at=coalesce(taken_at_override,$17),dominant_colors=$18,placeholder=$19,kind=CASE WHEN $20 THEN 'raw'::media_kind ELSE kind END,status='ready',failure_reason=NULL,derivative_plan=$21,taken_at_local=CASE WHEN taken_at_override IS NOT NULL THEN taken_at_override AT TIME ZONE 'UTC' ELSE $22 END WHERE id=$1 AND original_hash=$2 AND generation=$23 AND deleted_at IS NULL", photo.0,original,width,height,i32::from(id.orientation),id.has_gain_map,id.icc_desc,m.make,m.model,m.lens,m.focal_mm,m.aperture,shutter,iso,lat,lon,taken,&colors,placeholder,raw,marker,taken_local,generation).execute(&mut *tx).await.map_err(|_|retry("photo publication failed"))?.rows_affected();
-        if changed != 1 {
+        let changed=sqlx::query!("UPDATE photos SET width=$3,height=$4,orientation=1,original_orientation=$5,is_hdr=$6,has_gain_map=$6,icc_name=$7,camera_make=$8,camera_model=$9,lens=$10,focal_mm=$11,aperture=$12,shutter=$13,iso=$14,gps_lat=CASE WHEN gps_overridden THEN gps_lat ELSE $15 END,gps_lon=CASE WHEN gps_overridden THEN gps_lon ELSE $16 END,taken_at=coalesce(taken_at_override,$17),dominant_colors=$18,placeholder=$19,kind=CASE WHEN $20 THEN 'raw'::media_kind ELSE kind END,status='ready',failure_reason=NULL,derivative_plan=$21,taken_at_local=CASE WHEN taken_at_override IS NOT NULL THEN taken_at_override AT TIME ZONE 'UTC' ELSE $22 END WHERE id=$1 AND original_hash=$2 AND generation=$23 AND deleted_at IS NULL RETURNING gps_lat,gps_lon,place_overridden,place_id", photo.0,original,width,height,i32::from(id.orientation),id.has_gain_map,id.icc_desc,m.make,m.model,m.lens,m.focal_mm,m.aperture,shutter,iso,lat,lon,taken,&colors,placeholder,raw,marker,taken_local,generation).fetch_optional(&mut *tx).await.map_err(|_|retry("photo publication failed"))?;
+        let Some(changed) = changed else {
             // Replacement superseded this original. Its independently queued
             // ingest owns the current photo; the obsolete job is complete.
             return Ok(());
-        }
+        };
         // Remove only obsolete plan entries; upsert preserves identities of retained entries.
         sqlx::query!("DELETE FROM derivatives WHERE photo_id=$1 AND (hdr OR (variant,format) NOT IN (SELECT * FROM UNNEST($2::text[],$3::text[])))",photo.0,&variants,&formats).execute(&mut *tx).await.map_err(|_|retry("derivative cleanup failed"))?;
         sqlx::query!("INSERT INTO derivatives(id,photo_id,variant,format,hdr,hash,width,height,bytes) SELECT id,$1,variant,format,false,hash,width,height,bytes FROM UNNEST($2::uuid[],$3::text[],$4::text[],$5::text[],$6::int[],$7::int[],$8::bigint[]) AS d(id,variant,format,hash,width,height,bytes) ON CONFLICT(photo_id,variant,format,hdr) DO UPDATE SET hash=excluded.hash,width=excluded.width,height=excluded.height,bytes=excluded.bytes",photo.0,&ids,&variants,&formats,&hashes,&widths,&heights,&sizes).execute(&mut *tx).await.map_err(|_|retry("derivative publication failed"))?;
@@ -258,7 +258,13 @@ impl Ingest {
             Job::MlOcr { photo_id: photo },
             Job::MlTags { photo_id: photo },
         ];
-        if m.gps.is_some() {
+        // Geocode the effective stored GPS: an explicit admin location survives a
+        // replacement whose bytes contain no GPS. Also clear a previous automatic
+        // place when an automatic GPS reset finds no GPS in the current bytes.
+        if !changed.place_overridden
+            && ((changed.gps_lat.is_some() && changed.gps_lon.is_some())
+                || changed.place_id.is_some())
+        {
             followups.push(Job::GeoReverse { photo_id: photo });
         }
         for job in followups {

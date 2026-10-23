@@ -101,7 +101,7 @@ impl Ingest {
             },
         })
     }
-    /// Sweeps expired upload rows under locks and abandoned durable directories after 24 hours.
+    /// Removes cancelled and expired uploads under locks, then orphans older than 24 hours.
     /// # Errors
     /// Returns retryable failures without leaking storage paths.
     pub async fn sweep_uploads(&self) -> Result<(), JobError> {
@@ -114,6 +114,22 @@ impl Ingest {
             yhotos_db::uploads::remove_expired_completions(&mut tx)
                 .await
                 .map_err(|_| retry("upload sweep failed"))?;
+            let cancelled = yhotos_db::uploads::cancelled(&mut tx)
+                .await
+                .map_err(|_| retry("upload sweep failed"))?;
+            let cancelled_count = cancelled.len();
+            for temp in cancelled {
+                let id: TempId = temp
+                    .parse()
+                    .map_err(|_| retry("invalid upload identifier"))?;
+                self.store
+                    .remove_upload(&id)
+                    .await
+                    .map_err(|_| retry("upload cleanup failed"))?;
+                yhotos_db::uploads::cancellation_done(&mut tx, &temp)
+                    .await
+                    .map_err(|_| retry("upload sweep failed"))?;
+            }
             let rows = yhotos_db::uploads::expired(&mut tx)
                 .await
                 .map_err(|_| retry("upload sweep failed"))?;
@@ -134,7 +150,7 @@ impl Ingest {
             tx.commit()
                 .await
                 .map_err(|_| retry("upload sweep failed"))?;
-            if count < 100 {
+            if count < 100 && cancelled_count < 100 {
                 break;
             }
         }

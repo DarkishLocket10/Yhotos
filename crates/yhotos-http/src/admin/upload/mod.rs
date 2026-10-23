@@ -370,13 +370,14 @@ async fn patch(
         }
     })?;
     drop(file);
+    let previous_offset = row.received_bytes;
     row.received_bytes = i64::try_from(next).map_err(internal)?;
     uploads::advance(&mut tx, id, row.received_bytes).await?;
     if next < u64::try_from(row.declared_bytes).map_err(internal)? {
         tx.commit().await?;
         return progress(&row);
     }
-    complete(&state, tx, row).await
+    complete(&state, tx, row, previous_offset).await
 }
 fn progress(row: &uploads::Upload) -> Result<Response, HttpError> {
     let mut r = StatusCode::NO_CONTENT.into_response();
@@ -397,7 +398,8 @@ async fn finish(
     if row.received_bytes != row.declared_bytes {
         return Err(HttpError::Upload(StatusCode::CONFLICT));
     }
-    complete(&state, tx, row).await
+    let previous_offset = row.received_bytes;
+    complete(&state, tx, row, previous_offset).await
 }
 async fn prepare_original(
     state: &AppState,
@@ -432,6 +434,7 @@ async fn complete(
     state: &AppState,
     mut tx: sqlx::Transaction<'_, sqlx::Postgres>,
     row: uploads::Upload,
+    previous_offset: i64,
 ) -> Result<Response, HttpError> {
     // Both entry points coordinate only on the creator's upload during IO and validation.
     let id = row.id;
@@ -461,15 +464,23 @@ async fn complete(
     uploads::lock_hash(&mut tx, &hash).await?;
     // No tree or album lock is held while the request body streams or the host validates.
     // Revalidate under short-lived library coordination before changing any photo rows.
-    if !uploads::lock_for_completion(&mut tx, row.album_id)
-        .await
-        .map_err(|error| match error {
-            yhotos_db::DbError::InvalidInput => HttpError::NotFound,
-            _ => HttpError::from(error),
-        })?
-    {
+    let unavailable = match uploads::lock_for_completion(&mut tx, row.album_id).await {
+        Ok(true) => None,
+        Ok(false) => Some(HttpError::Upload(StatusCode::CONFLICT)),
+        Err(yhotos_db::DbError::InvalidInput) => Some(HttpError::NotFound),
+        Err(error) => return Err(HttpError::from(error)),
+    };
+    if let Some(error) = unavailable {
+        // Validation may already have published bytes. Keep their GC identity even
+        // when a concurrent purge cancels this upload before it can be retried.
+        yhotos_db::library::abandoned_original(&mut tx, &hash).await?;
+        if matches!(error, HttpError::NotFound) {
+            // An unavailable destination rejects this PATCH's progress, while a
+            // busy tree retains it for an empty final PATCH retry.
+            uploads::advance(&mut tx, id, previous_offset).await?;
+        }
         tx.commit().await?;
-        return Err(HttpError::Upload(StatusCode::CONFLICT));
+        return Err(error);
     }
     let replacement = yhotos_db::library::replacement_target(&mut tx, id).await?;
     let existing = photos::get_by_hash(&mut tx, &hash)
@@ -488,12 +499,17 @@ async fn complete(
             kind: validated.kind,
         };
         replaced_change = Some(
-            yhotos_db::library::replace(&mut tx, row.user_id, target, &original)
-                .await
-                .map_err(|error| match error {
-                    yhotos_db::DbError::InvalidInput => HttpError::NotFound,
-                    _ => HttpError::from(error),
-                })?,
+            match yhotos_db::library::replace(&mut tx, row.user_id, target, &original).await {
+                Ok(change) => change,
+                Err(yhotos_db::DbError::InvalidInput) => {
+                    yhotos_db::library::abandoned_original(&mut tx, &original.original_hash)
+                        .await?;
+                    uploads::advance(&mut tx, id, previous_offset).await?;
+                    tx.commit().await?;
+                    return Err(HttpError::NotFound);
+                }
+                Err(error) => return Err(HttpError::from(error)),
+            },
         );
         (
             photos::get_by_id(&mut tx, yhotos_core::PhotoId(target))

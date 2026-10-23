@@ -978,6 +978,16 @@ async fn trash(
             return Err(DbError::InvalidInput);
         }
         sqlx::query!("INSERT INTO original_gc SELECT DISTINCT original_hash FROM photos WHERE id=ANY($1) ON CONFLICT DO NOTHING",&photos).execute(&mut *c).await?;
+        // A pending replacement must not pin a trashed photo through its FK, nor
+        // become a new upload after its target disappears. Cancel it atomically.
+        // Retain cleanup roots until GC has removed the temporary directories.
+        sqlx::query!(
+            "WITH cancelled AS (DELETE FROM uploads WHERE replace_photo_id=ANY($1) OR album_id=ANY($2) RETURNING tmp_path) INSERT INTO upload_gc SELECT tmp_path FROM cancelled ON CONFLICT DO NOTHING",
+            &photos,
+            &albums
+        )
+        .execute(&mut *c)
+        .await?;
         sqlx::query!("DELETE FROM photos WHERE id=ANY($1)", &photos)
             .execute(&mut *c)
             .await?;
@@ -1148,6 +1158,19 @@ pub async fn replace(
 /// Returns whether any photo (including trash) or retained original still owns a hash.
 pub async fn original_referenced(c: &mut PgConnection, hash: &str) -> Result<bool, DbError> {
     Ok(sqlx::query_scalar!(r#"SELECT EXISTS(SELECT 1 FROM photos WHERE original_hash=$1) OR EXISTS(SELECT 1 FROM original_trash WHERE original_hash=$1 AND expires_at>now()) AS "keep!""#,hash).fetch_one(c).await?)
+}
+/// Retains a published original as a GC candidate when its upload cannot complete.
+/// GC rechecks live references and its age before removing any bytes.
+/// # Errors
+/// Returns database failures; malformed content identities fail the table constraint.
+pub async fn abandoned_original(c: &mut PgConnection, hash: &str) -> Result<(), DbError> {
+    sqlx::query!(
+        "INSERT INTO original_gc(original_hash) VALUES($1) ON CONFLICT DO NOTHING",
+        hash
+    )
+    .execute(c)
+    .await?;
+    Ok(())
 }
 /// Claims expired original roots as GC candidates; still-referenced hashes remain safe.
 pub async fn gc_candidates(c: &mut PgConnection) -> Result<Vec<String>, DbError> {

@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT jsonb_build_object(\n      'grants',(SELECT jsonb_agg(id ORDER BY id) FROM photo_grants WHERE photo_id=$1),\n      'derivatives',(SELECT jsonb_agg(id ORDER BY id) FROM derivatives WHERE photo_id=$1),\n      'video',(SELECT jsonb_agg(id ORDER BY id) FROM video_renditions WHERE photo_id=$1),\n      'tags',(SELECT jsonb_agg(id ORDER BY id) FROM photo_tags WHERE photo_id=$1),\n      'likes',(SELECT jsonb_agg(id ORDER BY id) FROM likes WHERE photo_id=$1),\n      'flags',(SELECT jsonb_agg(id ORDER BY id) FROM flags WHERE photo_id=$1),\n      'faces',(SELECT jsonb_agg(id ORDER BY id) FROM faces WHERE photo_id=$1),\n      'embeddings',(SELECT jsonb_agg(photo_id) FROM embeddings WHERE photo_id=$1),\n      'ocr',(SELECT jsonb_agg(id ORDER BY id) FROM ocr_text WHERE photo_id=$1),\n      'covers',(SELECT jsonb_agg(id ORDER BY id) FROM albums WHERE cover_photo_id=$1),\n      'events',(SELECT jsonb_agg(id ORDER BY id) FROM events WHERE photo_id=$1)\n    ) AS \"rows!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "rows!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "98db4439a078f458a91932d6023a4c8666a316b0e12d941f45c1e99c5f39fef1"
+}

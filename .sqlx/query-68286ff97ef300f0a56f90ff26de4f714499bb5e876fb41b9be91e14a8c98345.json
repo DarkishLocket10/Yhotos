@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM upload_gc WHERE tmp_path=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "68286ff97ef300f0a56f90ff26de4f714499bb5e876fb41b9be91e14a8c98345"
+}

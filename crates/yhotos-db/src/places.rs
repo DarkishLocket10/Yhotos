@@ -4,31 +4,30 @@ use sqlx::Connection;
 use yhotos_core::PhotoId;
 
 /// Resolves a live photo within 50 km, favoring populated cities, atomically.
-/// Repeated calls reuse the `GeoNames` identity. Missing GPS is a no-op; a valid
-/// coordinate with no nearby city clears its place. Locks fence metadata edits.
+/// Repeated calls reuse the `GeoNames` identity. Missing GPS or no nearby city
+/// clears automatic places. Changes and their cache purge commit together. Locks fence edits.
 ///
 /// # Errors
 /// Returns database failures without exposing coordinates or stored metadata.
 pub async fn reverse(conn: &mut PgConnection, photo: PhotoId) -> Result<(), DbError> {
     let mut tx = conn.begin().await?;
     let row = sqlx::query!(
-        "SELECT gps_lat,gps_lon FROM photos WHERE id=$1 AND deleted_at IS NULL AND NOT place_overridden FOR UPDATE",
+        "SELECT gps_lat,gps_lon,place_id,album_id FROM photos WHERE id=$1 AND deleted_at IS NULL AND NOT place_overridden FOR UPDATE",
         photo as _
     )
     .fetch_optional(&mut *tx)
     .await?;
-    if let Some(row) = row
-        && let (Some(lat), Some(lon)) = (row.gps_lat, row.gps_lon)
-    {
-        // Conservative spherical cap envelope, including the poles and date line.
-        let dy = 0.45_f64;
-        let dx = if lat.abs() + dy >= 90.0 {
-            180.0
-        } else {
-            (dy / (lat.abs() + dy).to_radians().cos()).min(180.0)
-        };
-        let city = sqlx::query!(
-            r#"WITH candidates AS (
+    if let Some(row) = row {
+        let city = if let (Some(lat), Some(lon)) = (row.gps_lat, row.gps_lon) {
+            // Conservative spherical cap envelope, including the poles and date line.
+            let dy = 0.45_f64;
+            let dx = if lat.abs() + dy >= 90.0 {
+                180.0
+            } else {
+                (dy / (lat.abs() + dy).to_radians().cos()).min(180.0)
+            };
+            sqlx::query!(
+                r#"WITH candidates AS (
           SELECT g.*, 6371.0088 * acos(least(1.0,greatest(-1.0,
             sin(radians($1))*sin(radians(lat)) +
             cos(radians($1))*cos(radians(lat))*cos(radians(lon-$2))))) AS distance
@@ -38,12 +37,15 @@ pub async fn reverse(conn: &mut PgConnection, photo: PhotoId) -> Result<(), DbEr
             point <@ box(point($2-$3+360,$1-0.45),point($2+$3+360,$1+0.45))
         ) SELECT geonameid,name,admin1,country,lat,lon FROM candidates
           WHERE distance <= 50.0 ORDER BY distance / ln(population::float8+10),geonameid LIMIT 1"#,
-            lat,
-            lon,
-            dx
-        )
-        .fetch_optional(&mut *tx)
-        .await?;
+                lat,
+                lon,
+                dx
+            )
+            .fetch_optional(&mut *tx)
+            .await?
+        } else {
+            None
+        };
         let place = if let Some(city) = city {
             Some(sqlx::query!(r#"INSERT INTO places(id,geonameid,name,admin1,country,lat,lon)
               VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(geonameid) DO UPDATE SET
@@ -53,13 +55,24 @@ pub async fn reverse(conn: &mut PgConnection, photo: PhotoId) -> Result<(), DbEr
         } else {
             None
         };
-        sqlx::query!(
-            "UPDATE photos SET place_id=$2 WHERE id=$1 AND place_id IS DISTINCT FROM $2",
-            photo as _,
-            place
-        )
-        .execute(&mut *tx)
-        .await?;
+        if place != row.place_id {
+            sqlx::query!(
+                "UPDATE photos SET place_id=$2 WHERE id=$1",
+                photo as _,
+                place
+            )
+            .execute(&mut *tx)
+            .await?;
+            let mut tags = crate::library::aggregate_tags();
+            tags.extend([format!("photo:{photo}"), format!("album:{}", row.album_id)]);
+            tags.extend(
+                row.place_id
+                    .into_iter()
+                    .chain(place)
+                    .map(|id| format!("place:{id}")),
+            );
+            crate::library::outbox(&mut tx, serde_json::Value::Null, tags).await?;
+        }
     }
     tx.commit().await?;
     Ok(())
