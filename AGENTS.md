@@ -9,6 +9,7 @@ You are working on a public, internet-facing photo gallery written in Rust. Read
 - `docs/threat-model.md`: what we defend against and how. Every change touching input, auth, files, or the network must be checked against it.
 - `docs/performance.md`: budgets and how they are measured. A change that regresses a budget is not done.
 - `docs/process.md`: how tasks flow from brief to merged PR.
+- `docs/decisions.md`: maintainer decisions made after briefs were written. They are binding and override older brief or doc text.
 - `tasks/`: one brief per task. Your brief defines your scope. Nothing outside it.
 
 ## Hard rules
