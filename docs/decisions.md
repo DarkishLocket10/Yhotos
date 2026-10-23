@@ -19,3 +19,5 @@ scope violation. Newest last.
 | 2026-10-22 | Deploy | 023 depends on 014 and 018. | 023 |
 | 2026-10-22 | Search | Task 014's Docker image build, offline (no egress) run and combined GPU timing are verified during staging on tower's GTX 1080 Ti (task 023), not in the 014 PR. 014 merges once its code review passes on everything else. | 014, 023 |
 | 2026-10-22 | Search | ML preprocessing converts every image to sRGB from its ICC profile before inference. | 014 |
+| 2026-10-22 | Video | The manual one-minute 4K iPhone upload and playback check (desktop and mobile, with timings) happens during staging (task 023), not in the 021 PR. | 021, 023 |
+| 2026-10-22 | Zip | ZIP streaming budget is at least 200 MB/s with under 20 % of one core per stream (STORE, measured through the production router on yesktop), relaxed from 10 %: bulk downloads are occasional exports, not a per-page path. | 021, docs/performance.md |
