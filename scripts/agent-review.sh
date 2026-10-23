@@ -47,6 +47,12 @@ echo "reviewing $BRANCH with gpt-6-astra (effort $EFFORT)"
 PROMPT_FILE="$(mktemp)"
 {
   cat "$REPO_ROOT/scripts/review-prompt.md"
+  # Older branches may predate the decision log; always give the reviewer main's copy.
+  if git -C "$REPO_ROOT" show origin/main:docs/decisions.md > /dev/null 2>&1; then
+    echo
+    echo "----- docs/decisions.md on main (binding maintainer decisions) -----"
+    git -C "$REPO_ROOT" show origin/main:docs/decisions.md
+  fi
   echo
   echo "The PR is task $TASK_ID ($SLUG) on branch $BRANCH. The base is origin/main."
   echo "Get the diff with: git diff origin/main...HEAD   and the file list with: git diff --name-only origin/main...HEAD"
