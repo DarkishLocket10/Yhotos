@@ -210,6 +210,22 @@ async fn suggest_counts_are_visible_and_rate_limited(pool: PgPool) {
         StatusCode::TOO_MANY_REQUESTS
     );
 }
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn search_and_gallery_apis_share_routes_and_preserve_cache_policies(pool: PgPool) {
+    let state = fixture(&pool).await;
+    let app = crate::public_router(state);
+    let photo = ShortId::from_photo_id(PhotoId(uuid::Uuid::from_u128(1)));
+    for (path, policy) in [
+        (format!("/api/v1/photos/{photo}"), "public, max-age=60"),
+        ("/api/v1/search?q=sunset".into(), "private, no-store"),
+        ("/api/v1/suggest?q=Test".into(), "private, no-store"),
+    ] {
+        let response = app.clone().oneshot(request(&path)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        assert_eq!(response.headers()[header::CACHE_CONTROL], policy, "{path}");
+        assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
+    }
+}
 #[tokio::test]
 async fn embedding_client_validates_and_caches() {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -360,6 +376,10 @@ async fn semantic_scan_continues_past_excluded_nearest_neighbors(pool: PgPool) {
 async fn private_face_routes_are_unreachable_on_public_listener() {
     let app = crate::public_router(crate::tests::state(false, 600));
     for path in [
+        "/admin/people".into(),
+        "/admin/people/search?q=person:Yash".into(),
+        "/api/v1/faces".into(),
+        "/api/v1/persons".into(),
         "/admin/people/faces/00000000-0000-0000-0000-000000000001.jpeg".into(),
         format!("/i/{}/face.jpeg", "a".repeat(64)),
         format!("/i/{}/face.avif", "a".repeat(64)),

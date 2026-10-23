@@ -18,6 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Box::leak(Box::new(Config {
         ml_address: "127.0.0.1:1".into(),
         worker: yhotos_config::Worker::default(),
+        map_tiles: yhotos_config::MapTiles::default(),
         public_listen: peer,
         admin_listen: Some(peer),
         database_url_admin: None,

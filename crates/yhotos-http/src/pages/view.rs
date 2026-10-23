@@ -1,5 +1,6 @@
 //! Validated presentation values. Only generated numeric/base64 CSS bypasses escaping.
 use super::grid::justified_rows;
+use crate::{api::Caps, middleware::session::SessionIdentity, share::Links};
 use crate::{error::HttpError, files::valid_derivative_selector};
 use askama::Template;
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -22,6 +23,7 @@ pub struct PageContext<'a> {
     pub public_base_url: &'a str,
 }
 /// Capabilities of the independently verified scope used to view this photo.
+#[derive(Clone, Copy)]
 pub(crate) struct PhotoControls<'a> {
     pub csrf: &'a str,
     pub download: bool,
@@ -33,6 +35,7 @@ struct Actions<'a> {
     csrf: &'a str,
     like: bool,
     flag: bool,
+    short_id: yhotos_core::ShortId,
 }
 struct OpenGraph {
     image: String,
@@ -40,6 +43,7 @@ struct OpenGraph {
     height: u32,
     kind: &'static str,
 }
+#[derive(serde::Serialize)]
 struct Image {
     src: String,
     jpeg: Sources,
@@ -48,16 +52,24 @@ struct Image {
     hdr_jpeg: Sources,
     hdr_avif: Sources,
     hdr_jxl: Sources,
+    #[serde(skip_serializing)]
     sizes: String,
     width: u32,
     height: u32,
+    #[serde(skip_serializing)]
     alt: String,
+    #[serde(skip_serializing)]
     thumbhash: String,
+    #[serde(skip_serializing)]
     loading: &'static str,
 }
+#[derive(serde::Serialize)]
 struct Sources {
     all: String,
+    #[serde(skip_serializing)]
     mobile: String,
+    #[serde(skip_serializing)]
+    max_width: u32,
 }
 struct Cell {
     index: usize,
@@ -79,6 +91,7 @@ struct Crumb {
     href: String,
     title: String,
 }
+#[derive(serde::Serialize)]
 struct Download {
     href: String,
     label: String,
@@ -164,8 +177,10 @@ fn source(
     let mut sources = Sources {
         all: String::new(),
         mobile: String::new(),
+        max_width: 0,
     };
     for (d, url) in derivatives {
+        sources.max_width = d.w;
         if !sources.all.is_empty() {
             sources.all.push_str(", ");
         }
@@ -342,6 +357,102 @@ pub fn render_home(albums: &[AlbumCard], context: &PageContext<'_>) -> Result<St
     .render()
     .map_err(|e| HttpError::Internal(e.into()))
 }
+// Shared with place results so image sizing and grid layout stay identical.
+fn photo_rows(photos: &[PagePhoto], sort: PageSort, styles: &mut String) -> Vec<Row> {
+    let ratios: Vec<_> = photos
+        .iter()
+        .map(|p| {
+            let (w, h) = dimensions(p);
+            (f64::from(w) / f64::from(h)).clamp(0.1, 10.0)
+        })
+        .collect();
+    justified_rows(&ratios)
+        .iter()
+        .enumerate()
+        .map(|(row_index, row)| {
+            let cells = photos
+                .iter()
+                .enumerate()
+                .take(row.end)
+                .skip(row.start)
+                .map(|(index, p)| {
+                    let ratio = ratios.get(index).copied().unwrap_or(1.0);
+                    let percent = ratio / row.ratio * 100.0;
+                    let (w, h) = dimensions(p);
+                    let _ = write!(
+                        styles,
+                        "#cell{index}{{flex:{ratio:.5} 1 {percent:.5}%;aspect-ratio:{w}/{h};{}}}",
+                        background(p, row_index == 0)
+                    );
+                    Cell {
+                        index,
+                        href: format!("/p/{}?sort={}", p.short_id, sort.as_str()),
+                        image: image(
+                            p,
+                            format!(
+                                "(max-width: 1232px) calc((100vw - 32px) * {:.6}), {:.0}px",
+                                percent / 100.0,
+                                1200.0 * percent / 100.0
+                            ),
+                            row_index == 0,
+                            true,
+                        ),
+                        badge: match p.kind.as_str() {
+                            "raw" => "RAW",
+                            "video" => "Play video",
+                            _ => "",
+                        },
+                    }
+                })
+                .collect();
+            Row { cells }
+        })
+        .collect()
+}
+#[derive(Template)]
+#[template(path = "default/place.html")]
+struct PlaceTemplate<'a> {
+    context: &'a PageContext<'a>,
+    title: String,
+    description: &'static str,
+    styles: String,
+    rows: Vec<Row>,
+    total: u64,
+    number: u32,
+    previous: Option<String>,
+    next: Option<String>,
+}
+/// Renders visible place results using the album grid and sixty-photo pagination.
+///
+/// # Errors
+/// Returns template rendering failures.
+pub fn render_place(
+    page: &yhotos_db::places::PlacePage,
+    place: uuid::Uuid,
+    number: u32,
+    context: &PageContext<'_>,
+) -> Result<String, HttpError> {
+    let mut styles = String::new();
+    let rows = photo_rows(&page.photos, PageSort::Taken, &mut styles);
+    let title = match &page.admin1 {
+        Some(region) => format!("{}, {region}, {}", page.name, page.country),
+        None => format!("{}, {}", page.name, page.country),
+    };
+    let page_url = |n| format!("/places/{place}?page={n}");
+    PlaceTemplate {
+        context,
+        title,
+        description: "Photos taken at this place",
+        styles,
+        rows,
+        total: page.total,
+        number,
+        previous: (number > 1).then(|| page_url(number - 1)),
+        next: (u64::from(number) * 60 < page.total).then(|| page_url(number + 1)),
+    }
+    .render()
+    .map_err(|e| HttpError::Internal(e.into()))
+}
 #[derive(Template)]
 #[template(path = "default/album.html")]
 struct AlbumTemplate<'a> {
@@ -359,6 +470,10 @@ struct AlbumTemplate<'a> {
     next: Option<String>,
     sort: &'static str,
     island: String,
+    like: bool,
+    flag: bool,
+    download: bool,
+    scripts: Vec<&'static str>,
 }
 /// Renders a sixty-photo page including O(n) grid math and first-row PNG placeholders.
 ///
@@ -370,11 +485,41 @@ pub fn render_album(
     sort: PageSort,
     context: &PageContext<'_>,
 ) -> Result<String, HttpError> {
-    let (rows, styles) = grid(&page.photos, card_styles(&page.children), sort);
+    render_album_for(
+        page,
+        number,
+        sort,
+        context,
+        &SessionIdentity::Anonymous,
+        &Links::default(),
+    )
+}
+pub(crate) fn render_album_for(
+    page: &AlbumPage,
+    number: u32,
+    sort: PageSort,
+    context: &PageContext<'_>,
+    identity: &SessionIdentity,
+    links: &Links,
+) -> Result<String, HttpError> {
+    let mut styles = card_styles(&page.children);
+    let rows = photo_rows(&page.photos, sort, &mut styles);
     let href = path(&page.album.path)?;
     let page_url = |number| format!("{href}?page={number}&sort={}", sort.as_str());
-    let island=serde_json::to_string(&serde_json::json!({"photos":page.photos.iter().map(|p|serde_json::json!({"id":p.short_id,"title":p.title})).collect::<Vec<_>>()})).map_err(|e|HttpError::Internal(e.into()))?.replace("</","<\\/")
-        .replace('<', "\\u003c").replace('>', "\\u003e").replace('&', "\\u0026");
+    // Later pages may contain a photo covered by a different verified link.
+    // Render the controls once; each photo's capabilities still decide visibility.
+    let account = matches!(identity, SessionIdentity::User { .. });
+    let like = account || links.0.iter().any(|l| l.caps.view && l.caps.like);
+    let flag = account || links.0.iter().any(|l| l.caps.view && l.caps.flag);
+    let mut scripts = vec![
+        crate::static_assets::lightbox_url()?,
+        crate::static_assets::prefetch_url()?,
+        crate::static_assets::transitions_url()?,
+    ];
+    if like || flag {
+        scripts.push(crate::static_assets::likes_url()?);
+    }
+    let island = grid_island(page, &rows, number, sort, identity, links)?;
     AlbumTemplate {
         context,
         title: &page.album.title,
@@ -387,9 +532,18 @@ pub fn render_album(
         total: page.total,
         number,
         previous: (number > 1).then(|| page_url(number - 1)),
-        next: (u64::from(number) * 60 < page.total).then(|| page_url(number + 1)),
+        next: number
+            .checked_add(1)
+            .filter(|_| u64::from(number) * 60 < page.total)
+            .map(page_url),
         sort: sort.as_str(),
         island,
+        like,
+        flag,
+        download: account
+            || links.0.is_empty()
+            || links.0.iter().any(|l| l.caps.view && l.caps.download),
+        scripts,
     }
     .render()
     .map_err(|e| HttpError::Internal(e.into()))
@@ -412,6 +566,8 @@ struct PhotoTemplate<'a> {
     map: Option<String>,
     badge: &'static str,
     similar: String,
+    island: String,
+    scripts: Vec<&'static str>,
 }
 fn filename(value: &str) -> String {
     use std::fmt::Write;
@@ -470,7 +626,7 @@ fn downloads(p: &PagePhoto) -> Vec<Download> {
     sizes.sort_unstable_by_key(|d| (d.w, d.h, &d.variant));
     downloads.extend(sizes.into_iter().filter_map(|d| {
         derivative_url(d).map(|url| Download {
-            href: url,
+            href: format!("{url}?download=1"),
             label: format!("Download {} ({} × {})", d.variant, d.w, d.h),
         })
     }));
@@ -565,14 +721,27 @@ fn render_photo_with_controls(
             .next
             .map(|id| format!("/p/{id}?sort={}", sort.as_str())),
         downloads,
-        actions: controls.map(|c| Actions {
-            photo: p.id,
-            csrf: c.csrf,
-            like: c.like,
-            flag: c.flag,
-        }),
+        actions: controls
+            .as_ref()
+            .filter(|c| c.like || c.flag)
+            .map(|c| Actions {
+                photo: p.id,
+                short_id: p.short_id,
+                csrf: c.csrf,
+                like: c.like,
+                flag: c.flag,
+            }),
         exif,
         map,
+        island: json_script(&island_photo(
+            p,
+            Caps {
+                download: controls.as_ref().is_none_or(|c| c.download),
+                like: controls.as_ref().is_some_and(|c| c.like),
+                flag: controls.as_ref().is_some_and(|c| c.flag),
+            },
+        )?)?,
+        scripts: photo_scripts(controls.as_ref().is_some_and(|c| c.like || c.flag))?,
         badge: match p.kind.as_str() {
             "raw" => "RAW",
             "video" => "Play video",
@@ -583,58 +752,279 @@ fn render_photo_with_controls(
     .map_err(|e| HttpError::Internal(e.into()))
 }
 
-fn grid(photos: &[PagePhoto], initial_styles: String, sort: PageSort) -> (Vec<Row>, String) {
-    let ratios: Vec<_> = photos
+struct CalendarCard {
+    href: String,
+    label: String,
+    count: u64,
+    posted_count: u64,
+    image: Image,
+}
+struct CalendarCell {
+    href: String,
+    posted: bool,
+    image: Image,
+}
+#[derive(Template)]
+#[template(path = "default/calendar.html")]
+struct CalendarTemplate<'a> {
+    context: &'a PageContext<'a>,
+    title: String,
+    description: &'static str,
+    styles: &'static str,
+    buckets: Vec<CalendarCard>,
+    photos: Vec<CalendarCell>,
+    total: u64,
+    number: u32,
+    previous: Option<String>,
+    next: Option<String>,
+}
+/// Renders UTC calendar summaries and a bounded responsive photo grid.
+///
+/// # Errors
+/// Returns template failures; dates originate only from validated selections.
+pub fn render_calendar(
+    page: &yhotos_db::calendar::CalendarPage,
+    selection: yhotos_db::calendar::Selection,
+    number: u32,
+    context: &PageContext<'_>,
+) -> Result<String, HttpError> {
+    let path = selection.path();
+    let buckets = page
+        .buckets
         .iter()
-        .map(|p| {
-            let (w, h) = dimensions(p);
-            (f64::from(w) / f64::from(h)).clamp(0.1, 10.0)
+        .filter(|_| !selection.is_day())
+        .map(|b| CalendarCard {
+            href: format!("{path}/{}", b.number),
+            label: b.number.to_string(),
+            count: b.count,
+            posted_count: b.posted_count,
+            image: image(
+                &b.cover,
+                "(max-width: 600px) calc(100vw - 32px), 360px".into(),
+                false,
+                true,
+            ),
         })
         .collect();
-    let mut styles = initial_styles;
-    let rows = justified_rows(&ratios)
+    let photos = page
+        .photos
         .iter()
         .enumerate()
-        .map(|(row_index, row)| {
-            let cells = photos
-                .iter()
-                .enumerate()
-                .take(row.end)
-                .skip(row.start)
-                .map(|(index, p)| {
-                    let ratio = ratios.get(index).copied().unwrap_or(1.0);
-                    let percent = ratio / row.ratio * 100.0;
-                    let (w, h) = dimensions(p);
-                    let _ = write!(
-                        styles,
-                        "#cell{index}{{flex:{ratio:.5} 1 {percent:.5}%;aspect-ratio:{w}/{h};{}}}",
-                        background(p, row_index == 0)
-                    );
-                    Cell {
-                        index,
-                        href: format!("/p/{}?sort={}", p.short_id, sort.as_str()),
-                        image: image(
-                            p,
-                            format!(
-                                "(max-width: 1232px) calc((100vw - 32px) * {:.6}), {:.0}px",
-                                percent / 100.0,
-                                1200.0 * percent / 100.0
-                            ),
-                            row_index == 0,
-                            true,
-                        ),
-                        badge: match p.kind.as_str() {
-                            "raw" => "RAW",
-                            "video" => "Play video",
-                            _ => "",
-                        },
-                    }
-                })
-                .collect();
-            Row { cells }
+        .map(|(index, p)| CalendarCell {
+            href: format!("/p/{}", p.photo.short_id),
+            posted: p.posted,
+            image: image(
+                &p.photo,
+                "(max-width: 600px) calc(100vw - 32px), 360px".into(),
+                index == 0,
+                true,
+            ),
         })
         .collect();
-    (rows, styles)
+    CalendarTemplate {
+        context,
+        title: selection.title(),
+        description: "Browse photos by year, month and day",
+        styles: "",
+        buckets,
+        photos,
+        total: page.total,
+        number,
+        previous: (number > 1).then(|| format!("{path}?page={}", number - 1)),
+        next: (!page.photos.is_empty() && u64::from(number) * 60 < page.total)
+            .then(|| format!("{path}?page={}", number + 1)),
+    }
+    .render()
+    .map_err(|e| HttpError::Internal(e.into()))
+}
+/// Direct `/p/` visits get the same navigation enhancement as album pages.
+fn photo_scripts(interactive: bool) -> Result<Vec<&'static str>, HttpError> {
+    let mut scripts = vec![
+        crate::static_assets::prefetch_url()?,
+        crate::static_assets::transitions_url()?,
+    ];
+    if interactive {
+        scripts.push(crate::static_assets::likes_url()?);
+    }
+    Ok(scripts)
+}
+fn json_script(value: &impl serde::Serialize) -> Result<String, HttpError> {
+    Ok(serde_json::to_string(value)?
+        .replace("</", "<\\/")
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e")
+        .replace('&', "\\u0026"))
+}
+pub(crate) fn island(
+    page: &AlbumPage,
+    number: u32,
+    sort: PageSort,
+    identity: &SessionIdentity,
+    links: &Links,
+) -> Result<serde_json::Value, HttpError> {
+    let photos = page
+        .photos
+        .iter()
+        .map(|p| island_photo(p, crate::api::caps(p, identity, links)))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(
+        serde_json::json!({"album": page.album.id, "page": number, "sort": sort.as_str(),
+        "next_page": number.checked_add(1).filter(|_| u64::from(number) * 60 < page.total), "photos": photos}),
+    )
+}
+#[derive(serde::Serialize)]
+struct GalleryIsland<'a> {
+    album: yhotos_core::AlbumId,
+    page: u32,
+    sort: &'a str,
+    next_page: Option<u32>,
+    photos: Vec<PhotoData<'a>>,
+}
+#[derive(serde::Serialize)]
+struct PhotoData<'a> {
+    id: yhotos_core::ShortId,
+    title: &'a str,
+    description: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    image: Option<&'a Image>,
+    details: Vec<(&'static str, String)>,
+    downloads: Vec<Download>,
+    original: Option<String>,
+    zoom_width: u32,
+    caps: Caps,
+}
+pub(crate) fn island_photo(p: &PagePhoto, caps: Caps) -> Result<serde_json::Value, HttpError> {
+    serde_json::to_value(photo_data(p, &image(p, "100vw".into(), true, false), caps)?)
+        .map_err(|e| HttpError::Internal(e.into()))
+}
+fn photo_data<'a>(
+    p: &'a PagePhoto,
+    image: &'a Image,
+    caps: Caps,
+) -> Result<PhotoData<'a>, HttpError> {
+    if p.original_hash.len() != 64
+        || !p
+            .original_hash
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(invalid());
+    }
+    let details = [
+        ("Date taken", p.taken_at.clone()),
+        (
+            "Camera",
+            Some(
+                format!(
+                    "{} {}",
+                    p.camera_make.as_deref().unwrap_or(""),
+                    p.camera_model.as_deref().unwrap_or("")
+                )
+                .trim()
+                .to_owned(),
+            ),
+        ),
+        ("Lens", p.lens.clone()),
+        ("Exposure", p.shutter.clone()),
+        (
+            "Focal length",
+            p.focal_mm
+                .filter(|n| n.is_finite() && *n > 0.0)
+                .map(|n| format!("{n} mm")),
+        ),
+        (
+            "Aperture",
+            p.aperture
+                .filter(|n| n.is_finite() && *n > 0.0)
+                .map(|n| format!("f/{n}")),
+        ),
+        (
+            "ISO sensitivity",
+            p.iso.filter(|n| *n > 0).map(|n| n.to_string()),
+        ),
+        (
+            "Place",
+            p.gps_lat
+                .zip(p.gps_lon)
+                .filter(|(a, b)| {
+                    a.is_finite()
+                        && b.is_finite()
+                        && (-90.0..=90.0).contains(a)
+                        && (-180.0..=180.0).contains(b)
+                })
+                .map(|(a, b)| format!("{a}, {b}")),
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(label, value)| value.filter(|v| !v.is_empty()).map(|v| (label, v)))
+    .collect::<Vec<_>>();
+    let downloads = if caps.download {
+        downloads(p)
+    } else {
+        Vec::new()
+    };
+    Ok(PhotoData {
+        id: p.short_id,
+        title: &p.title,
+        description: &p.description,
+        image: Some(image),
+        details,
+        original: downloads.first().map(|d| d.href.clone()),
+        downloads,
+        caps,
+        zoom_width: [
+            image.jpeg.max_width,
+            image.avif.max_width,
+            image.jxl.max_width,
+            image.hdr_jpeg.max_width,
+            image.hdr_avif.max_width,
+            image.hdr_jxl.max_width,
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or(1)
+        .max(1),
+    })
+}
+
+fn grid_island(
+    page: &AlbumPage,
+    rows: &[Row],
+    number: u32,
+    sort: PageSort,
+    identity: &SessionIdentity,
+    links: &Links,
+) -> Result<String, HttpError> {
+    let data = GalleryIsland {
+        album: page.album.id,
+        page: number,
+        sort: sort.as_str(),
+        next_page: number
+            .checked_add(1)
+            .filter(|_| u64::from(number) * 60 < page.total),
+        photos: page
+            .photos
+            .iter()
+            .zip(rows.iter().flat_map(|row| &row.cells))
+            .map(|(p, cell)| {
+                let caps = crate::api::caps(p, identity, links);
+                // Sources already exist in the grid. Download URLs are refreshed
+                // from the photo API on open, keeping the initial HTML bounded.
+                let mut data = photo_data(
+                    p,
+                    &cell.image,
+                    Caps {
+                        download: false,
+                        ..caps
+                    },
+                )?;
+                data.caps = caps;
+                data.image = None;
+                Ok::<_, HttpError>(data)
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+    };
+    json_script(&data)
 }
 
 #[derive(Template)]
@@ -666,7 +1056,8 @@ pub(crate) fn render_search(
         .iter()
         .map(|r| r.candidate.photo.clone())
         .collect();
-    let (rows, mut styles) = grid(&photos, String::new(), PageSort::parse("taken"));
+    let mut styles = String::new();
+    let rows = photo_rows(&photos, PageSort::Taken, &mut styles);
     styles.push_str(".filter-chips{display:flex;flex-wrap:wrap;gap:.5rem;list-style:none;padding:0}.filter-chips:empty{display:none}.filter-chips li{border:1px solid currentColor;border-radius:999px;padding:.25rem .65rem}");
     let url = |page| {
         format!(

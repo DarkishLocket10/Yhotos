@@ -2,6 +2,8 @@
 
 //! Isolated public and admin routers, compiled templates and request controls.
 
+#[cfg(feature = "admin")]
+pub mod admin;
 mod api;
 pub mod auth;
 pub mod error;
@@ -24,7 +26,7 @@ use axum::{
 use error::HttpError;
 use middleware::rate_limit::RateLimiter;
 use std::time::Duration;
-use tower_http::{limit::RequestBodyLimitLayer, timeout::TimeoutLayer, trace::TraceLayer};
+use tower_http::trace::TraceLayer;
 
 /// Builds only public routes, even when the admin feature is enabled.
 ///
@@ -41,6 +43,7 @@ pub fn public_router(state: AppState) -> Router {
     let router = gallery_routes()
         .merge(auth::routes(auth::Audience(false)))
         .merge(share::routes())
+        .merge(api::routes())
         .route("/healthz", get(health).with_state(()))
         .route("/static/{*path}", get(static_assets::serve))
         .merge(file_routes());
@@ -81,8 +84,14 @@ fn gallery_routes() -> Router<AppState> {
         .route("/a/{*path}", get(pages::album))
         .route("/p/{id}", get(pages::photo))
         .route("/search", get(search::page))
-        .route("/api/v1/search", get(api::search))
-        .route("/api/v1/suggest", get(api::suggest))
+        .route("/map", get(pages::map::page))
+        .route("/map/tiles.json", get(pages::map::tiles))
+        .route("/map/photos.json", get(pages::map::point_photos))
+        .route("/places/{place_id}", get(pages::map::place))
+        .route("/calendar", get(pages::calendar::page))
+        .route("/calendar/{year}", get(pages::calendar::page))
+        .route("/calendar/{year}/{month}", get(pages::calendar::page))
+        .route("/calendar/{year}/{month}/{day}", get(pages::calendar::page))
         .route("/legacy/{*path}", get(pages::legacy))
         .route("/index.php", get(pages::legacy))
         .route("/picture.php", get(pages::legacy))
@@ -98,11 +107,13 @@ fn file_routes() -> Router<AppState> {
 /// Compiles only with `admin`, and must be served on the separate admin socket.
 #[cfg(feature = "admin")]
 pub fn admin_router(state: AppState) -> Router {
-    stack(
+    admin::upload::with_method_override(stack(
         Router::new()
             .merge(gallery_routes())
             .merge(file_routes())
+            .merge(api::routes())
             .merge(auth::routes(auth::Audience(true)))
+            .merge(admin::upload::routes())
             .merge(share::admin_routes())
             .merge(search::people::routes())
             .route("/admin/healthz", get(health))
@@ -111,7 +122,7 @@ pub fn admin_router(state: AppState) -> Router {
             .route("/static/{*path}", get(static_assets::serve)),
         state,
         auth::Audience(true),
-    )
+    ))
 }
 
 fn stack(router: Router<AppState>, state: AppState, audience: auth::Audience) -> Router {
@@ -122,11 +133,10 @@ fn stack(router: Router<AppState>, state: AppState, audience: auth::Audience) ->
         .layer(from_fn_with_state(state.clone(), middleware::csrf::protect))
         .layer(Extension(audience))
         .layer(from_fn_with_state(limits, middleware::rate_limit::limit))
-        .layer(TimeoutLayer::with_status_code(
-            StatusCode::REQUEST_TIMEOUT,
-            Duration::from_secs(10),
+        .layer(from_fn_with_state(
+            (state.clone(), audience),
+            request_limits,
         ))
-        .layer(RequestBodyLimitLayer::new(1024 * 1024))
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(middleware::trace::span)
@@ -136,9 +146,67 @@ fn stack(router: Router<AppState>, state: AppState, audience: auth::Audience) ->
         )
         // Wrap short-circuiting layers as well as handlers, so 413/408/429 and
         // fallback responses have exactly the same security guarantees.
-        .layer(from_fn(middleware::security_headers::secure))
+        .layer(from_fn(api::envelope))
+        .layer(from_fn_with_state(
+            state.clone(),
+            middleware::security_headers::secure,
+        ))
         .layer(from_fn(middleware::request_id::assign))
         .with_state(state)
+}
+async fn request_limits(
+    axum::extract::State((state, audience)): axum::extract::State<(AppState, auth::Audience)>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let upload = cfg!(feature = "admin")
+        && audience.0
+        && request.method() == axum::http::Method::PATCH
+        && request
+            .uri()
+            .path()
+            .strip_prefix("/admin/upload/")
+            .is_some_and(|id| id.parse::<uuid::Uuid>().is_ok());
+    let cap = if upload {
+        state.config.upload.chunk_bytes as usize
+    } else {
+        1024 * 1024
+    };
+    if request
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+        .is_some_and(|n| n > cap as u64)
+    {
+        return (StatusCode::PAYLOAD_TOO_LARGE, "Request too large").into_response();
+    }
+    let finish = cfg!(feature = "admin")
+        && audience.0
+        && request.method() == axum::http::Method::POST
+        && request
+            .uri()
+            .path()
+            .strip_prefix("/admin/upload/")
+            .and_then(|path| path.strip_suffix("/finish"))
+            .is_some_and(|id| id.parse::<uuid::Uuid>().is_ok());
+    let deadline = if upload || finish {
+        Duration::from_secs(u64::from(state.config.worker.codec_timeout) + 120)
+    } else {
+        Duration::from_secs(10)
+    };
+    let (parts, body) = request.into_parts();
+    let body = if upload {
+        body
+    } else {
+        axum::body::Body::new(http_body_util::Limited::new(body, cap))
+    };
+    tokio::time::timeout(
+        deadline,
+        next.run(axum::extract::Request::from_parts(parts, body)),
+    )
+    .await
+    .unwrap_or_else(|_| (StatusCode::REQUEST_TIMEOUT, "Request timed out").into_response())
 }
 async fn health() -> impl IntoResponse {
     (

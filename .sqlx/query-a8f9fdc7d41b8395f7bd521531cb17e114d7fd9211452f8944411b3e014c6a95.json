@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO places(id,name,admin1,country,lat,lon) VALUES($1,'Toronto','Ontario','CA',43.65,-79.38)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a8f9fdc7d41b8395f7bd521531cb17e114d7fd9211452f8944411b3e014c6a95"
+}

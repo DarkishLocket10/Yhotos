@@ -800,8 +800,8 @@ pub(crate) fn identify_jxl_reader(
                         }
                         return Ok(Identity {
                             kind: Kind::Jxl,
-                            width: info.xsize,
-                            height: info.ysize,
+                            width: Some(info.xsize),
+                            height: Some(info.ysize),
                             // libjxl defaults to applying codestream orientation,
                             // just like the libvips loader used for pixel decode.
                             orientation: 1,

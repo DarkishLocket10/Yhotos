@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 //! CPU job consumer with SIGTERM/SIGINT cancellation and fenced claim release.
+mod geo;
 use anyhow::{Context, Result};
 use std::time::Duration;
 use yhotos_jobs::{JobKind, Queue, QueueConfig};
@@ -62,18 +63,7 @@ async fn run(process_deadline: &mut Option<std::time::Instant>) -> Result<()> {
     )
     .await
     .context("worker database unavailable")?;
-    let store =
-        yhotos_storage::Store::open(&config.data_dir).context("worker storage unavailable")?;
-    let mut ingest = yhotos_pipeline::Ingest::new(store, db.pool().clone(), executable);
-    if let Some(plan) = config.worker.variant_plan {
-        ingest.plan = serde_json::from_value(plan)
-            .map_err(|_| anyhow::anyhow!("invalid worker variant plan"))?;
-    }
-    ingest.plan.validate()?;
-    ingest.codec_timeout = Duration::from_secs(u64::from(config.worker.codec_timeout));
-    ingest.concurrency_per_host = config.worker.vips_concurrency;
-    ingest.default_timezone = jiff::tz::TimeZone::get(&config.worker.default_timezone)
-        .map_err(|_| anyhow::anyhow!("invalid worker default timezone"))?;
+    let ingest = build_ingest(&config, &db, executable)?;
     let queue_config = QueueConfig {
         concurrency: usize::from(config.worker.concurrency),
         ..QueueConfig::default()
@@ -95,8 +85,12 @@ async fn run(process_deadline: &mut Option<std::time::Instant>) -> Result<()> {
             JobKind::Ingest,
             JobKind::GeoReverse,
             JobKind::VideoTranscode,
+            JobKind::Gc,
         ],
-        ingest,
+        geo::Handler {
+            ingest,
+            pool: db.pool().clone(),
+        },
         async {
             shutdown
                 .await
@@ -104,7 +98,10 @@ async fn run(process_deadline: &mut Option<std::time::Instant>) -> Result<()> {
         },
     );
     tokio::pin!(run);
+    let sweep_schedule = schedule_upload_sweep(&queue);
+    tokio::pin!(sweep_schedule);
     let (result, deadline) = tokio::select! {
+        ()=&mut sweep_schedule => return Err(anyhow::anyhow!("upload sweep scheduler stopped")),
         result=&mut run => (result, tokio::time::Instant::now() + shutdown_grace),
         ()=signal => {
             // One deadline starts at the signal, including queue cleanup and
@@ -121,6 +118,36 @@ async fn run(process_deadline: &mut Option<std::time::Instant>) -> Result<()> {
     let _ = tokio::time::timeout_at(deadline, db.pool().close()).await;
     result?;
     Ok(())
+}
+
+fn build_ingest(
+    config: &yhotos_config::Config,
+    db: &yhotos_db::Db,
+    executable: std::path::PathBuf,
+) -> Result<yhotos_pipeline::Ingest> {
+    let store =
+        yhotos_storage::Store::open(&config.data_dir).context("worker storage unavailable")?;
+    let mut ingest = yhotos_pipeline::Ingest::new(store, db.pool().clone(), executable);
+    if let Some(plan) = config.worker.variant_plan.clone() {
+        ingest.plan = serde_json::from_value(plan)
+            .map_err(|_| anyhow::anyhow!("invalid worker variant plan"))?;
+    }
+    ingest.plan.validate()?;
+    ingest.codec_timeout = Duration::from_secs(u64::from(config.worker.codec_timeout));
+    ingest.concurrency_per_host = config.worker.vips_concurrency;
+    ingest.default_timezone = jiff::tz::TimeZone::get(&config.worker.default_timezone)
+        .map_err(|_| anyhow::anyhow!("invalid worker default timezone"))?;
+    Ok(ingest)
+}
+
+async fn schedule_upload_sweep(queue: &Queue) {
+    let mut interval = tokio::time::interval(Duration::from_hours(1));
+    loop {
+        interval.tick().await;
+        if queue.enqueue(yhotos_jobs::Job::Gc, 0, None).await.is_err() {
+            tracing::warn!("upload sweep scheduling failed");
+        }
+    }
 }
 
 fn install_metrics(address: std::net::SocketAddr) -> Result<()> {

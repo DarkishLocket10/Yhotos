@@ -6,6 +6,7 @@
 pub mod access_sql;
 pub mod albums;
 pub mod audit;
+pub mod calendar;
 pub mod derivatives;
 #[cfg(feature = "admin")]
 pub mod faces;
@@ -14,14 +15,17 @@ pub mod grants;
 pub mod groups;
 pub mod jobs;
 pub mod likes;
+pub mod map;
 pub mod mfa;
 pub mod photos;
+pub mod places;
 pub mod redirects;
 pub mod search;
 pub mod sessions;
 pub mod settings;
 pub mod share_links;
 pub mod tags;
+pub mod uploads;
 pub mod users;
 
 use secrecy::{ExposeSecret, SecretString};

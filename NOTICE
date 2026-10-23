@@ -1,0 +1,9 @@
+
+Offline place data: GeoNames cities500, https://www.geonames.org/,
+licensed under Creative Commons Attribution 4.0 (CC BY 4.0),
+https://creativecommons.org/licenses/by/4.0/. The operator supplies the dataset;
+Yhotos selects population-weighted nearby cities.
+
+MapLibre GL JS is distributed under BSD-3-Clause. Its bundled license notices
+are retained in the map assets. Browser basemap data: OpenFreeMap, OpenMapTiles,
+and OpenStreetMap contributors (ODbL), https://www.openstreetmap.org/copyright.

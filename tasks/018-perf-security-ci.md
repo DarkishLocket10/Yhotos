@@ -29,6 +29,7 @@ Areas: `.github/workflows/{bench,lighthouse,fuzz,nightly}.yml`, `scripts/bench.s
 
 ### Benchmark gate (`bench.yml`, on PR)
 - Run all criterion benches on the PR head and on the merge base in the same job (same runner, interleaved to reduce noise), using `--save-baseline`. A small Rust tool in `yhotos-bench` (`compare` binary) reads both criterion outputs and fails if any benchmark's median regressed by more than 5 % and the confidence interval excludes zero; it prints a Markdown table posted as a sticky PR comment (via `gh` with `pull-requests: write` scoped to this job only).
+- Mutation benchmarks must time real state changes: `crates/yhotos-bench/benches/interactions.rs` (task 013) currently repeats one photo and actor, so after warm-up every like conflicts, every unlike deletes nothing and every flag is skipped. Reset state outside each timed iteration (or rotate fresh photos/actors) and bench real writes separately from idempotent retries, so the like/flag p99 < 10 ms budget in `docs/performance.md` is actually measured.
 - Benchmarks needing Postgres use the CI service container; those needing large fixtures skip on hosted runners and run nightly on the self-hosted runner.
 
 ### Lighthouse CI (`lighthouse.yml`, on PR touching `crates/yhotos-http/`, `web/`, templates)

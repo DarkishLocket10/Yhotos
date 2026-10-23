@@ -1,11 +1,30 @@
-/** Bounded LPQA/DCT ThumbHash decoder, matching evanw/thumbhash's reference. */
-export function decodeThumbhash(hash: Uint8Array): { w: number; h: number; rgba: Uint8ClampedArray } {
+import { enhance } from "./lib/lifecycle.js";
+/*!
+ * ThumbHash decoder adapted from https://github.com/evanw/thumbhash (MIT).
+ * Copyright (c) 2023 Evan Wallace. Bounded input checks and lifecycle added here.
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+ * of the Software, and to permit persons to whom the Software is furnished to do
+ * so, subject to the following conditions:
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+export function decodeThumbhash(hash: Uint8Array): { w: number; h: number; rgba: Uint8ClampedArray<ArrayBuffer> } {
   if (hash.length < 5 || hash.length > 64) throw new Error("Invalid placeholder");
   const h24 = hash[0] | hash[1] << 8 | hash[2] << 16;
   const h16 = hash[3] | hash[4] << 8;
   const alpha = !!(h24 & 0x800000), landscape = !!(h16 & 0x8000);
   const short = h16 & 7, long = alpha ? 5 : 7;
-  if (!short) throw new Error("Invalid placeholder");
+  if (!short || short > long) throw new Error("Invalid placeholder");
   const lx = landscape ? long : short, ly = landscape ? short : long;
   const ratio = lx / ly;
   const w = Math.round(ratio > 1 ? 32 : 32 * ratio), h = Math.round(ratio > 1 ? 32 / ratio : 32);
@@ -36,6 +55,7 @@ export function decodeThumbhash(hash: Uint8Array): { w: number; h: number; rgba:
 }
 
 if (typeof document !== "undefined" && "IntersectionObserver" in globalThis) {
+  enhance(signal => {
   const observer = new IntersectionObserver(entries => {
     for (const entry of entries) {
       if (!entry.isIntersecting) continue;
@@ -57,4 +77,6 @@ if (typeof document !== "undefined" && "IntersectionObserver" in globalThis) {
     }
   }, { rootMargin: "200px" });
   document.querySelectorAll<HTMLImageElement>('img[loading="lazy"][data-thumbhash]').forEach(img => observer.observe(img));
+  signal.addEventListener("abort", () => observer.disconnect());
+  });
 }

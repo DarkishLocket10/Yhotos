@@ -15,6 +15,8 @@ use std::{
     time::Instant,
 };
 use yhotos_codec::{CodecError, Encode, EncodeOpts, Limits, ResizeSpec};
+#[cfg(feature = "test-hooks")]
+static DECODE_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 const JOB_BYTES: u64 = 1 << 20;
 const CHILD_ARGUMENT: &str = "--sandboxed-job";
 #[derive(Debug, Deserialize)]
@@ -72,23 +74,23 @@ impl HostLimits {
         // macOS does not enforce RLIMIT_AS reliably; Linux is the production sandbox.
         #[cfg(target_os = "linux")]
         setrlimit(Resource::RLIMIT_AS, self.max_memory, self.max_memory)
-            .map_err(|_| Failure(2, "sandbox unavailable"))?;
-        setrlimit(Resource::RLIMIT_CORE, 0, 0).map_err(|_| Failure(2, "sandbox unavailable"))?;
+            .map_err(|_| Failure(3, "sandbox unavailable"))?;
+        setrlimit(Resource::RLIMIT_CORE, 0, 0).map_err(|_| Failure(3, "sandbox unavailable"))?;
         setrlimit(Resource::RLIMIT_CPU, self.cpu_seconds, self.cpu_seconds + 1)
-            .map_err(|_| Failure(2, "sandbox unavailable"))?;
+            .map_err(|_| Failure(3, "sandbox unavailable"))?;
         setrlimit(
             Resource::RLIMIT_FSIZE,
             self.max_file_size,
             self.max_file_size,
         )
-        .map_err(|_| Failure(2, "sandbox unavailable"))?;
+        .map_err(|_| Failure(3, "sandbox unavailable"))?;
         setrlimit(Resource::RLIMIT_NOFILE, 64, 64)
-            .map_err(|_| Failure(2, "sandbox unavailable"))?;
+            .map_err(|_| Failure(3, "sandbox unavailable"))?;
         // Linux counts threads toward NPROC, so limit process creation via seccomp
         // while retaining the two libvips threads. NPROC=0 would prohibit them too.
-        yhotos_codec::sandbox::process_limit().map_err(|_| Failure(2, "sandbox unavailable"))?;
+        yhotos_codec::sandbox::process_limit().map_err(|_| Failure(3, "sandbox unavailable"))?;
         yhotos_codec::sandbox::timeouts(self.wall_seconds)
-            .map_err(|_| Failure(2, "sandbox unavailable"))
+            .map_err(|_| Failure(3, "sandbox unavailable"))
     }
 }
 #[derive(Deserialize)]
@@ -145,18 +147,30 @@ struct Report {
 #[derive(Serialize)]
 #[allow(clippy::struct_field_names)] // Units are explicit in the JSON report.
 struct Timings {
+    #[cfg(feature = "test-hooks")]
+    decode_calls: usize,
     identify_ms: u128,
     decode_ms: u128,
     total_ms: u128,
 }
 struct Failure(u8, &'static str);
+/// Maps an identification error to the host exit contract. Corrupt headers and
+/// permanently unsupported content (for example animated JXL) are definitive
+/// rejections (2). IO and native-host failures say nothing about the validity of
+/// an otherwise resumable upload, so they stay retryable through `From`.
+fn identify_failure(error: CodecError) -> Failure {
+    if matches!(error, CodecError::Decode | CodecError::Unsupported) {
+        Failure(2, "image rejected")
+    } else {
+        Failure::from(error)
+    }
+}
 impl From<CodecError> for Failure {
     fn from(e: CodecError) -> Self {
         match e {
             CodecError::BadMagic
             | CodecError::Mismatch
             | CodecError::Limits
-            | CodecError::Io
             | CodecError::Options => Self(2, "image rejected"),
             _ => Self(3, "image processing failed"),
         }
@@ -198,27 +212,27 @@ fn clean_environment() -> Result<u8, Failure> {
     {
         return Ok(concurrency);
     }
-    let executable = std::env::current_exe().map_err(|_| Failure(2, "startup failed"))?;
+    let executable = std::env::current_exe().map_err(|_| Failure(3, "startup failed"))?;
     let error = std::process::Command::new(executable)
         .args(std::env::args_os().skip(1))
         .env_clear()
         .envs(expected)
         .exec();
     let _ = error;
-    Err(Failure(2, "startup failed"))
+    Err(Failure(3, "startup failed"))
 }
 fn paths(job: &Job) -> Result<(PathBuf, Vec<PathBuf>), Failure> {
     let input = job
         .input
         .canonicalize()
-        .map_err(|_| Failure(2, "invalid input"))?;
+        .map_err(|_| Failure(3, "input unavailable"))?;
     if !input.is_file() {
         return Err(Failure(2, "invalid input"));
     }
     let dir = job
         .out_dir
         .canonicalize()
-        .map_err(|_| Failure(2, "invalid output directory"))?;
+        .map_err(|_| Failure(3, "output directory unavailable"))?;
     if !dir.is_dir() || job.outputs.len() > 32 {
         return Err(Failure(2, "invalid output directory"));
     }
@@ -253,12 +267,12 @@ fn run() -> Result<(), Failure> {
         let parent = std::env::args()
             .nth(2)
             .and_then(|p| p.parse().ok())
-            .ok_or(Failure(2, "startup failed"))?;
-        yhotos_codec::sandbox::parent_lifetime(parent).map_err(|_| Failure(2, "startup failed"))?;
+            .ok_or(Failure(3, "startup failed"))?;
+        yhotos_codec::sandbox::parent_lifetime(parent).map_err(|_| Failure(3, "startup failed"))?;
     }
     HostLimits::default().apply()?;
     #[cfg(target_os = "linux")]
-    seccomp::apply().map_err(|()| Failure(2, "sandbox unavailable"))?;
+    seccomp::apply().map_err(|()| Failure(3, "sandbox unavailable"))?;
     #[cfg(all(target_os = "linux", debug_assertions))]
     if std::env::args_os().any(|a| a == "--self-test-network") {
         return match std::net::UdpSocket::bind("127.0.0.1:0") {
@@ -309,7 +323,7 @@ fn run() -> Result<(), Failure> {
             &input,
             &job.out_dir
                 .canonicalize()
-                .map_err(|_| Failure(2, "invalid output directory"))?,
+                .map_err(|_| Failure(3, "output directory unavailable"))?,
         )?;
         #[cfg(debug_assertions)]
         if std::env::args_os().any(|a| a == "--self-test-filesystem") {
@@ -317,9 +331,39 @@ fn run() -> Result<(), Failure> {
         }
     }
     let start = Instant::now();
-    let id = yhotos_codec::identify(&input, &job.limits.codec())?;
+    let id = yhotos_codec::identify(&input, &job.limits.codec()).map_err(identify_failure)?;
     let identify_ms = start.elapsed().as_millis();
+    if job.outputs.is_empty()
+        && job
+            .want
+            .iter()
+            .all(|want| matches!(want, Want::Identity | Want::Metadata))
+    {
+        let report = Report {
+            identity: job.want.contains(&Want::Identity).then_some(id),
+            metadata: if job.want.contains(&Want::Metadata) {
+                Some(yhotos_codec::metadata(&input)?)
+            } else {
+                None
+            },
+            thumbhash: None,
+            dominant_colors: None,
+            outputs: Vec::new(),
+            timings: Timings {
+                #[cfg(feature = "test-hooks")]
+                decode_calls: DECODE_CALLS.load(std::sync::atomic::Ordering::Relaxed),
+                identify_ms,
+                decode_ms: 0,
+                total_ms: start.elapsed().as_millis(),
+            },
+        };
+        serde_json::to_writer(std::io::stdout().lock(), &report)
+            .map_err(|_| Failure(3, "report failed"))?;
+        return Ok(());
+    }
     let decode_start = Instant::now();
+    #[cfg(feature = "test-hooks")]
+    DECODE_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let working = yhotos_codec::decode(&input, &id, &job.limits.codec())?;
     let decode_ms = decode_start.elapsed().as_millis();
     let working = if let Some(bbox) = job.crop {
@@ -427,6 +471,8 @@ fn run() -> Result<(), Failure> {
         },
         outputs,
         timings: Timings {
+            #[cfg(feature = "test-hooks")]
+            decode_calls: DECODE_CALLS.load(std::sync::atomic::Ordering::Relaxed),
             identify_ms,
             decode_ms,
             total_ms: start.elapsed().as_millis(),
@@ -496,5 +542,20 @@ fn main() -> std::process::ExitCode {
             let _ = writeln!(std::io::stderr().lock(), "{message}");
             std::process::ExitCode::from(code)
         }
+    }
+}
+
+#[cfg(test)]
+mod identify_failure_tests {
+    use super::{CodecError, identify_failure};
+
+    #[test]
+    fn unsupported_and_corrupt_inputs_are_rejections_not_retries() {
+        assert_eq!(identify_failure(CodecError::Unsupported).0, 2);
+        assert_eq!(identify_failure(CodecError::Decode).0, 2);
+        assert_eq!(identify_failure(CodecError::BadMagic).0, 2);
+        assert_eq!(identify_failure(CodecError::Limits).0, 2);
+        // An IO failure says nothing about the file, so it stays retryable.
+        assert_eq!(identify_failure(CodecError::Io).0, 3);
     }
 }

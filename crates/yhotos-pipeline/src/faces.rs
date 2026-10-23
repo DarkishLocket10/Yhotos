@@ -70,7 +70,7 @@ impl Ingest {
         let request = serde_json::json!({"input":input,"out_dir":dir.path(),"crop":bbox,
           "limits":{"max_pixels":4_000_000,"max_bytes":16_777_216,"max_dim":4096,"wall_seconds":10,"cpu_seconds":8,"max_file_size":1_048_576},
           "outputs":[{"name":plan.name,"resize":{"long_edge":256,"square":false},"encode":plan.format.encode(256),"keep_icc":false}]});
-        let report: Report = self.run_request(&request, 1).await?;
+        let report: Report = self.request_host(&request, 1).await?;
         let output = report
             .outputs
             .first()

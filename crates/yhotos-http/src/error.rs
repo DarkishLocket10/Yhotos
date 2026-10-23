@@ -9,6 +9,12 @@ use axum::{
 /// Public errors conceal authorization state and infrastructure details.
 #[derive(Debug, thiserror::Error)]
 pub enum HttpError {
+    /// Upload bytes remain durable and completion can be retried after recovery.
+    #[error("upload temporarily unavailable")]
+    UploadUnavailable,
+    /// Generic tus protocol rejection, with no external input echoed.
+    #[error("upload rejected")]
+    Upload(StatusCode),
     /// Reserved MFA methods are not enabled.
     #[error("unsupported authentication method")]
     Unsupported,
@@ -43,6 +49,13 @@ pub enum HttpError {
 impl IntoResponse for HttpError {
     fn into_response(self) -> Response {
         let mut response = match self {
+            Self::UploadUnavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                [(header::RETRY_AFTER, "30")],
+                "Upload temporarily unavailable. Retry later.",
+            )
+                .into_response(),
+            Self::Upload(status) => (status, "Upload rejected").into_response(),
             Self::Unsupported => (
                 StatusCode::NOT_IMPLEMENTED,
                 "Authentication method unavailable",

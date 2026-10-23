@@ -1,6 +1,6 @@
 ---
 source: crates/yhotos-http/src/share/tests.rs
-expression: html
+expression: "crate::pages::snapshot_html(html)"
 ---
 <!doctype html>
 <html lang="en">
@@ -20,11 +20,11 @@ expression: html
 <meta property="og:image:height" content="480">
 <meta property="og:type" content="website">
 </head>
-<body><header class="site-header"><a href="/">Yhotos</a><span>Photo gallery</span></header><main><nav aria-label="Breadcrumb"><ol class="breadcrumbs"><li><a href="/">Home</a></li><li><a href="/a/shared">Shared &#60;album&#62;</a></li></ol></nav><h1>Shared &#60;album&#62;</h1><p></p>
+<body><header class="site-header"><a href="/">Yhotos</a><span>Photo gallery</span><nav aria-label="Gallery"><a href="/map">Map</a> <a href="/calendar">Calendar</a></nav></header><main><nav aria-label="Breadcrumb"><ol class="breadcrumbs"><li><a href="/">Home</a></li><li><a href="/a/shared">Shared &#60;album&#62;</a></li></ol></nav><h1>Shared &#60;album&#62;</h1><p></p>
 
 <form method="get" class="sort-form"><label for="sort">Sort photos</label><select name="sort" id="sort">
 <option value="taken">Date taken</option><option value="posted">Date posted</option><option value="name">Name</option><option value="manual" selected>Manual order</option></select><button type="submit">Apply sorting</button></form>
-<p>3 photos</p><section aria-label="Photos" class="photo-grid"><div class="grid-row"><a class="cell" id="cell0" href="/p/photo-1?sort=manual"><picture>
+<p>3 photos</p><section aria-label="Photos" class="photo-grid"><div class="grid-row"><a data-photo-link class="cell" id="cell0" href="/p/photo-1?sort=manual"><picture>
 
 
 
@@ -37,7 +37,7 @@ expression: html
 <source type="image/jxl" srcset="/i/0000000000000000000000000000000000000000000000000000000000000001/small.jxl 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
 <source type="image/avif" srcset="/i/0000000000000000000000000000000000000000000000000000000000000001/small.avif 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
 <img src="/i/0000000000000000000000000000000000000000000000000000000000000001/small.jpeg" srcset="/i/0000000000000000000000000000000000000000000000000000000000000001/small.jpeg 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px" width="640" height="480" loading="eager" decoding="async" alt="Shared photo" data-thumbhash="">
-</picture></a><a class="cell" id="cell1" href="/p/photo-2?sort=manual"><picture>
+</picture></a><a data-photo-link class="cell" id="cell1" href="/p/photo-2?sort=manual"><picture>
 
 
 
@@ -50,7 +50,7 @@ expression: html
 <source type="image/jxl" srcset="/i/0000000000000000000000000000000000000000000000000000000000000002/small.jxl 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
 <source type="image/avif" srcset="/i/0000000000000000000000000000000000000000000000000000000000000002/small.avif 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
 <img src="/i/0000000000000000000000000000000000000000000000000000000000000002/small.jpeg" srcset="/i/0000000000000000000000000000000000000000000000000000000000000002/small.jpeg 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px" width="640" height="480" loading="eager" decoding="async" alt="Second photo" data-thumbhash="">
-</picture></a><a class="cell" id="cell2" href="/p/photo-3?sort=manual"><picture>
+</picture></a><a data-photo-link class="cell" id="cell2" href="/p/photo-3?sort=manual"><picture>
 
 
 
@@ -66,6 +66,16 @@ expression: html
 </picture></a></div></section>
 
 <nav aria-label="Pagination" class="pagination"><span>Page 1</span></nav>
-<script type="application/json" nonce="fixture-nonce" id="gallery-data">{"photos":[{"id":"photo-1","title":"Shared photo"},{"id":"photo-2","title":"Second photo"},{"id":"photo-3","title":"Third photo"}]}</script>
-</main><footer>Yhotos photo gallery</footer></body>
+<script type="application/json" nonce="fixture-nonce" id="gallery-data">[JSON island data]</script>
+</main><dialog id="lightbox" aria-labelledby="lightbox-title" aria-describedby="lightbox-status">
+<div class="lightbox-toolbar"><h2 id="lightbox-title"></h2><button type="button" data-close aria-label="Close photo viewer">Close</button></div>
+<div class="lightbox-stage" data-stage><picture data-picture><img data-image alt="" width="4" height="3" decoding="async"></picture></div>
+<nav aria-label="Lightbox navigation"><button type="button" data-previous aria-label="Previous photo">Previous</button><button type="button" data-next aria-label="Next photo">Next</button></nav>
+<div class="lightbox-tools"><button type="button" data-zoom aria-label="Zoom photo" aria-pressed="false">Zoom</button><button type="button" data-info aria-expanded="false" aria-controls="lightbox-info">Photo details</button>
+
+<button type="button" data-share>Copy photo link</button><button type="button" data-slideshow aria-pressed="false">Play slideshow</button><button type="button" data-fullscreen>Enter fullscreen</button></div>
+<section id="lightbox-info" aria-label="Photo details" hidden><p data-description></p><dl data-details></dl></section>
+<p id="lightbox-status" role="status" aria-live="polite"></p>
+</dialog>
+<script type="module" nonce="fixture-nonce" src="/static/lightbox.fixture.js"></script><script type="module" nonce="fixture-nonce" src="/static/prefetch.fixture.js"></script><script type="module" nonce="fixture-nonce" src="/static/transitions.fixture.js"></script><footer>Yhotos photo gallery · Place data: <a href="https://www.geonames.org/">GeoNames</a> (<a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>)</footer></body>
 </html>

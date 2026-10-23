@@ -49,7 +49,7 @@ async fn medium_to_private_cached_face_round_trip() {
     );
     let path = store.path_derivative(&key).unwrap();
     let id = yhotos_codec::identify(&path, &yhotos_codec::Limits::default()).unwrap();
-    assert_eq!((id.width, id.height), (256, 256));
+    assert_eq!((id.width, id.height), (Some(256), Some(256)));
     assert_eq!(first.bytes, std::fs::metadata(path).unwrap().len());
     assert!(
         runner

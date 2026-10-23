@@ -1,14 +1,14 @@
 {
   "db_name": "PostgreSQL",
+  "query": "UPDATE photos SET kind='video' WHERE id=$1",
   "describe": {
     "columns": [],
-    "nullable": [],
     "parameters": {
       "Left": [
         "Uuid"
       ]
-    }
+    },
+    "nullable": []
   },
-  "hash": "ba723aa2c3a3462d885dab0e0f964e146605ec1de7d0b5fee127ec07660666ef",
-  "query": "UPDATE photos SET kind='video' WHERE id=$1"
+  "hash": "ba723aa2c3a3462d885dab0e0f964e146605ec1de7d0b5fee127ec07660666ef"
 }

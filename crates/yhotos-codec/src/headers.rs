@@ -51,26 +51,7 @@ pub(crate) fn inspect(path: &Path, limits: &Limits) -> Result<Kind, CodecError> 
     } else if h.starts_with(b"RIFF") && h.get(8..12) == Some(b"WEBP") {
         Kind::Webp
     } else if h.get(4..8) == Some(b"ftyp") {
-        let brands = h.get(8..).ok_or(CodecError::BadMagic)?;
-        if brands.as_chunks::<4>().0.iter().any(|b| b == b"crx ") {
-            Kind::Raw(crate::RawMake("Canon".to_owned()))
-        } else if brands
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .any(|b| b == b"avif" || b == b"avis")
-        {
-            Kind::Avif
-        } else if brands.as_chunks::<4>().0.iter().any(|b| {
-            matches!(
-                b,
-                b"heic" | b"heix" | b"hevc" | b"hevx" | b"mif1" | b"msf1" | b"crx "
-            )
-        }) {
-            Kind::Heif
-        } else {
-            return Err(CodecError::BadMagic);
-        }
+        crate::bmff::brand_kind(File::open(path).map_err(|_| CodecError::Io)?)?
     } else if h.starts_with(b"IIU\0")
         || h.starts_with(b"IIRO")
         || h.starts_with(b"MMOR")

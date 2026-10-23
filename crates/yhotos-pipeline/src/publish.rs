@@ -222,9 +222,11 @@ impl Ingest {
         } else {
             (id.width, id.height)
         };
-        let width = i32::try_from(w).map_err(|_| JobError::Fatal("invalid image width".into()))?;
+        let width = i32::try_from(w.ok_or_else(|| JobError::Fatal("missing image width".into()))?)
+            .map_err(|_| JobError::Fatal("invalid image width".into()))?;
         let height =
-            i32::try_from(h).map_err(|_| JobError::Fatal("invalid image height".into()))?;
+            i32::try_from(h.ok_or_else(|| JobError::Fatal("missing image height".into()))?)
+                .map_err(|_| JobError::Fatal("invalid image height".into()))?;
         let colors: Vec<i32> = report
             .dominant_colors
             .iter()

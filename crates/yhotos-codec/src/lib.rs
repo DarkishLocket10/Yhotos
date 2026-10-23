@@ -90,6 +90,14 @@ impl Limits {
 /// Camera maker, bounded to 256 UTF-8 bytes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RawMake(pub String);
+/// Recognized video container; identity never decodes video.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum VideoContainer {
+    /// ISO base media file format.
+    Mp4,
+    /// `QuickTime` movie container.
+    Mov,
+}
 /// Kind agreed between magic bytes and the selected native loader.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Kind {
@@ -109,6 +117,11 @@ pub enum Kind {
     Webp,
     /// Camera RAW with a bounded maker.
     Raw(RawMake),
+    /// Header-only video identity.
+    Video {
+        /// Recognized BMFF container.
+        container: VideoContainer,
+    },
     /// No supported decoder agreement.
     Unknown,
 }
@@ -117,10 +130,10 @@ pub enum Kind {
 pub struct Identity {
     /// Validated container kind.
     pub kind: Kind,
-    /// Stored width, before orientation.
-    pub width: u32,
-    /// Stored height, before orientation.
-    pub height: u32,
+    /// Stored width before orientation, absent for video without a track header.
+    pub width: Option<u32>,
+    /// Stored height before orientation, absent for video without a track header.
+    pub height: Option<u32>,
     /// EXIF transform, with missing orientation normalized to 1.
     pub orientation: u8,
     /// An embedded ICC profile exists.
@@ -143,6 +156,24 @@ pub struct Identity {
 /// Returns a typed rejection for invalid headers, exceeded limits, or failed native operations.
 pub fn identify(path: &Path, limits: &Limits) -> Result<Identity, CodecError> {
     let kind = headers::inspect(path, limits)?;
+    if matches!(kind, Kind::Video { .. }) {
+        let dims = bmff::video_dimensions(
+            std::fs::File::open(path).map_err(|_| CodecError::Io)?,
+            limits,
+        )?;
+        return Ok(Identity {
+            kind,
+            width: dims.map(|d| d.0),
+            height: dims.map(|d| d.1),
+            orientation: 1,
+            has_icc: false,
+            icc_desc: None,
+            bits: 8,
+            has_alpha: false,
+            has_gain_map: false,
+            pages: 1,
+        });
+    }
     #[cfg(feature = "raw")]
     if raw::candidate(path, &kind) {
         return raw::identify(path, limits);
@@ -176,8 +207,8 @@ pub fn identify(path: &Path, limits: &Limits) -> Result<Identity, CodecError> {
     }
     Ok(Identity {
         kind,
-        width,
-        height,
+        width: Some(width),
+        height: Some(height),
         orientation,
         has_icc: profile.is_some() && !image.has("yhotos-nclx-profile"),
         icc_desc: profile.as_deref().and_then(native::profile_description),

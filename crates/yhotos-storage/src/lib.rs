@@ -8,6 +8,7 @@ mod gc;
 mod hash;
 mod paths;
 mod temp;
+mod uploads;
 
 use std::fs;
 use std::io;
@@ -19,6 +20,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 pub use gc::GcReport;
 pub use hash::ContentHash;
 pub use temp::TempDir;
+pub use uploads::TempId;
 
 use paths::{Component, safe_join};
 

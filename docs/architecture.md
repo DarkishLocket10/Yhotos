@@ -112,7 +112,7 @@ share_links      id, token_hash, target_kind (album|photo), target_id, passphras
                  revoked_at, created_by
 share_link_opens share_link_id, opened_at, visitor_hash, country, city
 faces            id, photo_id, bbox, embedding vector(512), person_id null, quality
-persons          id, name, hidden bool
+persons          id, name, hidden bool, public_browse bool (opt-in, default false), public_id text unique (random, resettable)
 embeddings       photo_id primary key, model, vector vector(768)
 ocr_text         photo_id, text, tsv tsvector
 places           id, name, admin1, country, lat, lon

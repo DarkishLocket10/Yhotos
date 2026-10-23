@@ -7,6 +7,7 @@ mod plan;
 mod protocol;
 mod publish;
 mod timestamp;
+pub mod validate;
 pub use plan::{Format, Variant, VariantPlan};
 pub use protocol::Limits;
 pub use yhotos_jobs::JobError;
@@ -176,15 +177,10 @@ impl Ingest {
     fn validate_report(&self, r: &protocol::Report) -> Result<Vec<u8>, JobError> {
         let id = &r.identity;
         let bad = || JobError::Fatal("invalid codec report".into());
-        if id.width == 0
-            || id.height == 0
-            || id.width > self.limits.max_dim
-            || id.height > self.limits.max_dim
-            || id.pages == 0
-            || u64::from(id.width)
-                .checked_mul(u64::from(id.height))
-                .and_then(|n| n.checked_mul(u64::from(id.pages)))
-                .is_none_or(|n| n > self.limits.max_pixels)
+        if !id
+            .width
+            .zip(id.height)
+            .is_some_and(|(w, h)| validate::dimensions(&self.limits, w, h, id.pages))
             || !(1..=8).contains(&id.orientation)
             || !id.kind.accepts_bits(id.bits)
             || r.dominant_colors.is_empty()
@@ -255,6 +251,7 @@ impl JobHandler for Ingest {
                 )
                 .await
             }
+            Job::Gc => self.sweep_uploads().await,
             _ => Err(JobError::Retry {
                 after: Duration::from_secs(3600),
                 reason: "not implemented".into(),
