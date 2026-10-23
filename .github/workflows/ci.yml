@@ -46,9 +46,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Packages from earlier runs, so installs rarely depend on mirror speed.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/apt-cache
+          key: apt-${{ runner.os }}-${{ hashFiles('scripts/ci-apt.sh') }}
       - name: Install native codec development libraries
-        # Time-boxed attempts that fall back across Ubuntu mirrors (see the script).
-        timeout-minutes: 16
+        # Cached packages, then time-boxed attempts across Ubuntu mirrors (see the script).
+        timeout-minutes: 26
         run: scripts/ci-apt.sh
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
@@ -97,9 +102,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Packages from earlier runs, so installs rarely depend on mirror speed.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/apt-cache
+          key: apt-${{ runner.os }}-${{ hashFiles('scripts/ci-apt.sh') }}
       - name: Install native codec development libraries
-        # Time-boxed attempts that fall back across Ubuntu mirrors (see the script).
-        timeout-minutes: 16
+        # Cached packages, then time-boxed attempts across Ubuntu mirrors (see the script).
+        timeout-minutes: 26
         run: scripts/ci-apt.sh
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
@@ -140,9 +150,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Packages from earlier runs, so installs rarely depend on mirror speed.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/apt-cache
+          key: apt-${{ runner.os }}-${{ hashFiles('scripts/ci-apt.sh') }}
       - name: Install native codec development libraries
-        # Time-boxed attempts that fall back across Ubuntu mirrors (see the script).
-        timeout-minutes: 16
+        # Cached packages, then time-boxed attempts across Ubuntu mirrors (see the script).
+        timeout-minutes: 26
         run: scripts/ci-apt.sh
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
