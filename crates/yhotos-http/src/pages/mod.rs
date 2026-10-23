@@ -102,6 +102,22 @@ fn cached(
     identity: &SessionIdentity,
     tags: &str,
 ) -> Result<Response, HttpError> {
+    cache_response(
+        Html(html).into_response(),
+        headers,
+        identity,
+        tags,
+        "public, max-age=60, stale-while-revalidate=600",
+    )
+}
+
+pub(crate) fn cache_response(
+    mut response: Response,
+    headers: &HeaderMap,
+    identity: &SessionIdentity,
+    tags: &str,
+    public_policy: &'static str,
+) -> Result<Response, HttpError> {
     // Every gallery page can embed covers or metadata from another album.
     let tags = if tags.split(',').any(|tag| tag == "visibility") {
         tags.to_owned()
@@ -110,22 +126,6 @@ fn cached(
     } else {
         format!("{tags},visibility")
     };
-    cache_response(
-        Html(html).into_response(),
-        headers,
-        identity,
-        &tags,
-        "public, max-age=60, stale-while-revalidate=600",
-    )
-}
-
-fn cache_response(
-    mut response: Response,
-    headers: &HeaderMap,
-    identity: &SessionIdentity,
-    tags: &str,
-    public_policy: &'static str,
-) -> Result<Response, HttpError> {
     let private =
         headers.contains_key(header::COOKIE) || !matches!(identity, SessionIdentity::Anonymous);
     response.headers_mut().insert(
@@ -142,7 +142,7 @@ fn cache_response(
     if !tags.is_empty() {
         response.headers_mut().insert(
             "cache-tag",
-            HeaderValue::from_str(tags).map_err(|e| HttpError::Internal(e.into()))?,
+            HeaderValue::from_str(&tags).map_err(|e| HttpError::Internal(e.into()))?,
         );
     }
     Ok(response)
@@ -206,14 +206,7 @@ pub(crate) async fn album(
                 .await
                 .map_err(db_error)?
                 .ok_or(HttpError::NotFound)?;
-        return Ok((
-            StatusCode::MOVED_PERMANENTLY,
-            [
-                (header::LOCATION, destination),
-                (header::CACHE_CONTROL, "public, max-age=60".to_owned()),
-            ],
-        )
-            .into_response());
+        return redirect_response(destination, &headers, &identity);
     };
     let nonce = nonce.to_string();
     let html = render_album_for(
@@ -357,6 +350,7 @@ pub(crate) async fn legacy(
     Extension(identity): Extension<SessionIdentity>,
     Extension(links): Extension<Links>,
     OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
 ) -> Result<Response, HttpError> {
     let patterns = legacy_patterns(&uri).ok_or(HttpError::NotFound)?;
     let mut conn = state
@@ -368,19 +362,30 @@ pub(crate) async fn legacy(
         .await
         .map_err(db_error)?
         .ok_or(HttpError::NotFound)?;
-    let location = HeaderValue::from_str(&destination).map_err(|_| HttpError::NotFound)?;
-    Ok((
-        StatusCode::MOVED_PERMANENTLY,
-        [
-            (header::LOCATION, location),
-            (
-                header::CACHE_CONTROL,
-                HeaderValue::from_static("public, max-age=60"),
-            ),
-        ],
-    )
-        .into_response())
+    redirect_response(destination, &headers, &identity)
 }
+fn redirect_response(
+    destination: redirects::RedirectDestination,
+    headers: &HeaderMap,
+    identity: &SessionIdentity,
+) -> Result<Response, HttpError> {
+    let tags = match destination.target {
+        yhotos_core::access::ShareTarget::Album(id) => format!("album:{id}"),
+        yhotos_core::access::ShareTarget::Photo(id) => format!("photo:{id}"),
+    };
+    cache_response(
+        (
+            StatusCode::MOVED_PERMANENTLY,
+            [(header::LOCATION, destination.path)],
+        )
+            .into_response(),
+        headers,
+        identity,
+        &tags,
+        "public, max-age=60",
+    )
+}
+
 #[derive(Template)]
 #[template(path = "default/404.html")]
 struct NotFoundTemplate {

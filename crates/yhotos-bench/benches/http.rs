@@ -3,10 +3,70 @@
 
 use axum::{body::Body, extract::ConnectInfo, http::Request};
 use criterion::Criterion;
+use sqlx::Connection;
 use std::{hint::black_box, net::SocketAddr, time::Duration};
 use tower::ServiceExt;
 use yhotos_config::{Config, LogFormat, RateLimits, Upload};
 use yhotos_http::{AppState, public_router};
+
+fn redirect_benchmarks(
+    criterion: &mut Criterion,
+    runtime: &tokio::runtime::Runtime,
+    app: &axum::Router,
+    peer: SocketAddr,
+    url: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut conn = runtime.block_on(sqlx::PgConnection::connect(url))?;
+    let slug = yhotos_core::Slug::from_title(&uuid::Uuid::now_v7().to_string());
+    let album = runtime.block_on(yhotos_db::albums::create(
+        &mut conn,
+        None,
+        &slug,
+        "Redirect benchmark",
+        yhotos_core::access::Visibility::Public,
+    ))?;
+    let old_path = format!("/a/{slug}-old");
+    let legacy = format!("/legacy/{slug}");
+    for pattern in [&old_path, &legacy] {
+        runtime.block_on(yhotos_db::redirects::insert(
+            &mut conn,
+            pattern,
+            yhotos_core::access::ShareTarget::Album(album.id),
+        ))?;
+    }
+    for (name, path) in [
+        ("http/album_redirect/cache_tags", old_path),
+        ("http/legacy_redirect/cache_tags", legacy),
+    ] {
+        let uri: axum::http::Uri = path.parse()?;
+        criterion.bench_function(name, |b| {
+            b.iter(|| {
+                let mut request = Request::new(Body::empty());
+                *request.uri_mut() = uri.clone();
+                request.extensions_mut().insert(ConnectInfo(peer));
+                let response = runtime.block_on(app.clone().oneshot(request));
+                if let Ok(response) = &response {
+                    assert_eq!(response.status(), axum::http::StatusCode::MOVED_PERMANENTLY);
+                    assert_eq!(
+                        response.headers()["cache-tag"],
+                        format!("album:{},visibility", album.id)
+                    );
+                }
+                black_box(response)
+            });
+        });
+    }
+    runtime.block_on(
+        sqlx::query!(
+            "DELETE FROM legacy_redirects WHERE target_id=$1",
+            album.id.0
+        )
+        .execute(&mut conn),
+    )?;
+    runtime
+        .block_on(sqlx::query!("DELETE FROM albums WHERE id=$1", album.id.0).execute(&mut conn))?;
+    Ok(())
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut criterion = Criterion::default().configure_from_args();
@@ -78,7 +138,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             black_box(runtime.block_on(app.clone().oneshot(request)))
         });
     });
-    if std::env::var_os("DATABASE_URL").is_some() {
+    if let Ok(url) = std::env::var("DATABASE_URL") {
         criterion.bench_function("http/home/cache_tags", |b| {
             b.iter(|| {
                 let mut request = Request::new(Body::empty());
@@ -87,10 +147,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let response = runtime.block_on(app.clone().oneshot(request));
                 if let Ok(response) = &response {
                     assert_eq!(response.status(), axum::http::StatusCode::OK);
+                    assert!(
+                        response.headers()["cache-tag"]
+                            .to_str()
+                            .is_ok_and(|tags| tags.split(',').any(|tag| tag == "visibility"))
+                    );
                 }
                 black_box(response)
             });
         });
+        redirect_benchmarks(&mut criterion, &runtime, &app, peer, &url)?;
     }
     criterion.final_summary();
     Ok(())

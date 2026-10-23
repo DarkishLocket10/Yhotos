@@ -1,3 +1,5 @@
+import {remember, safeUpload, stored, transfer} from "./admin/tus";
+
 // A small tus client. Persist only same-origin upload URLs, never file contents.
 const root = document.querySelector<HTMLElement>("#upload");
 if (root) {
@@ -15,29 +17,6 @@ if (root) {
   };
   const waiting: Work[] = [];
   let active = 0;
-  function stored(key: string): string | null {
-    try { return localStorage.getItem(key); } catch { return null; }
-  }
-  function remember(key: string, value: string | null) {
-    try { if (value) localStorage.setItem(key, value); else localStorage.removeItem(key); } catch { /* Upload still works without persistence. */ }
-  }
-  function safeUpload(value: string | null): string | null {
-    if (!value) return null;
-    try {
-      const url = new URL(value, location.origin);
-      return url.origin === location.origin && /^\/admin\/upload\/[0-9a-f-]{36}$/.test(url.pathname) && !url.search && !url.hash ? url.pathname : null;
-    } catch { return null; }
-  }
-  function safePhoto(value: string | null): string {
-    if (!value || !/^\/admin\/api\/photos\/[a-z0-9]{12}$/.test(value)) throw new Error("Invalid upload response");
-    return value;
-  }
-  function encode(text: string): string {
-    const bytes = new TextEncoder().encode(text);
-    let binary = "";
-    for (const byte of bytes) binary += String.fromCharCode(byte);
-    return btoa(binary);
-  }
   async function request(work: Work, method: string, url: string, headers: Record<string, string> = {}, body?: Blob) {
     return fetch(url, {
       method, headers: { "Tus-Resumable": "1.0.0", "X-CSRF-Token": csrf, ...headers },
@@ -46,29 +25,6 @@ if (root) {
   }
   function requireSuccess(response: Response) {
     if (!response.ok) throw new Error(response.status === 422 ? "File rejected" : response.status === 413 ? "File or chunk is too large" : "Upload interrupted. Retry to resume.");
-  }
-  function readOffset(response: Response, file: File): number {
-    const text = response.headers.get("Upload-Offset");
-    if (!text || !/^\d+$/.test(text)) throw new Error("Invalid upload offset");
-    const offset = Number(text);
-    if (!Number.isSafeInteger(offset) || offset < 0 || offset > file.size) throw new Error("Invalid upload offset");
-    return offset;
-  }
-  function sameDestination(response: Response, work: Work): boolean {
-    const metadata = response.headers.get("Upload-Metadata");
-    const albums = metadata?.split(",").map(field => field.trim().split(" ")).filter(([key]) => key === "album") || [];
-    return response.headers.get("Upload-Length") === String(work.file.size)
-      && albums.length === 1 && albums[0].length === 2 && albums[0][1] === encode(work.album);
-  }
-  function completed(work: Work, response: Response) {
-    if (!response.headers.has("Upload-Result")) return;
-    work.photo = safePhoto(response.headers.get("Location"));
-    work.progress.value = work.file.size;
-    work.url = null;
-    // The photo is published; cancelling now could not remove it, so stop offering it.
-    work.cancel.disabled = true;
-    work.cancel.hidden = true;
-    remember(work.key, null);
   }
   async function poll(work: Work) {
     while (!work.cancelled && work.photo) {
@@ -87,46 +43,15 @@ if (root) {
   }
   async function upload(work: Work) {
     if (work.photo) return;
-    let offset = 0;
-    if (work.url) {
-      const response = await request(work, "HEAD", work.url);
-      if (response.status === 404 || response.status === 410) { remember(work.key, null); work.url = null; }
-      else {
-        requireSuccess(response);
-        if (sameDestination(response, work)) offset = readOffset(response, work.file);
-        else { remember(work.key, null); work.url = null; }
-      }
-    }
-    if (!work.url) {
-      const response = await request(work, "POST", "/admin/upload", {
-        "Upload-Length": String(work.file.size),
-        "Upload-Metadata": `filename ${encode(work.file.name)},album ${encode(work.album)},filetype ${encode(work.file.type)}`,
-      });
-      requireSuccess(response);
-      work.url = safeUpload(response.headers.get("Location"));
-      if (!work.url) throw new Error("Invalid upload response");
-      remember(work.key, work.url);
-    }
-    if (offset === work.file.size) {
-      const response = await request(work, "POST", `${work.url}/finish`);
-      requireSuccess(response);
-      completed(work, response);
-    }
-    while (offset < work.file.size) {
-      const end = Math.min(offset + chunk, work.file.size);
-      work.label.textContent = `Uploading ${Math.round(offset * 100 / work.file.size)}%`;
-      const response = await request(work, "PATCH", work.url, {
-        "Upload-Offset": String(offset), "Content-Type": "application/offset+octet-stream",
-      }, work.file.slice(offset, end));
-      requireSuccess(response);
-      const next = readOffset(response, work.file);
-      if (next <= offset || next !== end) throw new Error("Invalid upload progress");
-      offset = next;
+    work.photo = await transfer(work, chunk, csrf, offset => {
       work.progress.value = offset;
-      completed(work, response);
-    }
-    if (!work.photo) throw new Error("Upload completion was interrupted. Retry to resume.");
+      work.label.textContent = `Uploading ${Math.round(offset * 100 / work.file.size)}%`;
+    }, work.abort.signal);
+    // Publication is complete; cancellation can no longer remove the photo.
+    work.cancel.disabled = true;
+    work.cancel.hidden = true;
   }
+
   function pump() {
     while (active < 4 && waiting.length) {
       const work = waiting.shift()!;

@@ -417,7 +417,13 @@ async fn replacement_url(c: &Client, photo: PhotoId, bytes: usize) -> String {
         )
         .await;
     assert_eq!(created.status(), StatusCode::CREATED);
-    created.headers()["location"].to_str().unwrap().to_owned()
+    let url = created.headers()["location"].to_str().unwrap().to_owned();
+    let head = c.send("HEAD", &url, &[], Body::empty()).await;
+    assert_eq!(head.status(), StatusCode::OK);
+    assert_eq!(head.headers()["upload-replace-photo"], photo.to_string());
+    assert_eq!(head.headers()["upload-length"], bytes.to_string());
+    assert_eq!(head.headers()["cache-control"], "no-store");
+    url
 }
 
 #[sqlx::test(migrations = "../yhotos-db/migrations")]

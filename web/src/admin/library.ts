@@ -1,3 +1,5 @@
+import {type Transfer, safeUpload, stored, transfer} from "./tus";
+
 // Admin islands use the exact same JSON actions for pointer and keyboard input.
 const root = document.querySelector<HTMLElement>("[data-admin-page]");
 const csrf = document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content ?? "";
@@ -32,8 +34,13 @@ function assign(obj: Record<string, unknown>, path: string, value: unknown) { co
 function boxes() { return [...document.querySelectorAll<HTMLInputElement>(".photo-select")]; }
 function selection() { return selectedIds(boxes()); }
 function updateCount() { const node = document.querySelector("#selection-count"); if (node) node.textContent = `${selection().length} photos selected`; }
-let anchor = 0;
-for (const [index, box] of boxes().entries()) box.addEventListener("click", event => { if ((event as MouseEvent).shiftKey) rangeSelection(boxes(), anchor, index, box.checked); anchor = index; updateCount(); });
+let anchor: HTMLInputElement | null = null;
+for (const box of boxes()) box.addEventListener("click", event => {
+  const current = boxes(), start = anchor ? current.indexOf(anchor) : -1;
+  if ((event as MouseEvent).shiftKey && start >= 0) rangeSelection(current, start, current.indexOf(box), box.checked);
+  anchor = box;
+  updateCount();
+});
 document.querySelector("#select-all")?.addEventListener("click", () => { for (const box of boxes()) box.checked = true; updateCount(); });
 document.querySelector("#select-none")?.addEventListener("click", () => { for (const box of boxes()) box.checked = false; updateCount(); });
 for (const form of document.querySelectorAll<HTMLFormElement>(".admin-form")) form.addEventListener("submit", async event => {
@@ -89,25 +96,23 @@ document.querySelector("#save-photo-order")?.addEventListener("click", async eve
     message("Photo order saved.");
   } catch (e) { message((e as Error).message); } finally { button.disabled = false; }
 });
-// Replacement uses the same tus protocol, streaming chunks and retaining a durable target binding.
+// Keep each target/file URL in the live island as well as across reloads.
+const replacements = new Map<string, Transfer>();
 document.querySelector("#replace-start")?.addEventListener("click", async () => {
   const input = document.querySelector<HTMLInputElement>("#replace-file"), file = input?.files?.[0];
   if (!file || !input) { message("Choose a new original file."); return; }
   const button = document.querySelector<HTMLButtonElement>("#replace-start"); if (button) button.disabled = true;
-  const metadata = (s: string) => btoa(String.fromCharCode(...new TextEncoder().encode(s)));
-  const headers = {"Tus-Resumable": "1.0.0", "X-CSRF-Token": csrf};
+  const key = `yhotos-replace:${JSON.stringify([input.dataset.photo, file.name, file.size, file.lastModified])}`;
+  let work = replacements.get(key);
+  if (!work) {
+    work = {file, album: input.dataset.album!, replace: input.dataset.photo!, key, url: safeUpload(stored(key))};
+    replacements.set(key, work);
+  }
   try {
-    const created = await fetch("/admin/upload", {method: "POST", headers: {...headers, "Upload-Length": String(file.size), "Upload-Metadata": `filename ${metadata(file.name)},album ${metadata(input.dataset.album!)},filetype ${metadata(file.type)}`, "Upload-Replace-Photo": input.dataset.photo!}});
-    if (created.status !== 201 || created.redirected) throw new Error("Replacement upload could not start.");
-    const url = created.headers.get("Location"); if (!url?.startsWith("/admin/upload/")) throw new Error("Invalid upload response.");
-    let offset = 0;
-    while (offset < file.size) {
-      const chunk = file.slice(offset, offset + Number(input.dataset.chunkBytes));
-      const response = await fetch(url, {method: "PATCH", headers: {...headers, "Content-Type": "application/offset+octet-stream", "Upload-Offset": String(offset)}, body: chunk});
-      if (response.status !== 204 || response.redirected) throw new Error("Upload interrupted. Choose the file again to retry.");
-      offset = Number(response.headers.get("Upload-Offset"));
+    await transfer(work, Number(input.dataset.chunkBytes), csrf, offset => {
       const progress = document.querySelector<HTMLProgressElement>("#replace-progress"); if (progress) progress.value = offset * 100 / file.size;
-    }
+    });
+    replacements.delete(key);
     location.reload();
   } catch (e) { message((e as Error).message); } finally { if (button) button.disabled = false; }
 });

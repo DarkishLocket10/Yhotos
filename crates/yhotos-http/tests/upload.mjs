@@ -242,3 +242,27 @@ for (const status of [408, 429, 500]) {
     assert.equal(deletes, 2);
   });
 }
+
+test('batch upload does not resume a replacement upload with the same file and album', async () => {
+  const file = new File(['ab'], 'photo.jpg', {lastModified: 123});
+  const key = `yhotos-upload:${JSON.stringify([file.name, file.size, file.lastModified])}`;
+  const replacement = '/admin/upload/00000000-0000-4000-8000-000000000001';
+  const ordinary = '/admin/upload/00000000-0000-4000-8000-000000000002';
+  const saved = new Map([[key, replacement]]), calls = [];
+  const app = island(async (path, options) => {
+    calls.push([path, options.method]);
+    if (options.method === 'HEAD') {
+      const response = resumed(1, file.size);
+      response.headers.set('Upload-Replace-Photo', '019a1b34-4c56-7789-8b90-123456789def');
+      return response;
+    }
+    if (options.method === 'POST') return created(ordinary.split('/').at(-1));
+    if (options.method === 'GET') return ready();
+    assert.equal(path, ordinary);
+    assert.equal(options.headers['Upload-Offset'], '0');
+    return patched(file.size, true);
+  }, saved);
+  app.choose([file]);
+  await until(() => app.elements.uploads.children[0]?.children[1].textContent === 'Ready');
+  assert.deepEqual(calls, [[replacement, 'HEAD'], ['/admin/upload', 'POST'], [ordinary, 'PATCH'], [photo + '/status', 'GET']]);
+});

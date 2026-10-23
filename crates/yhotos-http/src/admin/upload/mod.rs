@@ -262,6 +262,9 @@ async fn head(
         add(&mut r, "upload-metadata", &row.metadata)?;
     }
 
+    if let Some(target) = yhotos_db::library::replacement_target(&mut tx, id).await? {
+        add(&mut r, "upload-replace-photo", target)?;
+    }
     add(&mut r, "upload-offset", row.received_bytes)?;
     add(&mut r, "upload-length", row.declared_bytes)?;
     add(&mut r, "upload-expires", expires(row.expires_at))?;

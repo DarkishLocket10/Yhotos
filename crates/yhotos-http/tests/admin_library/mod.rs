@@ -912,14 +912,17 @@ impl yhotos_http::admin::cache::CachePurger for CachedPages {
         })
     }
 }
+async fn anonymous_get(client: &mut Client, path: &str) -> Reply {
+    let mut request = Request::builder().uri(path).body(Body::empty()).unwrap();
+    request.extensions_mut().insert(ConnectInfo(client.network));
+    let response = client.app.clone().oneshot(request).await.unwrap();
+    client.receive(response).await
+}
 async fn cached_get(client: &mut Client, cache: &CachedPages, path: &str) -> String {
     if let Some((_, body)) = cache.0.lock().unwrap().get(path) {
         return body.clone();
     }
-    let mut request = Request::builder().uri(path).body(Body::empty()).unwrap();
-    request.extensions_mut().insert(ConnectInfo(client.network));
-    let response = client.app.clone().oneshot(request).await.unwrap();
-    let response = client.receive(response).await;
+    let response = anonymous_get(client, path).await;
     assert_eq!(response.status, StatusCode::OK, "{path}");
     assert!(
         response.headers["cache-control"]
@@ -1009,6 +1012,8 @@ async fn restricted_child_cover_is_removed_from_cached_parent_and_aggregate_page
         "/calendar".into(),
         format!("/places/{place}"),
         format!("/p/{}", p.short_id),
+        format!("/api/v1/photos/{}", p.short_id),
+        format!("/api/v1/albums/{child}/photos"),
     ];
     for path in &paths {
         cached_get(&mut public, &cache, path).await;
@@ -1254,4 +1259,137 @@ async fn older_failed_and_running_jobs_remain_accessible_through_filtered_pages(
             .contains("Older unresolved failure")
     );
     action(&mut client, json!({"op":"job","id":failed,"retry":false})).await;
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn warmed_album_and_legacy_redirects_are_purged_on_restriction_and_deletion(pool: PgPool) {
+    let (mut client, _) = admin(pool.clone()).await;
+    let parent = album(&pool, "Before").await;
+    let child = albums::create(
+        &mut pool.acquire().await.unwrap(),
+        Some(parent),
+        &yhotos_core::Slug::from_title("Child"),
+        "Child",
+        yhotos_core::access::Visibility::Public,
+    )
+    .await
+    .unwrap();
+    let p = photo(&pool, child.id, "Redirected photo").await;
+    sqlx::query!("UPDATE photos SET status='ready' WHERE id=$1", p.id.0)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for (path, target) in [
+        (
+            "/category/222",
+            yhotos_core::access::ShareTarget::Album(child.id),
+        ),
+        ("/old-photo", yhotos_core::access::ShareTarget::Photo(p.id)),
+    ] {
+        yhotos_db::redirects::insert(&mut pool.acquire().await.unwrap(), path, target)
+            .await
+            .unwrap();
+    }
+    let cache = Arc::new(CachedPages::default());
+    client.state = AppState::from(yhotos_http::AppResources {
+        config: client.state.config,
+        auth: client.state.auth.clone(),
+        pool: pool.clone(),
+        store: client.state.store.clone(),
+        files: yhotos_http::files::FileCache::default(),
+        cache_purger: cache.clone(),
+    });
+    client.app = yhotos_http::admin_router(client.state.clone());
+    action(&mut client, json!({"op":"album_edit","id":parent,"title":"After","description":"","visibility":"public","manual_order":false,"grants":[]})).await;
+    wait_for_purges(&pool).await;
+    let paths = [
+        (
+            "/a/before".to_owned(),
+            "/a/after".to_owned(),
+            format!("album:{parent}"),
+        ),
+        (
+            "/a/before/child".into(),
+            "/a/after/child".into(),
+            format!("album:{}", child.id),
+        ),
+        (
+            "/index.php?/category/222".into(),
+            "/a/after/child".into(),
+            format!("album:{}", child.id),
+        ),
+        (
+            "/legacy/old-photo".into(),
+            format!("/p/{}", p.short_id),
+            format!("photo:{}", p.id),
+        ),
+    ];
+    let mut public = client.listener(false);
+    for mutation in [
+        json!({"op":"album_edit","id":parent,"title":"After","description":"","visibility":"restricted","manual_order":false,"grants":[]}),
+        json!({"op":"trash","kind":"album","id":parent}),
+    ] {
+        for (path, destination, tag) in &paths {
+            let response = anonymous_get(&mut public, path).await;
+            assert_eq!(response.status, StatusCode::MOVED_PERMANENTLY, "{path}");
+            assert_eq!(response.headers[header::LOCATION], destination.as_str());
+            assert_eq!(
+                response.headers[header::CACHE_CONTROL],
+                "public, max-age=60"
+            );
+            let tags: Vec<String> = response.headers["cache-tag"]
+                .to_str()
+                .unwrap()
+                .split(',')
+                .map(str::to_owned)
+                .collect();
+            assert!(tags.contains(tag), "{path}");
+            assert!(tags.iter().any(|tag| tag == "visibility"), "{path}");
+            cache
+                .0
+                .lock()
+                .unwrap()
+                .insert(path.clone(), (tags, destination.clone()));
+        }
+        assert_eq!(cache.0.lock().unwrap().len(), paths.len());
+        // The simulated edge serves each warmed redirect before the mutation.
+        for (path, destination, _) in &paths {
+            assert_eq!(&cache.0.lock().unwrap()[path].1, destination);
+        }
+        action(&mut client, mutation).await;
+        wait_for_purges(&pool).await;
+        assert!(cache.0.lock().unwrap().is_empty());
+        let missing = anonymous_get(&mut public, "/a/does-not-exist").await;
+        for (path, _, _) in &paths {
+            let response = anonymous_get(&mut public, path).await;
+            assert_eq!(response.status, StatusCode::NOT_FOUND, "{path}");
+            assert!(!response.headers.contains_key(header::LOCATION));
+            assert_eq!(response.body, missing.body, "{path}");
+        }
+        // Make the target public again before testing deletion of warmed redirects.
+        if albums::get_by_id(&mut pool.acquire().await.unwrap(), parent)
+            .await
+            .unwrap()
+            .unwrap()
+            .deleted_at
+            .is_none()
+        {
+            action(&mut client, json!({"op":"album_edit","id":parent,"title":"After","description":"","visibility":"public","manual_order":false,"grants":[]})).await;
+            wait_for_purges(&pool).await;
+        }
+    }
+}
+
+async fn wait_for_purges(pool: &PgPool) {
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !library::pending_purges(&mut pool.acquire().await.unwrap())
+            .await
+            .unwrap()
+            .is_empty()
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
 }
