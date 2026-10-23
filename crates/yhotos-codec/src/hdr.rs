@@ -631,6 +631,7 @@ mod tests {
             "iso-p3.jpg",
             "adobe.jpg",
             "apple.heic",
+            "apple-element.heic",
             "gain-map.jxl",
             "../images/gain-map.avif",
         ] {
@@ -875,7 +876,7 @@ mod tests {
 
     #[test]
     fn apple_and_adobe_inputs_extract_and_encode() {
-        for name in ["apple.heic", "adobe.jpg"] {
+        for name in ["apple.heic", "apple-element.heic", "adobe.jpg"] {
             let path = fixture(name);
             let id = crate::identify(&path, &Limits::default()).unwrap();
             assert!(id.has_gain_map, "{name}");

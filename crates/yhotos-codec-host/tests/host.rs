@@ -348,6 +348,7 @@ fn required_hdr_container_fixtures_produce_planned_jpegs() {
         "iso.jpg",
         "adobe.jpg",
         "apple.heic",
+        "apple-element.heic",
         "gain-map.jxl",
         "../images/gain-map.avif",
     ] {
@@ -459,10 +460,17 @@ fn malformed_gain_metadata_never_fails_an_sdr_ingest() {
         bytes[value] = last;
         cases.push((name, bytes));
     }
-    let mut bytes = apple.clone();
-    let at = bytes.windows(5).position(|b| b == b"65536").unwrap();
-    bytes[at] = b'9';
-    cases.push(("apple_version", bytes));
+    for (name, mut bytes) in [
+        ("apple_version", apple.clone()),
+        (
+            "apple_element_version",
+            std::fs::read(hdr_fixture("apple-element.heic")).unwrap(),
+        ),
+    ] {
+        let at = bytes.windows(5).position(|b| b == b"65536").unwrap();
+        bytes[at] = b'9';
+        cases.push((name, bytes));
+    }
     let mut bytes = apple;
     let at = bytes.windows(10).position(|b| b == b"Apple iOS\0").unwrap();
     bytes[at + 24..at + 28].copy_from_slice(&f32::NAN.to_bits().to_be_bytes());

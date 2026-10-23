@@ -30,7 +30,7 @@ def heic_image(path):
     primary=int.from_bytes(one(meta,b'pitm')[4:],'big')
     props=boxes(one(one(meta,b'iprp'),b'ipco'))
     return locations[primary],[(k,v) for k,v in props if k in [b'hvcC',b'ispe',b'pixi',b'colr',b'clap']]
-def apple(base,gain):
+def apple(base,gain,xmp):
     base,baseprops=heic_image(base);gain,gainprops=heic_image(gain)
     # Header + two documented float32 MakerNote values. Headroom is 3 stops.
     note=b'Apple iOS\0'+b'\0\1MM'+u16(2)
@@ -40,7 +40,6 @@ def apple(base,gain):
     tiff=b'MM\0*'+u32(8)+u16(1)+u16(34665)+u16(4)+u32(1)+u32(26)+u32(0)
     tiff+=u16(1)+u16(37500)+u16(7)+u32(len(note))+u32(44)+u32(0)+note
     exif=u32(0)+tiff
-    xmp=b'<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:h="http://ns.apple.com/HDRGainMap/1.0/" h:HDRGainMapVersion="65536"/></rdf:RDF></x:xmpmeta>'
     ftyp=box(b'ftyp',b'heic'+u32(0)+b'heicmif1')
     properties=baseprops+gainprops+[(b'auxC',bytes(4)+b'urn:com:apple:photo:2020:aux:hdrgainmap\0')]
     ipco=box(b'ipco',b''.join(box(k,v) for k,v in properties))
@@ -125,7 +124,9 @@ with tempfile.TemporaryDirectory() as tmp:
     run(tmp/'mux',tmp/'p3.jpg',tmp/'gain.jpg',DEST/'iso-p3.jpg')
     for name in ['base','gain']:
         run('vips','heifsave',tmp/f'{name}.jpg',tmp/f'{name}.heic','--compression=hevc','--lossless')
-    (DEST/'apple.heic').write_bytes(apple(tmp/'base.heic',tmp/'gain.heic'))
+    for name,form in [('apple','attribute'),('apple-element','element')]:
+        xmp=(DEST/f'apple-{form}.xmp').read_bytes()
+        (DEST/f'{name}.heic').write_bytes(apple(tmp/'base.heic',tmp/'gain.heic',xmp))
     for name in ['base','gain']:
         run('vips','jxlsave',tmp/f'{name}.jpg',tmp/f'{name}.jxl','--distance=0','--effort=3','--keep=icc' if name=='base' else '--keep=none')
     base=(tmp/'base.jxl').read_bytes();gain=(tmp/'gain.jxl').read_bytes()
@@ -134,4 +135,4 @@ with tempfile.TemporaryDirectory() as tmp:
     bundle=bytes([0])+u16(len(metadata))+metadata+bytes(5)+gain
     if base.startswith(b'\xff\x0a'): base=box(b'JXL ',b'\r\n\x87\n')+box(b'ftyp',b'jxl '+u32(0)+b'jxl ')+box(b'jxlc',base)
     (DEST/'gain-map.jxl').write_bytes(base+box(b'jhgm',bundle))
-    for name in ['iso.jpg','iso-p3.jpg','adobe.jpg','apple.heic','gain-map.jxl']:assert (DEST/name).stat().st_size<300000
+    for name in ['iso.jpg','iso-p3.jpg','adobe.jpg','apple.heic','apple-element.heic','gain-map.jxl']:assert (DEST/name).stat().st_size<300000

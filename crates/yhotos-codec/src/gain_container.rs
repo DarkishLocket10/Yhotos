@@ -562,19 +562,31 @@ fn apple_version(bytes: &[u8]) -> Result<bool, CodecError> {
         return Err(CodecError::Limits);
     }
     let mut reader = NsReader::from_reader(bytes);
+    let namespace = ResolveResult::Bound(Namespace("http://ns.apple.com/HDRGainMap/1.0/"));
     let mut found = false;
+    let mut value: Option<String> = None;
     let mut depth = 0_usize;
     for _ in 0..4096 {
         let event = reader.read_event().map_err(|_| CodecError::Decode)?;
         let start = matches!(&event, Event::Start(_));
         match event {
             Event::Start(e) | Event::Empty(e) => {
+                // The version is a scalar RDF property; nested resources are not versions.
+                if value.is_some() {
+                    return Err(CodecError::Unsupported);
+                }
+                let (ns, name) = reader.resolver().resolve_element(e.name());
+                if ns == namespace && name.as_ref() == "HDRGainMapVersion" {
+                    if found || !start {
+                        return Err(CodecError::Unsupported);
+                    }
+                    found = true;
+                    value = Some(String::new());
+                }
                 for attribute in e.attributes() {
                     let attribute = attribute.map_err(|_| CodecError::Decode)?;
                     let (ns, name) = reader.resolver().resolve_attribute(attribute.key);
-                    if ns == ResolveResult::Bound(Namespace("http://ns.apple.com/HDRGainMap/1.0/"))
-                        && name.as_ref() == "HDRGainMapVersion"
-                    {
+                    if ns == namespace && name.as_ref() == "HDRGainMapVersion" {
                         if found || attribute.value.as_ref() != "65536" {
                             return Err(CodecError::Unsupported);
                         }
@@ -589,8 +601,33 @@ fn apple_version(bytes: &[u8]) -> Result<bool, CodecError> {
                     return Err(CodecError::Limits);
                 }
             }
-            Event::End(_) => depth = depth.saturating_sub(1),
-            Event::DocType(_) | Event::GeneralRef(_) => return Err(CodecError::Decode),
+            Event::Text(text) => {
+                if let Some(value) = &mut value {
+                    if value.len() + text.len() > 256 {
+                        return Err(CodecError::Limits);
+                    }
+                    value.push_str(text.as_ref());
+                }
+            }
+            Event::CData(text) => {
+                if let Some(value) = &mut value {
+                    if value.len() + text.len() > 256 {
+                        return Err(CodecError::Limits);
+                    }
+                    value.push_str(text.as_ref());
+                }
+            }
+            Event::End(_) => {
+                if let Some(value) = value.take()
+                    && value.trim() != "65536"
+                {
+                    return Err(CodecError::Unsupported);
+                }
+                depth = depth.checked_sub(1).ok_or(CodecError::Decode)?;
+            }
+            Event::DocType(_) | Event::GeneralRef(_) => {
+                return Err(CodecError::Decode);
+            }
             Event::Eof => {
                 return if depth == 0 {
                     Ok(found)
@@ -746,6 +783,48 @@ mod tests {
         assert!((decoded.alternate_headroom - 4.5).abs() < 0.00001);
     }
     #[test]
+    fn apple_xmp_accepts_attribute_and_element_packets() {
+        for packet in [
+            include_bytes!("../../../fixtures/hdr/apple-attribute.xmp").as_slice(),
+            include_bytes!("../../../fixtures/hdr/apple-element.xmp").as_slice(),
+            b"<root xmlns:h='http://ns.apple.com/HDRGainMap/1.0/'><h:HDRGainMapVersion> \n65536\t </h:HDRGainMapVersion></root>",
+            b"<HDRGainMapVersion xmlns='http://ns.apple.com/HDRGainMap/1.0/'>65536</HDRGainMapVersion>",
+            b"<root xmlns:h='http://ns.apple.com/HDRGainMap/1.0/'><h:HDRGainMapVersion>655<!-- XMP comment -->36</h:HDRGainMapVersion></root>",
+            b"<root xmlns:h='http://ns.apple.com/HDRGainMap/1.0/'><h:HDRGainMapVersion><![CDATA[65536]]></h:HDRGainMapVersion></root>",
+        ] {
+            assert!(apple_version(packet).unwrap());
+        }
+    }
+    #[test]
+    fn apple_xmp_rejects_malformed_and_duplicate_element_properties() {
+        for property in [
+            "<h:HDRGainMapVersion>2</h:HDRGainMapVersion>",
+            "<h:HDRGainMapVersion/>",
+            "<h:HDRGainMapVersion></h:HDRGainMapVersion>",
+            "<h:HDRGainMapVersion>65536 65536</h:HDRGainMapVersion>",
+            "<h:HDRGainMapVersion>65536<value/></h:HDRGainMapVersion>",
+            "<h:HDRGainMapVersion><value>65536</value></h:HDRGainMapVersion>",
+            "<h:HDRGainMapVersion>6553&six;</h:HDRGainMapVersion>",
+            "<h:HDRGainMapVersion><![CDATA[2]]></h:HDRGainMapVersion>",
+            "<h:HDRGainMapVersion>65536</h:HDRGainMapVersion><h:HDRGainMapVersion>65536</h:HDRGainMapVersion>",
+            "<a h:HDRGainMapVersion='65536'/><h:HDRGainMapVersion>65536</h:HDRGainMapVersion>",
+            "<h:HDRGainMapVersion>65536</h:HDRGainMapVersion><a h:HDRGainMapVersion='65536'/>",
+            "<h:HDRGainMapVersion h:HDRGainMapVersion='65536'>65536</h:HDRGainMapVersion>",
+            "<a h:HDRGainMapVersion='65536'/><a h:HDRGainMapVersion='65536'/>",
+            "<h:HDRGainMapVersion>65536</h:WrongEnd>",
+            "<h:HDRGainMapVersion>65536",
+        ] {
+            let packet =
+                format!("<root xmlns:h='http://ns.apple.com/HDRGainMap/1.0/'>{property}</root>");
+            assert!(apple_version(packet.as_bytes()).is_err(), "{property}");
+        }
+        let oversized = format!(
+            "<h:HDRGainMapVersion xmlns:h='http://ns.apple.com/HDRGainMap/1.0/'>{}</h:HDRGainMapVersion>",
+            " ".repeat(257)
+        );
+        assert_eq!(apple_version(oversized.as_bytes()), Err(CodecError::Limits));
+    }
+    #[test]
     fn apple_xmp_rejects_spoofed_namespace_unknown_version_and_entities() {
         let valid =
             b"<root xmlns:h='http://ns.apple.com/HDRGainMap/1.0/' h:HDRGainMapVersion='65536'/>";
@@ -753,6 +832,13 @@ mod tests {
         assert!(
             !apple_version(b"<root xmlns:h='unrelated' h:HDRGainMapVersion='65536'/>").unwrap()
         );
+        for packet in [
+            b"<root xmlns:h='unrelated'><h:HDRGainMapVersion>65536</h:HDRGainMapVersion></root>".as_slice(),
+            b"<root xmlns:h='http://ns.apple.com/HDRGainMap/1.0/'><HDRGainMapVersion>65536</HDRGainMapVersion></root>",
+            b"<root xmlns:h='http://ns.apple.com/HDRGainMap/1.0/'><a xmlns:h='unrelated'><h:HDRGainMapVersion>65536</h:HDRGainMapVersion></a></root>",
+        ] {
+            assert!(!apple_version(packet).unwrap());
+        }
         for bad in [
             b"<root xmlns:h='http://ns.apple.com/HDRGainMap/1.0/' h:HDRGainMapVersion='2'/>"
                 .as_slice(),

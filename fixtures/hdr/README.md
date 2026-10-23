@@ -9,6 +9,11 @@ No owner-library original or internet image is used. Every fixture is under 300 
 - `apple.heic`: synthetic HEVC base and half-resolution auxiliary, standard Apple
   auxiliary URI/association, namespaced HDRGainMapVersion 65536, and only a minimal
   EXIF MakerNote containing float32 keys 33=1 and 48=0 (three stops headroom).
+- `apple-element.heic`: the same base, auxiliary and MakerNote, with Apple's
+  gain-map version as an RDF/XML property element instead of an attribute.
+  `apple-attribute.xmp` and `apple-element.xmp` are the complete embedded XMP
+  packets, including Apple's auxiliary-image type and gain-map namespaces.
+  Both use synthetic chart pixels; neither claims owner-library provenance.
 - `gain-map.jxl`: naked libjxl base/map streams in a `jhgm` bundle with ISO metadata.
 - `../images/gain-map.avif`: libavif-generated tmap/AV1 source; its generator is in
   `scripts/gen-fixtures.sh` and it contains no XMP signature substitutes.

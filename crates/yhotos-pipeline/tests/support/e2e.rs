@@ -742,6 +742,7 @@ async fn gain_maps_publish_hdr_rows_verify_files_and_rerun_idempotently(pool: Pg
         "../hdr/iso.jpg",
         "../hdr/adobe.jpg",
         "../hdr/apple.heic",
+        "../hdr/apple-element.heic",
         "gain-map.avif",
         "../hdr/gain-map.jxl",
     ] {
