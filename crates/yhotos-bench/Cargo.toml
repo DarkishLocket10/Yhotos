@@ -88,5 +88,9 @@ name = "upload"
 harness = false
 
 [[bench]]
+name = "hdr"
+harness = false
+
+[[bench]]
 name = "geo_views"
 harness = false

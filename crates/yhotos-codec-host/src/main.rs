@@ -18,6 +18,7 @@ use yhotos_codec::{CodecError, Encode, EncodeOpts, Limits, ResizeSpec};
 #[cfg(feature = "test-hooks")]
 static DECODE_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 const JOB_BYTES: u64 = 1 << 20;
+const CACHE_BYTES: usize = 64 << 20;
 const CHILD_ARGUMENT: &str = "--sandboxed-job";
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -134,7 +135,14 @@ struct OutputReport {
     millis: u128,
 }
 #[derive(Serialize)]
+struct SkippedOutput {
+    name: String,
+    reason: yhotos_codec::HdrSkippedReason,
+}
+#[derive(Serialize)]
 struct Report {
+    hdr_skipped_reason: Option<yhotos_codec::HdrSkippedReason>,
+    skipped_outputs: Vec<SkippedOutput>,
     identity: Option<yhotos_codec::Identity>,
     metadata: Option<yhotos_codec::Metadata>,
     thumbhash: Option<String>,
@@ -149,6 +157,7 @@ struct Timings {
     decode_calls: usize,
     identify_ms: u128,
     decode_ms: u128,
+    hdr_base_reuses: usize,
     total_ms: u128,
 }
 struct Failure(u8, &'static str);
@@ -338,6 +347,8 @@ fn run() -> Result<(), Failure> {
             .all(|want| matches!(want, Want::Identity | Want::Metadata))
     {
         let report = Report {
+            hdr_skipped_reason: None,
+            skipped_outputs: Vec::new(),
             identity: job.want.contains(&Want::Identity).then_some(id),
             metadata: if job.want.contains(&Want::Metadata) {
                 Some(yhotos_codec::metadata(&input)?)
@@ -352,6 +363,7 @@ fn run() -> Result<(), Failure> {
                 decode_calls: DECODE_CALLS.load(std::sync::atomic::Ordering::Relaxed),
                 identify_ms,
                 decode_ms: 0,
+                hdr_base_reuses: 0,
                 total_ms: start.elapsed().as_millis(),
             },
         };
@@ -391,8 +403,22 @@ fn run() -> Result<(), Failure> {
     }
 
     let mut outputs = Vec::new();
+    let mut skipped_outputs = Vec::new();
+    let mut resized_images: Vec<(ResizeSpec, yhotos_codec::Working)> = Vec::new();
+    let mut bases: Vec<yhotos_codec::SdrBase> = Vec::new();
+    let mut cached_bytes = 0_usize;
+    let mut hdr_base_reuses = 0;
     for (output, path) in job.outputs.iter().zip(paths) {
         let t = Instant::now();
+        if output.encode.hdr() && !working.has_gain_map() {
+            skipped_outputs.push(SkippedOutput {
+                name: output.name.clone(),
+                reason: working
+                    .hdr_skipped_reason()
+                    .unwrap_or(yhotos_codec::HdrSkippedReason::NoGainMap),
+            });
+            continue;
+        }
         // Reserve atomically, including case-folded aliases on macOS. The private
         // worker directory prevents other processes replacing this entry.
         let reservation = std::fs::OpenOptions::new()
@@ -401,16 +427,84 @@ fn run() -> Result<(), Failure> {
             .open(&path)
             .map_err(|_| Failure(2, "invalid output name"))?;
         drop(reservation);
-        let resized = yhotos_codec::resize(&working, output.resize)?;
-        let encoded = yhotos_codec::encode(
-            &resized,
-            output.encode,
-            EncodeOpts {
-                keep_icc: output.keep_icc,
-                strip_metadata: true,
-            },
-            &path,
-        )?;
+        let index = if let Some(index) = resized_images
+            .iter()
+            .position(|(spec, _)| *spec == output.resize)
+        {
+            index
+        } else {
+            resized_images.push((
+                output.resize,
+                yhotos_codec::resize(&working, output.resize)?,
+            ));
+            resized_images.len() - 1
+        };
+        let resized = &resized_images
+            .get(index)
+            .ok_or(Failure(3, "resize unavailable"))?
+            .1;
+        let opts = EncodeOpts {
+            keep_icc: output.keep_icc,
+            strip_metadata: true,
+        };
+        let cached = if output.encode.hdr() {
+            bases
+                .iter()
+                .find(|base| base.matches(resized, output.encode, opts))
+        } else {
+            None
+        };
+        let reused = cached.is_some();
+        let encoded = if let Some(base) = cached {
+            yhotos_codec::encode_reusing_sdr(resized, output.encode, opts, &path, base)
+        } else if !output.encode.hdr()
+            && working.has_gain_map()
+            && output.keep_icc
+            && matches!(output.encode, Encode::Jpeg { .. } | Encode::Jxl { .. })
+            && job.outputs.iter().any(|future| {
+                future.encode.hdr()
+                    && future.resize == output.resize
+                    && future.keep_icc == output.keep_icc
+                    && future.encode.sdr() == output.encode
+            })
+            && !bases
+                .iter()
+                .any(|base| base.matches(resized, output.encode, opts))
+        {
+            yhotos_codec::encode_sdr_cached(
+                resized,
+                output.encode,
+                opts,
+                &path,
+                CACHE_BYTES - cached_bytes,
+            )
+            .map(|(encoded, base)| {
+                if let Some(base) = base {
+                    cached_bytes += base.bytes();
+                    bases.push(base);
+                }
+                encoded
+            })
+        } else {
+            yhotos_codec::encode(resized, output.encode, opts, &path)
+        };
+        let encoded = match encoded {
+            Ok(encoded) => encoded,
+            Err(_) if output.encode.hdr() => {
+                std::fs::remove_file(&path).map_err(|_| Failure(3, "output cleanup failed"))?;
+                skipped_outputs.push(SkippedOutput {
+                    name: output.name.clone(),
+                    reason: resized
+                        .hdr_skipped_reason()
+                        .unwrap_or(yhotos_codec::HdrSkippedReason::EncoderUnavailable),
+                });
+                continue;
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if reused {
+            hdr_base_reuses += 1;
+        }
         let mut file = std::fs::File::open(&path).map_err(|_| Failure(3, "output unavailable"))?;
         let mut hasher = blake3::Hasher::new();
         let mut buffer = vec![0; 64 * 1024];
@@ -433,6 +527,8 @@ fn run() -> Result<(), Failure> {
         });
     }
     let report = Report {
+        hdr_skipped_reason: working.hdr_skipped_reason(),
+        skipped_outputs,
         identity: job.want.contains(&Want::Identity).then_some(id),
         metadata: if job.want.contains(&Want::Metadata) {
             Some(yhotos_codec::metadata(&input)?)
@@ -458,6 +554,7 @@ fn run() -> Result<(), Failure> {
             decode_calls: DECODE_CALLS.load(std::sync::atomic::Ordering::Relaxed),
             identify_ms,
             decode_ms,
+            hdr_base_reuses,
             total_ms: start.elapsed().as_millis(),
         },
     };

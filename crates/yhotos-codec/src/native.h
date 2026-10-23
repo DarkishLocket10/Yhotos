@@ -3,3 +3,5 @@
 #include <jxl/decode.h>
 
 #include <libheif/heif.h>
+
+#include <ultrahdr_api.h>

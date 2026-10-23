@@ -313,3 +313,241 @@ fn video_identity_and_metadata_do_not_decode() {
         assert_eq!(report["metadata"]["orientation"], 1);
     }
 }
+
+fn hdr_job(input: &Path, out: &Path) -> Value {
+    let mut outputs = Vec::new();
+    for (variant, edge, quality) in [
+        ("medium", 1280, 90),
+        ("large", 2048, 99),
+        ("xlarge", 3200, 99),
+    ] {
+        for format in ["Jpeg", "Jxl"] {
+            for hdr in [false, true] {
+                let encode = if format == "Jpeg" {
+                    json!({"Jpeg":{"quality":quality,"progressive":true,"chroma_subsampling":false,"hdr":hdr}})
+                } else {
+                    json!({"Jxl":{"distance":0.5,"effort":3,"hdr":hdr}})
+                };
+                outputs.push(json!({"name":format!("{variant}.{}{}",format.to_lowercase(),if hdr {".hdr"} else {""}),"resize":{"long_edge":edge,"square":false},"encode":encode,"keep_icc":true}));
+            }
+        }
+    }
+    outputs.push(json!({"name":"medium.avif.hdr","resize":{"long_edge":1280,"square":false},"encode":{"Avif":{"quality":90,"speed":6,"hdr":true}}}));
+    json!({"input":input,"out_dir":out,"outputs":outputs,"want":["identity","metadata","thumbhash","dominant_colors"]})
+}
+fn hdr_fixture(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/hdr")
+        .join(name)
+        .canonicalize()
+        .unwrap()
+}
+#[test]
+fn required_hdr_container_fixtures_produce_planned_jpegs() {
+    for name in [
+        "iso.jpg",
+        "adobe.jpg",
+        "apple.heic",
+        "apple-element.heic",
+        "gain-map.jxl",
+        "../images/gain-map.avif",
+    ] {
+        let out = tempfile::tempdir().unwrap();
+        let result = invoke(&hdr_job(&hdr_fixture(name), out.path()), &[]);
+        assert!(
+            result.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let report: Value = serde_json::from_slice(&result.stdout).unwrap();
+        assert!(report["hdr_skipped_reason"].is_null(), "{name}: {report}");
+        assert_eq!(report["timings"]["hdr_base_reuses"], 6);
+        assert_eq!(report["outputs"].as_array().unwrap().len(), 12);
+        assert_eq!(
+            report["skipped_outputs"],
+            json!([{"name":"medium.avif.hdr","reason":"encoder_unavailable"}])
+        );
+        for variant in ["medium", "large", "xlarge"] {
+            let output = std::fs::read(out.path().join(format!("{variant}.jpeg.hdr"))).unwrap();
+            assert!(output.windows(6).any(|b| b == b"hdrgm:"));
+            assert!(
+                output
+                    .windows(b"urn:iso:std:iso:ts:21496".len())
+                    .any(|b| b == b"urn:iso:std:iso:ts:21496")
+            );
+        }
+    }
+}
+#[test]
+fn ordinary_sources_have_no_hdr_outputs_or_photo_skip_reason() {
+    let out = tempfile::tempdir().unwrap();
+    let result = invoke(&hdr_job(&fixture("chart-srgb.png"), out.path()), &[]);
+    assert!(result.status.success());
+    let report: Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert!(report["hdr_skipped_reason"].is_null());
+    assert_eq!(report["outputs"].as_array().unwrap().len(), 6);
+    assert!(
+        report["skipped_outputs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|o| o["reason"] == "no_gain_map")
+    );
+    assert_eq!(std::fs::read_dir(out.path()).unwrap().count(), 6);
+}
+#[test]
+fn compressed_jxl_gain_map_preserves_sdr_and_reports_unsupported_reason() {
+    let out = tempfile::tempdir().unwrap();
+    let result = invoke(&hdr_job(&hdr_fixture("gain-map-brob.jxl"), out.path()), &[]);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let report: Value = serde_json::from_slice(&result.stdout).unwrap();
+    let reason = "compressed JPEG XL gain map not supported";
+    assert_eq!(report["identity"]["has_gain_map"], true);
+    assert_eq!(report["hdr_skipped_reason"], reason);
+    let outputs = report["outputs"].as_array().unwrap();
+    assert_eq!(outputs.len(), 6);
+    for output in outputs {
+        let name = output["name"].as_str().unwrap();
+        let path = out.path().join(name);
+        assert_ne!(path.extension(), Some("hdr".as_ref()));
+        assert!(std::fs::metadata(&path).unwrap().len() > 0);
+        assert!(
+            !yhotos_codec::identify(&path, &yhotos_codec::Limits::default())
+                .unwrap()
+                .has_gain_map
+        );
+    }
+    let skipped = report["skipped_outputs"].as_array().unwrap();
+    assert_eq!(skipped.len(), 7);
+    assert!(skipped.iter().all(|o| o["reason"] == reason));
+    assert_eq!(std::fs::read_dir(out.path()).unwrap().count(), 6);
+}
+#[test]
+#[allow(clippy::too_many_lines)] // Keep malformed inputs beside their shared SDR/report contract.
+fn malformed_gain_metadata_never_fails_an_sdr_ingest() {
+    let iso = std::fs::read(hdr_fixture("iso.jpg")).unwrap();
+    let adobe = std::fs::read(hdr_fixture("adobe.jpg")).unwrap();
+    let apple = std::fs::read(hdr_fixture("apple.heic")).unwrap();
+    let avif = std::fs::read(fixture("gain-map.avif")).unwrap();
+    let mut cases = Vec::new();
+    let ns = b"urn:iso:std:iso:ts:21496:-1\0";
+    let at = iso.windows(ns.len()).rposition(|b| b == ns).unwrap() + ns.len();
+    for (name, offset, value) in [
+        ("iso_version", 1, 1),
+        ("iso_headroom_denominator", 8, 0),
+        ("iso_gamma", 28, 0),
+    ] {
+        let mut bytes = iso.clone();
+        bytes[at + offset] = value;
+        cases.push((name, bytes));
+    }
+    // This fixture's big-endian MPF has its two-entry table at TIFF offset 50.
+    let tiff = iso.windows(4).position(|b| b == b"MPF\0").unwrap() + 4;
+    assert_eq!(&iso[tiff..tiff + 2], b"MM");
+    let entry = tiff + 50 + 16;
+    let auxiliary =
+        tiff + u32::from_be_bytes(iso[entry + 8..entry + 12].try_into().unwrap()) as usize;
+    for (name, field, value) in [
+        ("mpf_zero_offset", entry + 8, 0),
+        ("mpf_overlapping_offset", entry + 8, 1),
+        ("mpf_outside_offset", entry + 8, u32::MAX),
+        ("mpf_outside_size", entry + 4, u32::MAX),
+        ("mpf_table_offset", tiff + 8 + 2 + 24 + 8, u32::MAX),
+        ("mpf_image_count", tiff + 8 + 2 + 12 + 8, 65),
+    ] {
+        let mut bytes = iso.clone();
+        bytes[field..field + 4].copy_from_slice(&value.to_be_bytes());
+        cases.push((name, bytes));
+    }
+    for (name, offset, value) in [
+        ("auxiliary_soi", auxiliary, 0),
+        ("auxiliary_marker", auxiliary + 2, 0),
+        ("auxiliary_segment_length", auxiliary + 4, 255),
+        ("auxiliary_eoi", iso.len() - 1, 0),
+    ] {
+        let mut bytes = iso.clone();
+        bytes[offset] = value;
+        cases.push((name, bytes));
+    }
+    let mut bytes = iso.clone();
+    bytes[entry + 8..entry + 12].copy_from_slice(&0_u32.to_be_bytes());
+    *bytes.last_mut().unwrap() = 0;
+    cases.push(("mpf_zero_offset_and_auxiliary_eoi", bytes));
+    for (name, pattern, last) in [
+        ("adobe_version", b"hdrgm:Version=\"1.0\"".as_slice(), b'2'),
+        ("adobe_gamma", b"hdrgm:Gamma=\"1\"".as_slice(), b'0'),
+        ("adobe_max", b"hdrgm:GainMapMax=\"2\"".as_slice(), b'x'),
+    ] {
+        let mut bytes = adobe.clone();
+        let at = bytes
+            .windows(pattern.len())
+            .rposition(|b| b == pattern)
+            .unwrap();
+        let value = at + pattern.iter().position(|b| *b == b'"').unwrap() + 1;
+        bytes[value] = last;
+        cases.push((name, bytes));
+    }
+    for (name, mut bytes) in [
+        ("apple_version", apple.clone()),
+        (
+            "apple_element_version",
+            std::fs::read(hdr_fixture("apple-element.heic")).unwrap(),
+        ),
+    ] {
+        let at = bytes.windows(5).position(|b| b == b"65536").unwrap();
+        bytes[at] = b'9';
+        cases.push((name, bytes));
+    }
+    let mut bytes = apple;
+    let at = bytes.windows(10).position(|b| b == b"Apple iOS\0").unwrap();
+    bytes[at + 24..at + 28].copy_from_slice(&f32::NAN.to_bits().to_be_bytes());
+    cases.push(("apple_headroom", bytes));
+    let pattern = b"\0\0\0\0\0\x40\0\0\0\0\0\0\0\x01\0\0\0\x02";
+    let at = avif
+        .windows(pattern.len())
+        .position(|b| b == pattern)
+        .unwrap();
+    let mut bytes = avif;
+    bytes[at + 13] = 0;
+    cases.push(("tmap_denominator", bytes));
+    let mut bytes = std::fs::read(hdr_fixture("gain-map.jxl")).unwrap();
+    let at = bytes.windows(4).position(|b| b == b"jhgm").unwrap();
+    bytes[at + 4] = 1;
+    cases.push(("jhgm_version", bytes));
+    for (name, bytes) in cases {
+        let input = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(input.path(), bytes).unwrap();
+        let out = tempfile::tempdir().unwrap();
+        let result = invoke(&hdr_job(input.path(), out.path()), &[]);
+        assert!(
+            result.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let report: Value = serde_json::from_slice(&result.stdout).unwrap();
+        assert!(
+            report["identity"]["has_gain_map"].as_bool().unwrap(),
+            "{name}"
+        );
+        assert!(!report["hdr_skipped_reason"].is_null(), "{name}: {report}");
+        assert_eq!(report["outputs"].as_array().unwrap().len(), 6, "{name}");
+        assert!(
+            report["outputs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|o| Path::new(o["name"].as_str().unwrap()).extension() != Some("hdr".as_ref())),
+            "{name}: {report}"
+        );
+        assert_eq!(
+            report["skipped_outputs"].as_array().unwrap().len(),
+            7,
+            "{name}"
+        );
+        assert_eq!(std::fs::read_dir(out.path()).unwrap().count(), 6, "{name}");
+    }
+}

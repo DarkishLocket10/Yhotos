@@ -14,6 +14,7 @@ heif = []
 raw = ["dep:rawler"]
 
 [dependencies]
+quick-xml.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 nix.workspace = true

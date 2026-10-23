@@ -1,10 +1,12 @@
 FROM rust:1.99.1-trixie@sha256:c3d8fc865b8bee83c7894fb833c2c78c8cac5e865d45afc9d05ed026a6301c14
+COPY deploy/dev/install-ultrahdr.sh /tmp/install-ultrahdr.sh
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    clang libclang-dev pkg-config libvips-dev libvips-tools liblcms2-dev \
+    cmake curl libjpeg-dev clang libclang-dev pkg-config libvips-dev libvips-tools liblcms2-dev \
     libheif-dev libjxl-dev libaom-dev librav1e-dev libheif-plugin-x265 libheif-plugin-aomenc libheif-plugin-aomdec \
     libheif-plugin-libde265 libheif-plugin-rav1e \
     strace python3 ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+    && bash /tmp/install-ultrahdr.sh \
+    && rm -rf /var/lib/apt/lists/* /tmp/install-ultrahdr.sh
 ENV VIPS_CONCURRENCY=2
 WORKDIR /workspace
 # The runtime has no network. Install the repository toolchain (including its

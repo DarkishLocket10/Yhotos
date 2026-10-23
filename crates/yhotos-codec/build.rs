@@ -21,16 +21,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if (major, minor) < (0, 9) {
         println!("cargo:rustc-cfg=libjxl_legacy_icc");
     }
+    let uhdr = pkg_config::Config::new()
+        .atleast_version("1.4")
+        .probe("libuhdr")?;
     let heif = pkg_config::Config::new().probe("libheif")?;
     let lcms = pkg_config::Config::new().probe("lcms2")?;
     let mut builder = bindgen::Builder::default()
         .header("src/native.h")
         .allowlist_function("vips_(init|concurrency_set|concurrency_get|cache_set_max|cache_set_max_files|error_clear)")
-        .allowlist_function("vips_(jpegload_buffer|jpegload|pngload|tiffload|heifload|jxlload|webpload)")
+        .allowlist_function("vips_(jxlload_buffer|jpegload_buffer|jpegload|pngload|tiffload|heifload|jxlload|webpload)")
         .allowlist_function("vips_(copy|autorot|cast|linear1|extract_band|extract_area|resize|premultiply|unpremultiply|bandjoin2|bandjoin_const1|flatten|array_double_new|area_unref|scRGB2XYZ|icc_import|icc_export|heifsave|jxlsave|jpegsave)")
         .allowlist_function("vips_image_(get_width|get_height|get_bands|get_orientation|get_format|get_interpretation|hasalpha|get_typeof|get_int|get_string|get_blob|remove|set_int|set_blob_copy|copy_memory|write_to_memory|new_from_memory_copy)")
         .allowlist_function("JxlDecoder(Create|Destroy|SubscribeEvents|SetInput|ReleaseInput|ProcessInput|GetBasicInfo|GetICCProfileSize|GetColorAsICCProfile)")
         .allowlist_type("JxlBasicInfo")
+        .allowlist_function("uhdr_.*")
+        .allowlist_function("heif_(context_alloc|context_free|context_read_from_file|context_get_image_handle|image_handle_release|image_handle_get_width|image_handle_get_height|decode_image|image_release|image_get_plane_readonly|image_get_width|image_get_height)")
         .allowlist_function("heif_init")
         .allowlist_var("JXL_DEC_.*")
         .allowlist_function("g_(object_unref|free|log_set_handler)")
@@ -48,6 +53,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .chain(&lcms.include_paths)
         .chain(&jxl.include_paths)
         .chain(&heif.include_paths)
+        .chain(&uhdr.include_paths)
     {
         builder = builder.clang_arg(format!("-I{}", dir.display()));
     }

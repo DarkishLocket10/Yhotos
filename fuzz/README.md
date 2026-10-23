@@ -26,3 +26,16 @@ arbitrary headers and file sizes, including `u64::MAX`.
 ```sh
 cargo +nightly fuzz run range_header -- -runs=100000 -max_len=128
 ```
+
+Task 019: `gain_map_metadata` exercises bounded ISO fractions, JPEG MPF/XMP,
+HEIF tmap/Apple metadata, JXL jhgm bundles and the reference JPEG probe/mux FFI.
+Seed `fuzz/corpus/gain_map_metadata/` with `fixtures/hdr/*.{jpg,heic,jxl}` and
+`fixtures/images/gain-map.avif` (binary files only), then run:
+
+```
+cargo +nightly fuzz run gain_map_metadata -- -max_total_time=60 -max_len=1048576
+```
+
+The native system library is not sanitizer-instrumented by Cargo; the Rust parser
+and wrapper are instrumented. Native diagnostics stay confined to the harness;
+the production host supervisor discards native stderr.

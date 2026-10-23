@@ -1245,6 +1245,55 @@ fn mpf_offsets_counts_and_auxiliary_extents_are_bounded() {
     assert_eq!(headers::gain_map(tmp.path()), Err(CodecError::Decode));
 }
 
+#[test]
+fn optional_mpf_failures_preserve_sdr_but_do_not_bypass_primary_header_limits() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    let (mut bytes, aux_offset) = apple_mpf(true, true);
+    bytes[aux_offset..aux_offset + 4].copy_from_slice(&0_u32.to_le_bytes());
+    std::fs::write(tmp.path(), &bytes).unwrap();
+    let id = identify(tmp.path(), &Limits::default()).unwrap();
+    assert!(id.has_gain_map);
+    let working = decode(tmp.path(), &id, &Limits::default()).unwrap();
+    assert!(!working.has_gain_map());
+    assert_eq!(
+        working.hdr_skipped_reason(),
+        Some(HdrSkippedReason::InvalidGainMap)
+    );
+    assert_eq!(
+        identify(
+            tmp.path(),
+            &Limits {
+                max_dim: 1,
+                ..Limits::default()
+            }
+        ),
+        Err(CodecError::Limits)
+    );
+
+    // Malformed markers following the invalid MPF still reject the primary.
+    let mut corrupt = bytes.clone();
+    corrupt[92] = 0; // First primary marker after the prepended 90-byte MPF.
+    std::fs::write(tmp.path(), corrupt).unwrap();
+    assert_eq!(
+        identify(tmp.path(), &Limits::default()),
+        Err(CodecError::Decode)
+    );
+
+    // The primary scan must finish within 16 MiB even when the index is bad.
+    let mut oversized = bytes[..92].to_vec();
+    let mut comment = vec![0xff, 0xfe, 0xff, 0xff];
+    comment.resize(65_537, 0);
+    for _ in 0..257 {
+        oversized.extend_from_slice(&comment);
+    }
+    oversized.extend_from_slice(&bytes[92..]);
+    std::fs::write(tmp.path(), oversized).unwrap();
+    assert_eq!(
+        identify(tmp.path(), &Limits::default()),
+        Err(CodecError::Limits)
+    );
+}
+
 #[cfg(feature = "raw")]
 fn sensor_tiff(path: &Path, tiled: bool, canon: bool, w: u16, h: u16, components: u8) {
     let mut jpeg = vec![0xff, 0xd8, 0xff, 0xc3];

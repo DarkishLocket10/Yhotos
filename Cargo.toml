@@ -25,6 +25,7 @@ todo = "deny"
 unimplemented = "deny"
 
 [workspace.dependencies]
+quick-xml = { version = "=0.42.0", default-features = false }
 tokio = { version = "=1.54.1", features = ["macros", "rt-multi-thread"] }
 axum = "=0.8.9"
 tower = "=0.5.3"
