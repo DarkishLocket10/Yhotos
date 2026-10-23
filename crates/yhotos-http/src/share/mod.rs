@@ -30,7 +30,7 @@ use yhotos_core::{
     access::{AlbumAccess, Grant, PhotoAccess, Principal, ShareTarget, Visibility, can_view_photo},
 };
 use yhotos_db::{
-    audit, flags,
+    audit,
     likes::{self, Actor},
     sessions,
     share_links::{self, LinkFlags, ShareLinkRow},
@@ -170,14 +170,12 @@ pub(crate) fn decode_photos(value: serde_json::Value) -> Result<Vec<Photo>, Http
     }
     Ok(photos)
 }
-#[cfg(feature = "admin")]
 fn target(link: &ShareLinkRow) -> ShareTarget {
     match link.target_kind {
         share_links::TargetKind::Album => ShareTarget::Album(AlbumId(link.target_id)),
         share_links::TargetKind::Photo => ShareTarget::Photo(PhotoId(link.target_id)),
     }
 }
-#[cfg(feature = "admin")]
 fn scoped(link: &ShareLinkRow) -> ScopedLink {
     ScopedLink {
         target: target(link),
@@ -277,8 +275,6 @@ pub(crate) fn routes() -> Router<AppState> {
     Router::new()
         .route("/s/{token}", get(landing).post(unlock))
         .route("/s/{token}/unlock", post(unlock))
-        .route("/api/v1/photos/{id}/like", post(like))
-        .route("/api/v1/photos/{id}/flag", post(flag))
         .route("/s/photos/{id}/like", post(like))
         .route("/s/photos/{id}/flag", post(flag))
 }
@@ -662,7 +658,9 @@ async fn interact(
         })
         .ok_or(HttpError::NotFound)?;
     if is_flag {
-        flags::flag(&mut c, id, actor).await?;
+        let mut tx = c.begin().await?;
+        crate::api::flag_once(&mut tx, id, actor).await?;
+        tx.commit().await?;
     } else {
         likes::like(&mut c, id, actor).await?;
     }

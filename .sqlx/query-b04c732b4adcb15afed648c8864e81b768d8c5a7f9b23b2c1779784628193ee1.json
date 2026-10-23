@@ -1,0 +1,90 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH candidates AS (\n          SELECT g.*, 6371.0088 * acos(least(1.0,greatest(-1.0,\n            sin(radians($1))*sin(radians(lat)) +\n            cos(radians($1))*cos(radians(lat))*cos(radians(lon-$2))))) AS distance\n          FROM gazetteer g WHERE\n            point <@ box(point($2-$3,$1-0.45),point($2+$3,$1+0.45)) OR\n            point <@ box(point($2-$3-360,$1-0.45),point($2+$3-360,$1+0.45)) OR\n            point <@ box(point($2-$3+360,$1-0.45),point($2+$3+360,$1+0.45))\n        ) SELECT geonameid,name,admin1,country,lat,lon FROM candidates\n          WHERE distance <= 50.0 ORDER BY distance / ln(population::float8+10),geonameid LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "geonameid",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "gazetteer",
+            "name": "geonameid"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "gazetteer",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "admin1",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "gazetteer",
+            "name": "admin1"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "country",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "gazetteer",
+            "name": "country"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "lat",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "gazetteer",
+            "name": "lat"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "lon",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "gazetteer",
+            "name": "lon"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Float8",
+        "Float8",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "b04c732b4adcb15afed648c8864e81b768d8c5a7f9b23b2c1779784628193ee1"
+}

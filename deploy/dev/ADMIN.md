@@ -76,3 +76,33 @@ optimizing SQL projection and copy statements:
 The final album template alone renders in 0.567 ms. The final measurements include
 full audit snapshots and purge enqueueing for mutations; edge network time is
 asynchronous. There was no pre-task admin-library implementation to benchmark.
+
+## Merge revalidation
+
+The merge with the lightbox, map/calendar, upload and share-expiry changes was
+checked on macOS on 2026-10-22. `cargo sqlx migrate run` and
+`cargo sqlx prepare --workspace -- --all-targets --all-features` passed against
+the supplied disposable database, and `npm ci --prefix web` passed.
+
+`RUST_TEST_THREADS=1 scripts/check.sh` passed, including the dependency, advisory
+and secret scans. The initial parallel run hit the existing queue test's
+200 ms shutdown deadline; that test passed in isolation and in the serialized
+full run. No job implementation or deadline was changed.
+
+All four conflicted snapshots were restored from main, regenerated with
+`INSTA_UPDATE=new`, reviewed and accepted. Their only markup differences are
+the sanitized Markdown description container and its paragraph whitespace.
+
+An idle Criterion recheck using 1,000 photos produced these point estimates:
+
+| Benchmark | Merge recheck |
+| --- | ---: |
+| `admin/album_1000_render` | 0.579 ms |
+| `admin/album_1000_query_and_render` | 30.300 ms |
+| `admin/bulk_1000_move` | 297.06 ms |
+| `admin/bulk_1000_visibility` | 306.77 ms |
+| `admin/bulk_1000_copy` | 376.34 ms |
+
+The historical before/after optimization measurements above remain separate
+from this merge recheck. Screenshot capture remains blocked by the local
+browser origin approval gate.

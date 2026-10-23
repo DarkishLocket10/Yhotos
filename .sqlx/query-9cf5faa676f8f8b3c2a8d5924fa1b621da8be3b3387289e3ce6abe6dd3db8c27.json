@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM photo_grants WHERE photo_id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9cf5faa676f8f8b3c2a8d5924fa1b621da8be3b3387289e3ce6abe6dd3db8c27"
+}

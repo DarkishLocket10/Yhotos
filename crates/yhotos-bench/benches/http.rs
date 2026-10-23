@@ -19,6 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         cloudflare_zone: None,
         cloudflare_api_token: None,
         worker: yhotos_config::Worker::default(),
+        map_tiles: yhotos_config::MapTiles::default(),
         public_listen: peer,
         admin_listen: Some(peer),
         database_url_admin: None,

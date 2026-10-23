@@ -7,6 +7,8 @@
 #   scripts/agent-run.sh NNN --host yesktop  run on yesktop over ssh (repo must exist at ~/work/Yhotos there)
 #   scripts/agent-run.sh NNN --base REF      branch from REF instead of origin/main
 #
+# Optional YHOTOS_AGENT_NOTE env var: extra maintainer notes (for example test service URLs)
+# added to the prompt.
 # Reads model/effort from the brief header. Refuses to start when free memory is low or the
 # host already runs its maximum number of agents; see the limits block below.
 set -euo pipefail
@@ -68,18 +70,42 @@ FREE="$(free_gb)"
 # runaway build is killed inside its own scope instead of exhausting the machine (an unbounded
 # cargo -j30 per agent caused global OOM kills on yesktop on 2026-10-21).
 # Overrides: YHOTOS_AGENT_MIN_FREE_GB, YHOTOS_AGENT_MAX_RUNNING, YHOTOS_AGENT_MEM_MAX.
+# 2026-10-22: one agent per host after yesktop crashed twice and the 24 GB Mac reached 3.5 GB of
+# swap with two agents. scripts/mem-watchdog.sh pauses builds if memory still runs low.
 if [[ "$(uname)" == "Darwin" ]]; then
-  MIN_FREE="${YHOTOS_AGENT_MIN_FREE_GB:-6}"
-  MAX_RUNNING="${YHOTOS_AGENT_MAX_RUNNING:-2}"
-  export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}"
+  MIN_FREE="${YHOTOS_AGENT_MIN_FREE_GB:-8}"
+  MAX_RUNNING="${YHOTOS_AGENT_MAX_RUNNING:-1}"
+  MAX_SWAP_GB="${YHOTOS_AGENT_MAX_SWAP_GB:-3}"
+  export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-3}"
 else
-  MIN_FREE="${YHOTOS_AGENT_MIN_FREE_GB:-14}"
-  MAX_RUNNING="${YHOTOS_AGENT_MAX_RUNNING:-2}"
-  export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-8}"
+  # yesktop is shared with the owner's other work; leave it room.
+  MIN_FREE="${YHOTOS_AGENT_MIN_FREE_GB:-20}"
+  MAX_RUNNING="${YHOTOS_AGENT_MAX_RUNNING:-1}"
+  MAX_SWAP_GB="${YHOTOS_AGENT_MAX_SWAP_GB:-2}"
+  export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-4}"
 fi
-MEM_MAX="${YHOTOS_AGENT_MEM_MAX:-14G}"
+export RUST_TEST_THREADS="${RUST_TEST_THREADS:-2}"
+# Above MEM_HIGH the kernel throttles and reclaims; only MEM_MAX kills. At 12G with no soft
+# limit, agents were OOM-killed mid-run on 2026-10-22 while linking test binaries.
+MEM_HIGH="${YHOTOS_AGENT_MEM_HIGH:-9G}"
+MEM_MAX="${YHOTOS_AGENT_MEM_MAX:-12G}"
+# Full debug info dominates rustc and linker memory; line tables keep backtraces useful.
+export CARGO_PROFILE_DEV_DEBUG="${CARGO_PROFILE_DEV_DEBUG:-line-tables-only}"
+export CARGO_PROFILE_TEST_DEBUG="${CARGO_PROFILE_TEST_DEBUG:-line-tables-only}"
+swap_used_gb() {
+  if [[ "$(uname)" == "Darwin" ]]; then
+    sysctl -n vm.swapusage | awk '{for (i=1;i<=NF;i++) if ($i=="used") {v=$(i+2); sub(/M/,"",v); printf "%d", v/1024}}'
+  else
+    awk '/SwapTotal/ {t=$2} /SwapFree/ {f=$2} END {printf "%d", (t-f)/1048576}' /proc/meminfo
+  fi
+}
 if (( FREE < MIN_FREE )); then
   echo "refusing to start: only ${FREE} GB free memory (need ${MIN_FREE})" >&2
+  exit 3
+fi
+SWAP="$(swap_used_gb)"
+if (( SWAP > MAX_SWAP_GB )); then
+  echo "refusing to start: ${SWAP} GB swap in use (max ${MAX_SWAP_GB})" >&2
   exit 3
 fi
 # Count running agent runs on this host through pid files; stale files are ignored.
@@ -129,6 +155,11 @@ trap 'rm -f "$PROMPT_FILE" "$RUN_DIR/$TASK_ID.pid"' EXIT
     echo "$RESUME_MSG"
     echo
   fi
+  if [[ -n "${YHOTOS_AGENT_NOTE:-}" ]]; then
+    echo "Environment notes from the maintainer (test services and similar):"
+    echo "$YHOTOS_AGENT_NOTE"
+    echo
+  fi
   echo "----- BRIEF -----"
   cat "$BRIEF"
 } > "$PROMPT_FILE"
@@ -138,8 +169,8 @@ echo "running codex ($MODEL, effort $EFFORT) in $WT on $BRANCH (cargo jobs $CARG
 SCOPE=()
 if [[ "$(uname)" == "Linux" ]] && command -v systemd-run >/dev/null 2>&1 \
   && systemd-run --user --scope -q -p MemoryMax=64M true 2>/dev/null; then
-  SCOPE=(systemd-run --user --scope -q -p "MemoryMax=$MEM_MAX" -p MemorySwapMax=0 --)
-  echo "agent memory ceiling: $MEM_MAX"
+  SCOPE=(systemd-run --user --scope -q -p "MemoryHigh=$MEM_HIGH" -p "MemoryMax=$MEM_MAX" -p MemorySwapMax=0 --)
+  echo "agent memory: throttle above $MEM_HIGH, hard ceiling $MEM_MAX"
 fi
 ${SCOPE[@]+"${SCOPE[@]}"} codex exec \
   -C "$WT" \
@@ -179,3 +210,8 @@ else
   gh pr create --base main --head "$BRANCH" --title "$TASK_ID $SLUG" --body-file "$BODY_FILE"
 fi
 rm -f "$BODY_FILE"
+# Build output is 14-30 GB per worktree. The source and branch stay for reviews and resumes;
+# the next run rebuilds. Set YHOTOS_KEEP_TARGET=1 to keep it.
+if [[ "${YHOTOS_KEEP_TARGET:-0}" != 1 ]]; then
+  rm -rf "$WT/target"
+fi

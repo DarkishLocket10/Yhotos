@@ -654,6 +654,9 @@ pub struct PagePhoto {
     /// Whether the account independently authorizes this photo, without a link.
     #[serde(default)]
     pub account_view: bool,
+    /// Whether a photo link independently covers this photo: it is linked and no ancestor album is restricted.
+    #[serde(default)]
+    pub photo_link_view: bool,
     /// Independently covering album links, excluding restricted descendant levels.
     #[serde(default)]
     pub shared_albums: Vec<AlbumId>,

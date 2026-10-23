@@ -77,3 +77,10 @@ by the Rust page tests. Set `PLAYWRIGHT_MODULE` and `CHROME_PATH` as above.
 On hosts with many CPU cores, simultaneous SQLx test migrations can exhaust the
 development PostgreSQL lock table. Use `RUST_TEST_THREADS=4 scripts/check.sh` to
 bound test concurrency without changing database settings.
+
+
+The fixture also seeds `/map` with sixty photos at one coordinate. With JavaScript
+disabled, follow its place link to the shared photo grid and the breadcrumb back
+to the map. With JavaScript enabled, the count marker opens a paginated list of
+all photos at that point. Open a photo and use Back to check history restoration;
+`web/tests/map.mjs` also exercises repeated persisted pagehide/pageshow cycles.

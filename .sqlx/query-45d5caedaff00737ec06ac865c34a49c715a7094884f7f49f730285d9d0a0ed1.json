@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "CREATE TEMP TABLE albums (LIKE public.albums INCLUDING ALL)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "45d5caedaff00737ec06ac865c34a49c715a7094884f7f49f730285d9d0a0ed1"
+}

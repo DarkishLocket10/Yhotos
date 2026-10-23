@@ -86,6 +86,17 @@ fn canonical_token(value: &str) -> bool {
             .decode_slice(value, &mut bytes)
             .is_ok_and(|len| len == 32)
 }
+fn valid_public_api_headers(headers: &HeaderMap, expected: &str) -> bool {
+    let single = |name: &str| {
+        let mut values = headers.get_all(name).iter();
+        let value = values.next().and_then(|v| v.to_str().ok());
+        if values.next().is_some() { None } else { value }
+    };
+    single("x-requested-with") == Some("yhotos")
+        && (!headers.contains_key("sec-fetch-site")
+            || single("sec-fetch-site") == Some("same-origin"))
+        && (!headers.contains_key(header::ORIGIN) || single("origin") == Some(expected))
+}
 pub(crate) async fn protect(
     State(state): State<crate::AppState>,
     request: Request,
@@ -105,6 +116,14 @@ pub(crate) async fn protect(
     );
     if !state_changing {
         return next.run(request).await;
+    }
+    if request.uri().path().starts_with("/api/v1/") {
+        let expected = state.config.public_base_url.origin().ascii_serialization();
+        return if valid_public_api_headers(request.headers(), &expected) {
+            next.run(request).await
+        } else {
+            HttpError::Csrf.into_response()
+        };
     }
     let content_type = request
         .headers()

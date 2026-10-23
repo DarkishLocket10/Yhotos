@@ -4,6 +4,8 @@ set -euo pipefail
 umask 027
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
+# Storage tests assert 0640/0750 modes; a stricter caller umask (agent sandboxes use 077) breaks them.
+umask 027
 
 run_step() {
     local step="$1"
@@ -26,6 +28,7 @@ fi
 run_step migrations cargo sqlx migrate run --source crates/yhotos-db/migrations
 export SQLX_OFFLINE=true
 
+run_step web npm --prefix web run check
 run_step fmt cargo fmt --all --check
 run_step build-islands npm --prefix web run build
 run_step clippy cargo clippy --workspace --all-targets --all-features -- -D warnings
