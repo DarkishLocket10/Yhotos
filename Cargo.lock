@@ -4790,6 +4790,7 @@ dependencies = [
  "base64 0.23.1",
  "criterion",
  "http-body-util",
+ "mimalloc",
  "nix",
  "secrecy",
  "serde_json",

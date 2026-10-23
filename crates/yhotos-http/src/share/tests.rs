@@ -397,6 +397,150 @@ fn flags() -> LinkFlags {
         flag: true,
     }
 }
+
+// Seed published metadata without involving native video parsing in router tests.
+async fn scrub_video(f: &Fixture, album: AlbumId) -> (PhotoId, String, String) {
+    let hash = Uuid::now_v7().simple().to_string().repeat(2);
+    let sprite = Uuid::now_v7().simple().to_string().repeat(2);
+    let mut conn = f.pool.acquire().await.unwrap();
+    let photo = photos::create(
+        &mut conn,
+        &photos::NewPhoto {
+            album_id: album,
+            title: "Scrub authorization video".into(),
+            original_hash: hash.clone(),
+            original_name: "video.mp4".into(),
+            original_bytes: 1024,
+            mime: "video/mp4".into(),
+            kind: photos::MediaKind::Video,
+        },
+    )
+    .await
+    .unwrap();
+    sqlx::query!("INSERT INTO video_renditions(id,photo_id,codec,hash,width,height,bytes,duration_ms,hls) VALUES ($1,$2,'h264',$3,640,480,1024,1000,false)",Uuid::now_v7(),photo.id.0,hash).execute(&mut *conn).await.unwrap();
+    sqlx::query!("INSERT INTO derivatives(id,photo_id,variant,format,hdr,hash,width,height,bytes) VALUES ($1,$2,'scrub','jpeg',false,$3,1600,1600,1024)",Uuid::now_v7(),photo.id.0,sprite).execute(&mut *conn).await.unwrap();
+    (
+        photo.id,
+        format!("/v/{hash}/scrub.vtt"),
+        format!("/i/{sprite}/scrub.jpeg"),
+    )
+}
+
+fn assert_scrub(reply: &Reply, sprite: &str) {
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+    assert_eq!(
+        reply.headers[header::CONTENT_TYPE],
+        "text/vtt; charset=utf-8"
+    );
+    assert_eq!(reply.headers[header::CACHE_CONTROL], "private, no-store");
+    assert_eq!(reply.headers[header::VARY], "Cookie");
+    assert!(reply.text().starts_with("WEBVTT\n\n"));
+    assert_eq!(reply.text().matches(" --> ").count(), 100);
+    assert!(
+        reply
+            .text()
+            .ends_with(&format!("{sprite}#xywh=1440,1440,160,160\n\n"))
+    );
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn scrub_index_public_restricted_and_account_grant_through_public_router(pool: PgPool) {
+    let f = Fixture::new(pool).await;
+    let album = f.album(None, "scrub-public", Visibility::Public).await;
+    let (photo, path, sprite) = scrub_video(&f, album).await;
+    let mut anonymous = Client::default();
+    assert_scrub(&anonymous.get(&f.app, &path).await, &sprite);
+
+    photos::set_visibility(
+        &mut f.pool.acquire().await.unwrap(),
+        &[photo],
+        Visibility::Restricted,
+    )
+    .await
+    .unwrap();
+    f.invalidate();
+    concealed(&anonymous.get(&f.app, &path).await).await;
+    let mut account = Client::default();
+    account
+        .jar
+        .insert("__Host-ys".into(), f.account(false).await);
+    concealed(&account.get(&f.app, &path).await).await;
+
+    grants::grant_photo(
+        &mut f.pool.acquire().await.unwrap(),
+        photo,
+        Grant::User(f.creator),
+    )
+    .await
+    .unwrap();
+    f.invalidate();
+    assert_scrub(&account.get(&f.app, &path).await, &sprite);
+    // A successful account request must not authorize a later anonymous read.
+    concealed(&anonymous.get(&f.app, &path).await).await;
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn scrub_index_share_scope_and_revocation_through_public_router(pool: PgPool) {
+    let f = Fixture::new(pool).await;
+    let (_, album_path, album_sprite) = scrub_video(&f, f.album).await;
+    let sibling = f.album(None, "scrub-outside", Visibility::Restricted).await;
+    let (_, outside, _) = scrub_video(&f, sibling).await;
+    // Photo links authorize the photo within a public album; they cannot bypass
+    // an independently restricted parent album.
+    let public = f.album(None, "scrub-photo-link", Visibility::Public).await;
+    let (photo, photo_path, photo_sprite) = scrub_video(&f, public).await;
+    photos::set_visibility(
+        &mut f.pool.acquire().await.unwrap(),
+        &[photo],
+        Visibility::Restricted,
+    )
+    .await
+    .unwrap();
+    let (_, same_album, _) = scrub_video(&f, public).await;
+    for (target, path, sprite) in [
+        (ShareTarget::Album(f.album), &album_path, &album_sprite),
+        (ShareTarget::Photo(photo), &photo_path, &photo_sprite),
+    ] {
+        let (link, landing) = f.link(target, None, flags()).await;
+        let mut client = Client::default();
+        concealed(&client.get(&f.app, path).await).await;
+        assert_eq!(client.get(&f.app, &landing).await.status, StatusCode::OK);
+        assert!(client.jar.contains_key(COOKIE_NAME));
+        assert_scrub(&client.get(&f.app, path).await, sprite);
+        concealed(&client.get(&f.app, &outside).await).await;
+        if matches!(target, ShareTarget::Photo(_)) {
+            concealed(&client.get(&f.app, &same_album).await).await;
+        }
+        // The already issued cookie must lose access after revocation too.
+        share_links::revoke(&mut f.pool.acquire().await.unwrap(), link.id)
+            .await
+            .unwrap();
+        f.invalidate();
+        concealed(&client.get(&f.app, path).await).await;
+    }
+}
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn scrub_index_hidden_and_deleted_photos_through_public_router(pool: PgPool) {
+    let f = Fixture::new(pool).await;
+    let (_, hidden, _) = scrub_video(&f, f.album).await;
+    let album = f.album(None, "scrub-deleted", Visibility::Public).await;
+    let (photo, path, sprite) = scrub_video(&f, album).await;
+    let mut anonymous = Client::default();
+    // Inherited visibility in a restricted album also conceals the index.
+    concealed(&anonymous.get(&f.app, &hidden).await).await;
+    let (_, landing) = f.link(ShareTarget::Photo(photo), None, flags()).await;
+    let mut client = Client::default();
+    assert_eq!(client.get(&f.app, &landing).await.status, StatusCode::OK);
+    assert_scrub(&client.get(&f.app, &path).await, &sprite);
+    photos::soft_delete(&mut f.pool.acquire().await.unwrap(), photo)
+        .await
+        .unwrap();
+    f.invalidate();
+    concealed(&anonymous.get(&f.app, &path).await).await;
+    concealed(&client.get(&f.app, &path).await).await;
+}
+
 async fn concealed(reply: &Reply) {
     assert_eq!(reply.status, StatusCode::NOT_FOUND, "{}", reply.text());
     if reply

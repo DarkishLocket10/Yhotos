@@ -12,6 +12,7 @@ workspace = true
 raw = ["yhotos-codec/raw"]
 
 [dev-dependencies]
+mimalloc.workspace = true
 nix.workspace = true
 criterion.workspace = true
 base64.workspace = true
