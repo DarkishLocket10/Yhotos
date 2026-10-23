@@ -2207,3 +2207,51 @@ async fn retained_photo_link_loses_capabilities_when_its_album_becomes_restricte
         concealed(&client.action(&f.app, photo, action).await).await;
     }
 }
+
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn lagging_database_clock_cannot_loop_or_keep_an_expired_grant(pool: PgPool) {
+    use crate::files::tests::count_queries;
+    crate::files::tests::init_capture();
+    let f = Fixture::new(pool).await;
+    let (expiring, path) = f.link(ShareTarget::Album(f.album), None, flags()).await;
+    let other = f.album(None, "still-live", Visibility::Restricted).await;
+    let (_, other_image, _) = Fixture::add_photo(&f.pool, &f.state, other, "Live photo").await;
+    let (_, live) = f.link(ShareTarget::Album(other), None, flags()).await;
+    // Live for another hour by the database's clock.
+    let expiry = OffsetDateTime::now_utc() + time::Duration::hours(1);
+    share_links::set_expiry(
+        &mut f.pool.acquire().await.unwrap(),
+        expiring.id,
+        Some(expiry),
+    )
+    .await
+    .unwrap();
+    f.invalidate();
+    let mut both = Client::default();
+    both.get(&f.app, &path).await;
+    both.get(&f.app, &live).await;
+    let mut only = Client::default();
+    only.get(&f.app, &path).await;
+    for client in [&mut both, &mut only] {
+        assert_eq!(client.get(&f.app, &f.image).await.status, StatusCode::OK);
+    }
+    // This process now runs two hours ahead of the database: the link is expired here
+    // but every reload still returns it.
+    let shares = &f.state.auth.as_ref().unwrap().shares;
+    shares.set_clock_skew_for_tests(2 * 3600 * 1_000_000);
+    for _ in 0..3 {
+        let (reply, queries) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            count_queries(both.get(&f.app, &f.image)),
+        )
+        .await
+        .expect("an expiry reload must never loop");
+        concealed(&reply).await;
+        assert_eq!(queries, 1, "exactly one reload per request");
+    }
+    // The unrelated live grant is preserved.
+    assert_eq!(both.get(&f.app, &other_image).await.status, StatusCode::OK);
+    // A session whose only grant is the expired one gets nothing.
+    concealed(&only.get(&f.app, &f.image).await).await;
+    concealed(&only.get(&f.app, &other_image).await).await;
+}
