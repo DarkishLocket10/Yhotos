@@ -255,7 +255,8 @@ def maintain(conn: Connection) -> None:
         conn.execute("""
             INSERT INTO jobs(id,kind,payload,priority)
             SELECT %s,'ml.cluster','null'::jsonb,-20 WHERE NOT EXISTS (
-                SELECT FROM jobs WHERE kind='ml.cluster' AND (finished_at IS NULL OR created_at>=(now() AT TIME ZONE 'UTC')::date AT TIME ZONE 'UTC'))
+                SELECT FROM jobs WHERE kind='ml.cluster'
+                  AND (finished_at IS NULL OR created_at>=date_trunc('day',now(),'UTC')))
             """, (identifier(),))
         conn.execute("SELECT pg_notify('jobs','')")
 

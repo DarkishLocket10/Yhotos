@@ -30,7 +30,7 @@ class Face:
 
 
 class Models:
-    """Serialized inference avoids queue work monopolizing the GPU query endpoint."""
+    """Text inference never waits for the lock serializing background model calls."""
 
     def __init__(self, root: Path, cpu: bool = False) -> None:
         for item in json.loads(Path(__file__).parents[1].joinpath("models.lock").read_text()):
@@ -60,12 +60,13 @@ class Models:
                     raise ValueError("GPU session unavailable")
                 session.disable_fallback()
         self.lock = Lock()
+        self.text_lock = Lock()
         self.labels = Path(__file__).parents[1].joinpath("labels.txt").read_text().splitlines()
         self.label_vectors = np.stack([self.embed_text(f"a photo of {label}") for label in self.labels])
 
     def embed_text(self, value: str) -> NDArray[np.float32]:
         ids = np.asarray([self.tokenizer.encode(value)], dtype=np.int64)
-        with self.lock:
+        with self.text_lock:
             outputs = self.language.run(None, {"input_ids": ids})
         return vector(np.asarray(outputs[1], dtype=np.float32), 768)
 

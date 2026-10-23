@@ -1,5 +1,7 @@
 """Shape/determinism assertions, never semantic model-output snapshots."""
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 
 import numpy as np
 import pytest
@@ -8,6 +10,28 @@ from PIL import Image
 from yhotos_ml.models import Models, align
 from yhotos_ml.safety import derivative, text, vector
 from yhotos_ml.worker import components
+
+
+def test_query_embedding_completes_while_ocr_holds_lock(models: Models, monkeypatch: pytest.MonkeyPatch) -> None:
+    ocr_started, release_ocr = Event(), Event()
+
+    def blocked_ocr(*args: object, **kwargs: object) -> tuple[None, None]:
+        ocr_started.set()
+        assert release_ocr.wait(timeout=10), "OCR was not released"
+        return None, None
+
+    monkeypatch.setattr(models, "ocr", blocked_ocr)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        ocr = executor.submit(models.read_text, Image.new("RGB", (64, 48)))
+        try:
+            assert ocr_started.wait(timeout=5), "OCR did not acquire its inference lock"
+            query = executor.submit(models.embed_text, "sunset by the ocean").result(timeout=5)
+            assert query.shape == (768,)
+            assert np.isclose(np.linalg.norm(query), 1)
+            assert not ocr.done()
+        finally:
+            release_ocr.set()
+        assert ocr.result(timeout=5) == ""
 
 
 @pytest.mark.parametrize("fixture", ["chart-srgb.png", "landscape.jpg", "photo.jpg"])

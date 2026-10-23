@@ -97,6 +97,31 @@ def test_nightly_rebuild_deduplicates_and_stale_locks_recover(connection: Connec
     assert connection.execute("SELECT count(*) AS count FROM jobs WHERE kind='ml.cluster'").fetchone()["count"] == 1
 
 
+@pytest.mark.parametrize("timezone", ["UTC", "America/Toronto"])
+def test_completed_nightly_rebuild_deduplicates_by_utc_day(connection: Connection, timezone: str) -> None:
+    from yhotos_ml.worker import maintain
+    with connection.transaction():
+        connection.execute("SELECT set_config('TimeZone',%s,true)", (timezone,))
+        previous = identifier()
+        connection.execute("""
+            INSERT INTO jobs(id,kind,payload,created_at,finished_at)
+            VALUES(%s,'ml.cluster','null'::jsonb,date_trunc('day',now(),'UTC')-interval '1 second',now())
+            """, (previous,))
+        maintain(connection)
+        current = claim(connection, "nightly-worker")
+        assert current is not None and current["kind"] == "ml.cluster"
+        # A completed rebuild at UTC midnight must suppress further runs,
+        # even when the session's local date and UTC date differ.
+        connection.execute("""
+            UPDATE jobs SET created_at=date_trunc('day',now(),'UTC'),finished_at=now(),locked_at=NULL,locked_by=NULL
+            WHERE id=%s
+            """, (current["id"],))
+        for _ in range(2):
+            maintain(connection)
+        rows = connection.execute("SELECT id FROM jobs WHERE kind='ml.cluster'").fetchall()
+        assert {row["id"] for row in rows} == {previous, current["id"]}
+
+
 def test_face_replay_preserves_named_and_hidden_people(connection: Connection, tmp_path: Path,
                                                        models: Models, monkeypatch: pytest.MonkeyPatch) -> None:
     from psycopg.types.json import Jsonb
