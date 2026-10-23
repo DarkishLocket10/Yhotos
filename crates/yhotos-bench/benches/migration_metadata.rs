@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::too_many_lines)]
-//! Compare ingest metadata publication with and without the import guard.
+//! Compare ingest publication before and after returning effective coordinates.
 //! Requires a disposable migrated `DATABASE_URL`; all rows and DDL roll back.
 use axum::http::Uri;
 use criterion::{Criterion, criterion_group, criterion_main};
@@ -8,7 +8,7 @@ use sqlx::Connection;
 use yhotos_core::Slug;
 use yhotos_db::{
     migration::{self, ImportPhoto},
-    photos::{self, MediaKind, NewPhoto, PhotoMetadata},
+    photos::{MediaKind, NewPhoto},
 };
 
 // Frozen pre-task parser for comparing the previously supported numeric URL.
@@ -141,34 +141,35 @@ fn benchmark(c: &mut Criterion) {
         .block_on(migration::upsert_photos(&mut tx, &[row]))
         .unwrap();
     let id = *ids.first().unwrap();
-    let metadata = PhotoMetadata {
-        title: "Benchmark".into(),
-        ..PhotoMetadata::default()
-    };
-    runtime
-        .block_on(
-            sqlx::query!("ALTER TABLE photos DISABLE TRIGGER preserve_piwigo_metadata")
-                .execute(&mut *tx),
-        )
-        .unwrap();
+    // Both versions publish with the import guard. The previous publication
+    // discarded effective GPS; the corrected version returns it for follow-ups.
+    // Isolate each sample: retaining thousands of successful row versions in
+    // this outer transaction biases the later case with a longer MVCC history.
+    // Savepoint setup and rollback are excluded from publication timings.
     c.bench_function("migration_metadata/before", |b| {
-        b.iter(|| {
-            runtime
-                .block_on(photos::update_metadata(&mut tx, id, &metadata))
-                .unwrap()
+        b.iter_custom(|iterations| {
+            let mut elapsed = std::time::Duration::ZERO;
+            for _ in 0..iterations {
+                let mut sample = runtime.block_on(tx.begin()).unwrap();
+                let start = std::time::Instant::now();
+                runtime.block_on(sqlx::query!("UPDATE photos SET taken_at=NULL,taken_at_local=NULL,gps_lat=NULL,gps_lon=NULL,status='ready',derivative_plan='benchmark' WHERE id=$1",id.0).execute(&mut *sample)).unwrap();
+                elapsed += start.elapsed();
+                runtime.block_on(sample.rollback()).unwrap();
+            }
+            elapsed
         });
     });
-    runtime
-        .block_on(
-            sqlx::query!("ALTER TABLE photos ENABLE TRIGGER preserve_piwigo_metadata")
-                .execute(&mut *tx),
-        )
-        .unwrap();
     c.bench_function("migration_metadata/after", |b| {
-        b.iter(|| {
-            runtime
-                .block_on(photos::update_metadata(&mut tx, id, &metadata))
-                .unwrap()
+        b.iter_custom(|iterations| {
+            let mut elapsed = std::time::Duration::ZERO;
+            for _ in 0..iterations {
+                let mut sample = runtime.block_on(tx.begin()).unwrap();
+                let start = std::time::Instant::now();
+                runtime.block_on(sqlx::query!("UPDATE photos SET taken_at=NULL,taken_at_local=NULL,gps_lat=NULL,gps_lon=NULL,status='ready',derivative_plan='benchmark' WHERE id=$1 RETURNING gps_lat,gps_lon",id.0).fetch_one(&mut *sample)).unwrap();
+                elapsed += start.elapsed();
+                runtime.block_on(sample.rollback()).unwrap();
+            }
+            elapsed
         });
     });
     runtime.block_on(tx.rollback()).unwrap();

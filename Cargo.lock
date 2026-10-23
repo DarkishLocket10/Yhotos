@@ -4993,7 +4993,10 @@ dependencies = [
 name = "yhotos-migrate-piwigo"
 version = "0.1.0"
 dependencies = [
+ "axum",
+ "base64 0.23.1",
  "blake3",
+ "figment",
  "html-escape",
  "secrecy",
  "serde",
@@ -5003,10 +5006,13 @@ dependencies = [
  "thiserror 2.0.21",
  "time",
  "tokio",
+ "tower",
  "url",
  "uuid",
+ "yhotos-config",
  "yhotos-core",
  "yhotos-db",
+ "yhotos-http",
  "yhotos-storage",
 ]
 

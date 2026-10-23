@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE photos SET taken_at_local=NULL WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b7d5c809a588d872bd8dcbe87e5245bf3248f99ed0f866ca7acf0493fedaa101"
+}

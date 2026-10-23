@@ -82,13 +82,10 @@ Each entry: threat, then the control, then where it lives in code so reviewers c
   traversal, absolute paths, empty/dot components, NULs, backslashes, symlinks and
   non-regular files. Linux `openat2` additionally forbids mount crossings and magic
   links; macOS uses a descriptor walk with `O_NOFOLLOW` for development. Every
-  descriptor is read-only, and the final source mount is read-only. Source SQL
-  uses a repeatable-read, read-only transaction with a SELECT-only MariaDB login;
-  only the six required tables are granted. Destination migration identities
-  are admin-only, with no public or worker grants. A fixed-search-path trigger
-  preserves curated capture dates/GPS through ingest, fenced by original hash.
-  Credentials come only from environment variables; errors and progress omit
-  credentials, full database rows and source paths.
+  descriptor is read-only, and migration reads from a read-only source mount.
+  The known `./upload/` or `upload/` prefix is removed from a Piwigo path before
+  passing the relative name to `SourceTree`; the file handle is streamed without
+  reopening a path. No source API creates entries or opens files for writing.
 
 - **Bypassing Cloudflare (T6).** Control: Cloudflare Tunnel; router ports 80/443 closed; `server-public` listens only on the container network reached by `cloudflared`. Nothing on the host is port-forwarded for Yhotos.
 - **Admin exposed (A3).** Control: admin container bound to the Tailscale IP only, `admin` feature absent from the public binary, separate Postgres role.

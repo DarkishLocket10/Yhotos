@@ -249,6 +249,12 @@ pub(crate) async fn execute(
         album_ids.insert(a.source.id, id);
         redirects::insert(
             &mut tx,
+            &format!("/category/{}", a.source.id),
+            ShareTarget::Album(id),
+        )
+        .await?;
+        redirects::insert(
+            &mut tx,
             &format!("/index.php?/category/{}", a.source.id),
             ShareTarget::Album(id),
         )
@@ -353,6 +359,12 @@ pub(crate) async fn execute(
         if let Some(first) = ids.first() {
             redirects::insert(
                 &mut tx,
+                &format!("/picture/{}", image.id),
+                ShareTarget::Photo(*first),
+            )
+            .await?;
+            redirects::insert(
+                &mut tx,
                 &format!("/picture.php?/{}", image.id),
                 ShareTarget::Photo(*first),
             )
@@ -375,6 +387,11 @@ pub(crate) async fn execute(
         )
         .await?;
     }
+    // Retire every previously imported copy absent from this successful plan,
+    // including skipped/missing originals. Retained rows and retirement commit
+    // together, so a removed public membership cannot outlive new restrictions.
+    let retained: Vec<_> = photo_ids.values().copied().collect();
+    migration::reconcile_photos(&mut tx, &retained).await?;
     tx.commit().await?;
     Ok(())
 }

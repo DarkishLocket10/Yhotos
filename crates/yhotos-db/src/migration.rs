@@ -111,11 +111,16 @@ pub async fn upsert_photos(
     rows: &[ImportPhoto],
 ) -> Result<Vec<PhotoId>, DbError> {
     let mut ids = Vec::with_capacity(rows.len());
+    let mut previous_gps = std::collections::BTreeMap::new();
     for row in rows {
         if row.image_id <= 0 || row.category_id <= 0 {
             return Err(DbError::InvalidInput);
         }
-        let old = sqlx::query!("SELECT photo_id,original_hash FROM migration_sources WHERE image_id=$1 AND category_id=$2", row.image_id, row.category_id).fetch_optional(&mut *conn).await?;
+        let old = sqlx::query!("SELECT m.photo_id,m.original_hash,p.gps_lat,p.gps_lon FROM migration_sources m JOIN photos p ON p.id=m.photo_id WHERE m.image_id=$1 AND m.category_id=$2 FOR UPDATE OF p", row.image_id, row.category_id).fetch_optional(&mut *conn).await?;
+        let gps = old
+            .as_ref()
+            .map(|p| (p.gps_lat, p.gps_lon))
+            .unwrap_or_default();
         let id = if let Some(old) = old {
             let id = PhotoId(old.photo_id);
             if old.original_hash != row.original.original_hash {
@@ -134,6 +139,7 @@ pub async fn upsert_photos(
             photo.id
         };
         sqlx::query!("INSERT INTO migration_sources(image_id,category_id,original_hash,photo_id,taken_at,taken_at_local,gps_lat,gps_lon) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(image_id,category_id) DO UPDATE SET original_hash=excluded.original_hash,taken_at=excluded.taken_at,taken_at_local=excluded.taken_at_local,gps_lat=excluded.gps_lat,gps_lon=excluded.gps_lon",row.image_id,row.category_id,row.original.original_hash,id.0,row.taken_at,row.taken_at_local,row.gps_lat,row.gps_lon).execute(&mut *conn).await?;
+        previous_gps.insert(id.0, gps);
         ids.push(id);
     }
     // One metadata update for the batch. Coalesce absent curated values with EXIF.
@@ -153,11 +159,42 @@ pub async fn upsert_photos(
         .iter()
         .map(|r| r.original.original_name.as_str())
         .collect();
-    sqlx::query!("UPDATE photos p SET album_id=s.album,title=s.title,description=s.description,author=s.author,taken_at=coalesce(s.taken,p.taken_at),taken_at_local=coalesce(s.local,p.taken_at_local),posted_at=s.posted,sort_order=s.ord,visibility=CASE WHEN s.restricted THEN 'restricted'::visibility ELSE 'inherit'::visibility END,gps_lat=coalesce(s.lat,p.gps_lat),gps_lon=coalesce(s.lon,p.gps_lon),original_name=s.name FROM UNNEST($1::uuid[],$2::uuid[],$3::text[],$4::text[],$5::text[],$6::timestamptz[],$7::timestamp[],$8::timestamptz[],$9::int[],$10::bool[],$11::float8[],$12::float8[],$13::text[]) AS s(id,album,title,description,author,taken,local,posted,ord,restricted,lat,lon,name) WHERE p.id=s.id", &uuid,&albums,&titles as &[&str],&descriptions as &[&str],&authors as &[Option<&str>],&taken as &[Option<OffsetDateTime>],&local as &[Option<PrimitiveDateTime>],&posted,&orders,&restricted,&lat as &[Option<f64>],&lon as &[Option<f64>],&names as &[&str]).execute(&mut *conn).await?;
+    let published = sqlx::query!("UPDATE photos p SET deleted_at=NULL,place_id=CASE WHEN (p.gps_lat,p.gps_lon) IS DISTINCT FROM (coalesce(s.lat,p.gps_lat),coalesce(s.lon,p.gps_lon)) THEN NULL ELSE p.place_id END,album_id=s.album,title=s.title,description=s.description,author=s.author,taken_at=coalesce(s.taken,p.taken_at),taken_at_local=coalesce(s.local,p.taken_at_local),posted_at=s.posted,sort_order=s.ord,visibility=CASE WHEN s.restricted THEN 'restricted'::visibility ELSE 'inherit'::visibility END,gps_lat=coalesce(s.lat,p.gps_lat),gps_lon=coalesce(s.lon,p.gps_lon),original_name=s.name FROM UNNEST($1::uuid[],$2::uuid[],$3::text[],$4::text[],$5::text[],$6::timestamptz[],$7::timestamp[],$8::timestamptz[],$9::int[],$10::bool[],$11::float8[],$12::float8[],$13::text[]) AS s(id,album,title,description,author,taken,local,posted,ord,restricted,lat,lon,name) WHERE p.id=s.id RETURNING p.id,p.gps_lat,p.gps_lon", &uuid,&albums,&titles as &[&str],&descriptions as &[&str],&authors as &[Option<&str>],&taken as &[Option<OffsetDateTime>],&local as &[Option<PrimitiveDateTime>],&posted,&orders,&restricted,&lat as &[Option<f64>],&lon as &[Option<f64>],&names as &[&str]).fetch_all(&mut *conn).await?;
+    for photo in published {
+        if previous_gps.get(&photo.id) != Some(&(photo.gps_lat, photo.gps_lon)) {
+            // Each coordinate change needs its own refresh: an older running
+            // job may already have resolved the previous location. Deduplicating
+            // against it could lose this change before that job marks completion.
+            crate::jobs::enqueue(
+                conn,
+                "geo.reverse",
+                &serde_json::json!({"photo_id":photo.id}),
+                0,
+                OffsetDateTime::now_utc(),
+            )
+            .await?;
+        }
+    }
     sqlx::query!("DELETE FROM photo_grants WHERE photo_id=ANY($1)", &uuid)
         .execute(conn)
         .await?;
     Ok(ids)
+}
+
+/// Retires obsolete migration-owned copies and revokes their grants atomically
+/// with the caller's import transaction. Source identities remain for resumable
+/// restoration, but obsolete photos cannot be viewed or downloaded.
+///
+/// # Errors
+/// Returns database errors; callers must roll back the entire import on failure.
+pub async fn reconcile_photos(
+    conn: &mut PgConnection,
+    retained: &[PhotoId],
+) -> Result<(), DbError> {
+    let ids: Vec<_> = retained.iter().map(|id| id.0).collect();
+    sqlx::query!("UPDATE photos p SET visibility='restricted',deleted_at=coalesce(p.deleted_at,now()) FROM migration_sources m WHERE p.id=m.photo_id AND NOT (p.id=ANY($1))", &ids).execute(&mut *conn).await?;
+    sqlx::query!("DELETE FROM photo_grants g USING migration_sources m WHERE g.photo_id=m.photo_id AND NOT (g.photo_id=ANY($1))", &ids).execute(conn).await?;
+    Ok(())
 }
 
 /// Removes source-owned manual tag links before replacing them on a rerun.

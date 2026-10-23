@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE photos p SET visibility='restricted',deleted_at=coalesce(p.deleted_at,now()) FROM migration_sources m WHERE p.id=m.photo_id AND NOT (p.id=ANY($1))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2262b63d5ac3e4bc3da5384648cda9328a73efb3665ff42f879342331462cfc3"
+}

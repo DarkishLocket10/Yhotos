@@ -76,8 +76,9 @@ pub(crate) async fn connect(url: &str) -> Result<MySqlPool> {
 }
 
 pub(crate) async fn snapshot(pool: &MySqlPool) -> Result<Snapshot> {
-    // A transaction gives a repeatable snapshot. The operator's SELECT-only user
-    // is the write boundary; even dry-run uses exactly the same SELECTs.
+    // Repeatable read protects transactional tables only. The runbook requires
+    // all writers stopped while creating DB/upload snapshots (Piwigo uses MyISAM).
+    // The SELECT-only user is the write boundary; dry-run uses the same SELECTs.
     let mut conn = pool.acquire().await?;
     sqlx::query_file!("queries/read_only.sql")
         .execute(&mut *conn)

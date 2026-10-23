@@ -13,11 +13,19 @@ do not put them in command arguments, logs, reports, shell history or this repo.
    **12 admin-only photos**. Scope section 10's older 4,966 file figure differs
    from the measured section 2 baseline; investigate filesystem extras rather
    than importing files absent from the image table.
-2. For rehearsals, take a consistent `mariadb-dump --single-transaction` of Piwigo
-   and restore it into a separate MariaDB 11.4 instance. Copy/snapshot the upload
-   directory at the same point in time. Use a defaults file or `MYSQL_PWD` for the
-   operator's dump/restore credentials. The migration tool never dumps or restores
-   the source DB itself.
+2. For every rehearsal and the final snapshot, stop Piwigo and **all other
+   database and upload writers** (including scheduled jobs and external upload
+   tools) before starting either snapshot. Keep every writer stopped until both
+   the database dump and upload copy/snapshot finish. Piwigo 16 tables may use
+   [MyISAM](https://raw.githubusercontent.com/Piwigo/Piwigo/16.4.0/install/piwigo_structure-mysql.sql);
+   [`mariadb-dump --single-transaction`](https://mariadb.com/docs/server/clients-and-utilities/backup-restore-and-import-clients/mariadb-dump#--single-transaction)
+   does not make those tables consistent.
+   With writers stopped, dump the database and copy/snapshot the upload directory,
+   then restore both into separate staging storage and MariaDB 11.4. Record the
+   stopped writers and snapshot start/end times; verify neither source changed
+   during that interval before restarting writers after a rehearsal. Keep them
+   stopped through final cutover. Use a defaults file or `MYSQL_PWD` for the
+   operator's dump/restore credentials. The tool never dumps/restores the source.
 3. On the snapshot (and later the final source), run these exact statements as
    the MariaDB administrator, replacing `piwigo` with the source database name and
    the password placeholder with a newly generated password. This example assumes
@@ -107,8 +115,10 @@ Each image's first category by global rank is the bare-photo redirect target.
 Additional categories produce additional photo rows sharing the same original
 hash, with independent category order and one ingest job per new row. Distinct
 Piwigo image ids with identical bytes remain distinct. Counts of Yhotos photo
-rows can therefore exceed 4,925; compare distinct `migration_sources.image_id`
-for the source count, and memberships for row counts. Uncategorised photos are
+rows can therefore exceed 4,925. For verification, join `migration_sources` to
+`photos` on `photo_id = photos.id` and filter `photos.deleted_at IS NULL` before
+counting distinct `image_id` for the source count or rows for memberships. Retired
+source identities are excluded from these counts. Uncategorised photos are
 reported, not silently put in a synthetic album.
 
 Reruns preserve photo URLs using `(image_id, category_id)` in `migration_sources`
@@ -117,8 +127,18 @@ queue another ingest. Changed hashes replace the original with a new generation
 and enqueue ingest. Album identity uses `migration_albums`. Source metadata and
 manual tag memberships are authoritative on rerun; do not edit imported content
 in Yhotos until final migration completes. Auto tags remain independent. Reruns
-do not remove source-deleted images/albums or obsolete category memberships;
-rehearse on a fresh destination for exact snapshot reconciliation.
+retire every migration-owned photo copy absent from the successfully imported
+memberships, including source-deleted images and skipped files. Retirement sets
+restricted visibility, removes grants and trashes the obsolete copy in the same
+transaction as current metadata updates. Returning memberships restore their
+identities. Empty source-deleted albums remain; use a fresh rehearsal destination
+for exact album counts.
+
+Keep the destination private during reruns. Before serving revised visibility,
+restart public serving processes to discard their file metadata caches, and purge
+previously public HTML, derivative and original responses from the proxy/CDN.
+Reopen public traffic only after the purge succeeds. This follows the serving
+cache invalidation requirement for visibility changes.
 
 Legacy rows include numeric album paths, numeric/url-name paths, name/slug aliases
 and both photo URL forms. Piwigo's nullable category `permalink` supplies its

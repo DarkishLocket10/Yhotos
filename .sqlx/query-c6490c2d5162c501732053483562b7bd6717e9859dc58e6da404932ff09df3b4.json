@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE photos SET taken_at=NULL,taken_at_local=NULL,gps_lat=NULL,gps_lon=NULL,status='ready',derivative_plan='benchmark' WHERE id=$1 RETURNING gps_lat,gps_lon",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "gps_lat",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "gps_lat"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "gps_lon",
+        "type_info": "Float8",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "gps_lon"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "c6490c2d5162c501732053483562b7bd6717e9859dc58e6da404932ff09df3b4"
+}

@@ -65,7 +65,7 @@ async fn bulk_identities_replacements_and_curated_metadata_survive_ingest(pool: 
             .await
             .unwrap()
             .len(),
-        1
+        2
     );
     let id = *first.first().unwrap();
     // Ingest's worker role cannot read import identities directly. The fixed-
@@ -74,17 +74,9 @@ async fn bulk_identities_replacements_and_curated_metadata_survive_ingest(pool: 
         .execute(&mut *tx)
         .await
         .unwrap();
-    // Ingest may supply missing EXIF fields but cannot erase curated DB values.
-    photos::update_metadata(
-        &mut tx,
-        id,
-        &PhotoMetadata {
-            title: "Title".into(),
-            ..PhotoMetadata::default()
-        },
-    )
-    .await
-    .unwrap();
+    // The publication statement includes derivative_plan and status, unlike
+    // an administrative update_metadata call. Missing EXIF cannot erase Piwigo.
+    sqlx::query!("UPDATE photos SET status='ready',derivative_plan='test-plan',taken_at=NULL,taken_at_local=NULL,gps_lat=NULL,gps_lon=NULL WHERE id=$1", id.0).execute(&mut *tx).await.unwrap();
     let photo = photos::get_by_short_id(&mut tx, &ShortId::from_photo_id(id))
         .await
         .unwrap()
@@ -100,6 +92,53 @@ async fn bulk_identities_replacements_and_curated_metadata_survive_ingest(pool: 
         .unwrap();
     assert_eq!(author.author.as_deref(), Some("Author"));
     sqlx::query!("RESET ROLE").execute(&mut *tx).await.unwrap();
+    // After publication, admins can correct and then remove imported fields.
+    let corrected = date + time::Duration::days(1);
+    photos::update_metadata(
+        &mut tx,
+        id,
+        &PhotoMetadata {
+            title: "Corrected".into(),
+            taken_at: Some(corrected),
+            gps_lat: Some(12.0),
+            gps_lon: Some(13.0),
+            ..PhotoMetadata::default()
+        },
+    )
+    .await
+    .unwrap();
+    let photo = photos::get_by_short_id(&mut tx, &ShortId::from_photo_id(id))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        photo.taken_at.unwrap().unix_timestamp(),
+        corrected.unix_timestamp()
+    );
+    assert_eq!((photo.gps_lat, photo.gps_lon), (Some(12.0), Some(13.0)));
+    photos::update_metadata(&mut tx, id, &PhotoMetadata::default())
+        .await
+        .unwrap();
+    sqlx::query!("UPDATE photos SET taken_at_local=NULL WHERE id=$1", id.0)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let cleared = sqlx::query!(
+        "SELECT taken_at,taken_at_local,gps_lat,gps_lon FROM photos WHERE id=$1",
+        id.0
+    )
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    assert_eq!(
+        (
+            cleared.taken_at,
+            cleared.taken_at_local,
+            cleared.gps_lat,
+            cleared.gps_lon
+        ),
+        (None, None, None, None)
+    );
     row.original.original_hash = format!(
         "{}{}",
         uuid::Uuid::now_v7().simple(),
@@ -111,11 +150,11 @@ async fn bulk_identities_replacements_and_curated_metadata_survive_ingest(pool: 
         first
     );
     let queued = jobs::list(&mut tx, JobStatus::Pending, 0).await.unwrap();
-    assert_eq!(queued.len(), 2);
-    assert!(
-        queued
-            .iter()
-            .any(|j| *j.payload.get("generation").unwrap() == 1)
-    );
+    assert_eq!(queued.len(), 4);
+    assert!(queued.iter().any(|j| {
+        j.payload
+            .get("generation")
+            .is_some_and(|generation| *generation == 1)
+    }));
     tx.rollback().await.unwrap();
 }

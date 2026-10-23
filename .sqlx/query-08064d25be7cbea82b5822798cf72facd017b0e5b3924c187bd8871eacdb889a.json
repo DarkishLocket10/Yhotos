@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE jobs SET finished_at=now() WHERE kind='geo.reverse'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "08064d25be7cbea82b5822798cf72facd017b0e5b3924c187bd8871eacdb889a"
+}
