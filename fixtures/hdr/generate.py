@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """HDR inputs from committed fixtures only. No network or private metadata."""
-import pathlib, shlex, struct, subprocess, tempfile, sys
+import ctypes, ctypes.util, pathlib, shlex, struct, subprocess, tempfile, sys
 ROOT=pathlib.Path(__file__).resolve().parents[2]
 DEST=ROOT/'fixtures/hdr'
 def run(*args): subprocess.run(list(map(str,args)),check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
@@ -14,6 +14,24 @@ def boxes(data):
         result.append((kind,data[at+8:at+n]));at+=n
     return result
 def one(data,kind): return next(payload for k,payload in boxes(data) if k==kind)
+def compressed_jxl(data):
+    # brob stores the original box type followed by its Brotli-compressed contents.
+    # Only the offline generator encodes Brotli; the codec never decompresses it.
+    lib=ctypes.CDLL(ctypes.util.find_library('brotlienc'))
+    lib.BrotliEncoderMaxCompressedSize.argtypes=[ctypes.c_size_t]
+    lib.BrotliEncoderMaxCompressedSize.restype=ctypes.c_size_t
+    lib.BrotliEncoderCompress.argtypes=[ctypes.c_int,ctypes.c_int,ctypes.c_int,ctypes.c_size_t,ctypes.c_void_p,ctypes.POINTER(ctypes.c_size_t),ctypes.c_void_p]
+    lib.BrotliEncoderCompress.restype=ctypes.c_int
+    result=bytearray()
+    for kind,payload in boxes(data):
+        if kind==b'jhgm':
+            size=ctypes.c_size_t(lib.BrotliEncoderMaxCompressedSize(len(payload)))
+            encoded=ctypes.create_string_buffer(size.value)
+            success=lib.BrotliEncoderCompress(6,22,0,len(payload),payload,ctypes.byref(size),encoded)
+            assert success
+            kind,payload=b'brob',b'jhgm'+encoded.raw[:size.value]
+        result.extend(box(kind,payload))
+    return result
 def heic_image(path):
     data=path.read_bytes();meta=one(data,b'meta')[4:]
     # vips writes one hvc1 image and one EXIF item, with v0 iloc and one extent per item.
@@ -135,4 +153,5 @@ with tempfile.TemporaryDirectory() as tmp:
     bundle=bytes([0])+u16(len(metadata))+metadata+bytes(5)+gain
     if base.startswith(b'\xff\x0a'): base=box(b'JXL ',b'\r\n\x87\n')+box(b'ftyp',b'jxl '+u32(0)+b'jxl ')+box(b'jxlc',base)
     (DEST/'gain-map.jxl').write_bytes(base+box(b'jhgm',bundle))
-    for name in ['iso.jpg','iso-p3.jpg','adobe.jpg','apple.heic','apple-element.heic','gain-map.jxl']:assert (DEST/name).stat().st_size<300000
+    (DEST/'gain-map-brob.jxl').write_bytes(compressed_jxl(base+box(b'jhgm',bundle)))
+    for name in ['iso.jpg','iso-p3.jpg','adobe.jpg','apple.heic','apple-element.heic','gain-map.jxl','gain-map-brob.jxl']:assert (DEST/name).stat().st_size<300000

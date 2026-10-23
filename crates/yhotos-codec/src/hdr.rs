@@ -20,6 +20,9 @@ pub enum HdrSkippedReason {
     InvalidGainMap,
     /// This gain-map representation cannot be interpreted by the installed codecs.
     UnsupportedGainMap,
+    /// JPEG XL gain-map metadata is Brotli-compressed and deliberately not decompressed.
+    #[serde(rename = "compressed JPEG XL gain map not supported")]
+    CompressedJxlGainMap,
     /// A gain-map input or allocation exceeds the codec's bounds.
     GainMapLimits,
     /// HDR compression was unavailable or could not complete.
@@ -29,6 +32,7 @@ impl From<CodecError> for HdrSkippedReason {
     fn from(error: CodecError) -> Self {
         match error {
             CodecError::Unsupported => Self::UnsupportedGainMap,
+            CodecError::CompressedJxlGainMap => Self::CompressedJxlGainMap,
             CodecError::Limits => Self::GainMapLimits,
             _ => Self::InvalidGainMap,
         }
@@ -552,6 +556,37 @@ mod tests {
                 .pixels()
                 .unwrap()
         );
+    }
+    #[test]
+    fn compressed_jxl_gain_map_retains_sdr_pixels_and_skip_reason_after_resize() {
+        let limits = Limits::default();
+        let plain_path = fixture("gain-map.jxl");
+        let path = fixture("gain-map-brob.jxl");
+        let id = crate::identify(&path, &limits).unwrap();
+        assert!(id.has_gain_map);
+        let working = crate::decode(&path, &id, &limits).unwrap();
+        assert!(!working.has_gain_map());
+        assert_eq!(
+            working.hdr_skipped_reason(),
+            Some(HdrSkippedReason::CompressedJxlGainMap)
+        );
+        let plain_id = crate::identify(&plain_path, &limits).unwrap();
+        let plain = crate::decode(&plain_path, &plain_id, &limits).unwrap();
+        assert_eq!(
+            working.image.pixels().unwrap(),
+            plain.image.pixels().unwrap()
+        );
+        let resized = crate::resize(
+            &working,
+            crate::ResizeSpec {
+                long_edge: 48,
+                square: false,
+            },
+        )
+        .unwrap();
+        assert!(!resized.has_gain_map());
+        assert_eq!(resized.dimensions().unwrap(), (48, 32));
+        assert_eq!(resized.hdr_skipped_reason(), working.hdr_skipped_reason());
     }
     #[test]
     fn jhgm_round_trip_keeps_sdr_pixels_gain_geometry_and_hdr_luminance() {

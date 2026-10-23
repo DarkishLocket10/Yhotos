@@ -36,6 +36,21 @@ fn main() -> Result<(), Box<dyn Error>> {
         b.iter(|| yhotos_codec::identify(black_box(&input), &Limits::default()));
     });
     for (form, name) in [
+        ("plain", "gain-map.jxl"),
+        ("compressed", "gain-map-brob.jxl"),
+    ] {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/hdr")
+            .join(name);
+        let identity = yhotos_codec::identify(&path, &Limits::default())?;
+        criterion.bench_function(&format!("hdr/identify_jxl_gain_map/{form}"), |b| {
+            b.iter(|| yhotos_codec::identify(black_box(&path), &Limits::default()));
+        });
+        criterion.bench_function(&format!("hdr/decode_jxl_gain_map/{form}"), |b| {
+            b.iter(|| yhotos_codec::decode(black_box(&path), &identity, &Limits::default()));
+        });
+    }
+    for (form, name) in [
         ("attribute", "apple.heic"),
         ("element", "apple-element.heic"),
     ] {

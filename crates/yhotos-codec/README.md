@@ -208,6 +208,11 @@ JXL color encodings/ICC profiles and ISO alternate application color spaces that
 require a second color pipeline are
 reported as unsupported and remain SDR-only.
 
+Known limitation: a `brob` box whose inner type is `jhgm` is detected but never
+decompressed. Ingest keeps the SDR base and records
+`compressed JPEG XL gain map not supported` in `hdr_skipped_reason` and each
+skipped HDR output's reason.
+
 Gain maps bypass ICC conversion, share base orientation/cropping/resize scale,
 and retain their lower resolution. Metadata/headroom carries over unchanged.
 Input/encoded HDR buffers are capped at 256 MiB, box metadata at 16 MiB, XMP at

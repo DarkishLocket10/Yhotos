@@ -47,6 +47,9 @@ pub enum CodecError {
     /// A requested operation is unavailable or intentionally unsupported.
     #[error("unsupported image operation")]
     Unsupported,
+    /// Brotli-compressed JPEG XL gain maps intentionally retain only the SDR base.
+    #[error("compressed JPEG XL gain map not supported")]
+    CompressedJxlGainMap,
     /// Options are outside their documented ranges.
     #[error("invalid image options")]
     Options,

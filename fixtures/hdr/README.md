@@ -15,10 +15,13 @@ No owner-library original or internet image is used. Every fixture is under 300 
   packets, including Apple's auxiliary-image type and gain-map namespaces.
   Both use synthetic chart pixels; neither claims owner-library provenance.
 - `gain-map.jxl`: naked libjxl base/map streams in a `jhgm` bundle with ISO metadata.
+- `gain-map-brob.jxl`: the same base and bundle, with `jhgm` wrapped in a Brotli
+  `brob` box. This exercises the intentional SDR fallback and its recorded reason
+  `compressed JPEG XL gain map not supported`.
 - `../images/gain-map.avif`: libavif-generated tmap/AV1 source; its generator is in
   `scripts/gen-fixtures.sh` and it contains no XMP signature substitutes.
 
 Run `scripts/gen-fixtures.sh --hdr` offline with vips, libheif's HEVC encoder,
-libjxl, libuhdr and a C compiler. `generate.py` and `mux.c` contain the full recipe.
+libjxl, libbrotlienc, libuhdr and a C compiler. `generate.py` and `mux.c` contain the full recipe.
 Apple semantics follow [Apple's published algorithm](https://developer.apple.com/documentation/appkit/applying-apple-hdr-effect-to-your-photos).
 The JXL bundle follows [libjxl's reference layout](https://github.com/libjxl/libjxl/blob/main/lib/extras/gain_map.cc).

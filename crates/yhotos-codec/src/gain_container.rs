@@ -44,6 +44,19 @@ pub(crate) fn jxl_present(path: &std::path::Path) -> Result<bool, CodecError> {
         if &header[4..] == b"jhgm" {
             return Ok(true);
         }
+        if &header[4..] == b"brob" {
+            // The inner type is uncompressed. Stay inside this box and never
+            // decompress untrusted metadata just to detect a gain map.
+            if size - minimum < 4 {
+                return Err(CodecError::Decode);
+            }
+            let mut inner = [0; 4];
+            file.read_exact(&mut inner)
+                .map_err(|_| CodecError::Decode)?;
+            if &inner == b"jhgm" {
+                return Ok(true);
+            }
+        }
         at = end;
     }
     Err(CodecError::Limits)
@@ -177,7 +190,13 @@ pub(crate) fn iso_write(metadata: &Metadata) -> Result<Vec<u8>, CodecError> {
 }
 
 pub(crate) fn jxl(bytes: &[u8], limits: &Limits) -> Result<crate::hdr::GainMap, CodecError> {
-    let top = boxes(bytes, &mut 4096)?;
+    let top = parse_boxes(bytes, &mut 4096, true)?;
+    if top
+        .iter()
+        .any(|b| b.kind == b"brob" && b.data.starts_with(b"jhgm"))
+    {
+        return Err(CodecError::CompressedJxlGainMap);
+    }
     let data = one(&top, b"jhgm")?;
     if data.len() > 16 << 20 {
         return Err(CodecError::Limits);
@@ -248,15 +267,26 @@ struct Box<'a> {
     kind: &'a [u8],
     data: &'a [u8],
 }
-fn boxes<'a>(mut data: &'a [u8], budget: &mut usize) -> Result<Vec<Box<'a>>, CodecError> {
+fn boxes<'a>(data: &'a [u8], budget: &mut usize) -> Result<Vec<Box<'a>>, CodecError> {
+    parse_boxes(data, budget, false)
+}
+fn parse_boxes<'a>(
+    mut data: &'a [u8],
+    budget: &mut usize,
+    allow_to_eof: bool,
+) -> Result<Vec<Box<'a>>, CodecError> {
     let mut result = Vec::new();
     while !data.is_empty() {
         *budget = budget.checked_sub(1).ok_or(CodecError::Limits)?;
         let mut c = Cursor::new(data);
         let n = c.num(4)?;
         let kind = c.take(4)?;
-        let n =
-            usize::try_from(if n == 1 { c.num(8)? } else { n }).map_err(|_| CodecError::Limits)?;
+        let n = if n == 0 && allow_to_eof {
+            // JPEG XL permits a final box extending to EOF. HEIF keeps finite extents.
+            data.len()
+        } else {
+            usize::try_from(if n == 1 { c.num(8)? } else { n }).map_err(|_| CodecError::Limits)?
+        };
         if n < c.at {
             return Err(CodecError::Decode);
         }
@@ -715,6 +745,53 @@ fn apple_headroom(note: &[u8]) -> Result<f32, CodecError> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    #[test]
+    fn jxl_brob_detection_checks_inner_type_and_box_extent() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        for extended in [false, true] {
+            for (payload, present) in [
+                (b"jhgm\0".as_slice(), true),
+                (b"Exifjhgm".as_slice(), false),
+            ] {
+                let size = if extended { 16 } else { 8 } + payload.len();
+                let mut bytes = if extended {
+                    let mut bytes = b"\0\0\0\x01brob".to_vec();
+                    bytes.extend_from_slice(&(size as u64).to_be_bytes());
+                    bytes
+                } else {
+                    let mut bytes = (size as u32).to_be_bytes().to_vec();
+                    bytes.extend_from_slice(b"brob");
+                    bytes
+                };
+                bytes.extend_from_slice(payload);
+                std::fs::write(file.path(), &bytes).unwrap();
+                assert_eq!(jxl_present(file.path()), Ok(present));
+                if present {
+                    assert!(matches!(
+                        jxl(&bytes, &Limits::default()),
+                        Err(CodecError::CompressedJxlGainMap)
+                    ));
+                }
+            }
+        }
+        let bytes = b"\0\0\0\0brobjhgm\0";
+        std::fs::write(file.path(), bytes).unwrap();
+        assert_eq!(jxl_present(file.path()), Ok(true));
+        assert!(matches!(
+            jxl(bytes, &Limits::default()),
+            Err(CodecError::CompressedJxlGainMap)
+        ));
+        assert!(matches!(boxes(bytes, &mut 4096), Err(CodecError::Decode)));
+        for length in 0..4 {
+            let mut bytes = (8 + length as u32).to_be_bytes().to_vec();
+            bytes.extend_from_slice(b"brob");
+            bytes.extend_from_slice(&b"jhgm"[..length]);
+            // A following valid box must not supply the missing inner-type bytes.
+            bytes.extend_from_slice(b"\0\0\0\x08free");
+            std::fs::write(file.path(), &bytes).unwrap();
+            assert_eq!(jxl_present(file.path()), Err(CodecError::Decode));
+        }
+    }
     fn metadata() -> Metadata {
         Metadata {
             min: [0.0; 3],

@@ -129,6 +129,8 @@ pub(crate) enum HdrSkippedReason {
     NoGainMap,
     InvalidGainMap,
     UnsupportedGainMap,
+    #[serde(rename = "compressed JPEG XL gain map not supported")]
+    CompressedJxlGainMap,
     GainMapLimits,
     EncoderUnavailable,
 }

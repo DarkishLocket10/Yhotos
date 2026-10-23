@@ -325,6 +325,23 @@ mod hdr_report_tests {
         );
     }
     #[test]
+    fn compressed_jxl_skip_reason_is_accepted_with_required_sdr_outputs() {
+        let (_, plans) = VariantPlan::default().expand().unwrap();
+        let mut report = report(&plans, true);
+        let reason: protocol::HdrSkippedReason = serde_json::from_value(serde_json::json!(
+            "compressed JPEG XL gain map not supported"
+        ))
+        .unwrap();
+        assert_eq!(reason, protocol::HdrSkippedReason::CompressedJxlGainMap);
+        report.hdr_skipped_reason = Some(reason);
+        for output in &mut report.skipped_outputs {
+            output.reason = reason;
+        }
+        let completed = Ingest::completed_plan(&plans, &report).unwrap();
+        assert_eq!(completed.len(), 23);
+        assert!(completed.iter().all(|p| !p.hdr));
+    }
+    #[test]
     fn report_cannot_skip_sdr_duplicate_names_or_invent_hdr_presence() {
         let (_, plans) = VariantPlan::default().expand().unwrap();
         let mut r = report(&plans, false);

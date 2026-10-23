@@ -396,6 +396,37 @@ fn ordinary_sources_have_no_hdr_outputs_or_photo_skip_reason() {
     assert_eq!(std::fs::read_dir(out.path()).unwrap().count(), 6);
 }
 #[test]
+fn compressed_jxl_gain_map_preserves_sdr_and_reports_unsupported_reason() {
+    let out = tempfile::tempdir().unwrap();
+    let result = invoke(&hdr_job(&hdr_fixture("gain-map-brob.jxl"), out.path()), &[]);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let report: Value = serde_json::from_slice(&result.stdout).unwrap();
+    let reason = "compressed JPEG XL gain map not supported";
+    assert_eq!(report["identity"]["has_gain_map"], true);
+    assert_eq!(report["hdr_skipped_reason"], reason);
+    let outputs = report["outputs"].as_array().unwrap();
+    assert_eq!(outputs.len(), 6);
+    for output in outputs {
+        let name = output["name"].as_str().unwrap();
+        let path = out.path().join(name);
+        assert_ne!(path.extension(), Some("hdr".as_ref()));
+        assert!(std::fs::metadata(&path).unwrap().len() > 0);
+        assert!(
+            !yhotos_codec::identify(&path, &yhotos_codec::Limits::default())
+                .unwrap()
+                .has_gain_map
+        );
+    }
+    let skipped = report["skipped_outputs"].as_array().unwrap();
+    assert_eq!(skipped.len(), 7);
+    assert!(skipped.iter().all(|o| o["reason"] == reason));
+    assert_eq!(std::fs::read_dir(out.path()).unwrap().count(), 6);
+}
+#[test]
 #[allow(clippy::too_many_lines)] // Keep malformed inputs beside their shared SDR/report contract.
 fn malformed_gain_metadata_never_fails_an_sdr_ingest() {
     let iso = std::fs::read(hdr_fixture("iso.jpg")).unwrap();
