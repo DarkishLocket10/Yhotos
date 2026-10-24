@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO jobs(id,kind,payload,finished_at) SELECT yhotos_uuid_v7(),'ingest','{}',now() FROM generate_series(1,205)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "d876995c617279b5667313c82fe3cc0e2bf579c15efd861129d8a9fad370a932"
+}

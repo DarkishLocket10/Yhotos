@@ -22,6 +22,9 @@ pub struct AppResources {
     pub store: Store,
     /// Bounded metadata cache and original/video stream accounting across clones.
     pub files: FileCache,
+    /// Admin-only edge invalidation provider, replaceable with a test mock.
+    #[cfg(feature = "admin")]
+    pub cache_purger: Arc<dyn crate::admin::cache::CachePurger>,
     /// Bounded query embedding cache and internal network client.
     pub search: crate::search::Client,
 }
@@ -32,6 +35,23 @@ impl Deref for AppState {
     }
 }
 impl AppState {
+    #[cfg(feature = "admin")]
+    pub(crate) fn start_cache_worker(&self) {
+        let weak = Arc::downgrade(&self.0);
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                loop {
+                    let Some(resources) = weak.upgrade() else {
+                        break;
+                    };
+                    if crate::admin::cache::drain(&Self(resources)).await.is_err() {
+                        tracing::warn!("cache purge retry deferred");
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                }
+            });
+        }
+    }
     /// Shares metadata and stream caps: four per IP and the configured global cap.
     #[must_use]
     pub fn new(
@@ -40,12 +60,25 @@ impl AppState {
         store: Store,
         auth: Option<Arc<Auth>>,
     ) -> Self {
+        #[cfg(feature = "admin")]
+        let cache_purger: Arc<dyn crate::admin::cache::CachePurger> =
+            match (&config.cloudflare_zone, &config.cloudflare_api_token) {
+                (Some(zone), Some(token)) => {
+                    match crate::admin::cache::CloudflarePurger::new(zone.clone(), token.clone()) {
+                        Ok(purger) => Arc::new(purger),
+                        Err(_) => Arc::new(crate::admin::cache::NoopPurger),
+                    }
+                }
+                _ => Arc::new(crate::admin::cache::NoopPurger),
+            };
         Self::from(AppResources {
             config,
             auth,
             pool,
             store,
             files: FileCache::new(4, config.global_stream_cap),
+            #[cfg(feature = "admin")]
+            cache_purger,
             search: crate::search::Client::new(config.ml_address.clone()),
         })
     }

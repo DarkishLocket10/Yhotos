@@ -120,8 +120,8 @@ async fn grant_matrix_catalog_and_forbidden_statements(pool: PgPool) {
     .fetch_all(&pool)
     .await
     .unwrap();
-    // Includes uploads, the gazetteer and private face run/crop tables.
-    assert_eq!(rows.len(), 37 * 3);
+    // Includes share sessions, uploads, trash/cache, gazetteer and private face tables.
+    assert_eq!(rows.len(), 41 * 3);
     for row in rows {
         let actual = (row.select, row.insert, row.update, row.delete);
         let expected = match row.role.as_str() {
@@ -160,9 +160,13 @@ async fn grant_matrix_catalog_and_forbidden_statements(pool: PgPool) {
                     "persons",
                     "face_runs",
                     "face_crops",
-                    "gazetteer",
                     "uploads",
+                    "upload_gc",
                     "completed_uploads",
+                    "original_trash",
+                    "original_gc",
+                    "cache_purges",
+                    "gazetteer",
                 ]
                 .contains(&row.table.as_str()),
                 [
@@ -180,6 +184,10 @@ async fn grant_matrix_catalog_and_forbidden_statements(pool: PgPool) {
             _ => unreachable!(),
         };
         assert_eq!(actual, expected, "{} {}", row.role, row.table);
+    }
+    let functions=sqlx::query!(r#"SELECT rolname::text AS "role!",has_function_privilege(oid,'yhotos_uuid_v7()','EXECUTE') AS "allowed!" FROM pg_roles WHERE rolname IN ('yhotos_public','yhotos_admin','yhotos_worker')"#).fetch_all(&pool).await.unwrap();
+    for row in functions {
+        assert_eq!(row.allowed, row.role != "yhotos_public");
     }
     let columns=sqlx::query!(r#"SELECT a.attname::text AS "column!",has_column_privilege('yhotos_public','sessions',a.attname,'UPDATE') AS "allowed!" FROM pg_attribute a WHERE a.attrelid='sessions'::regclass AND a.attnum>0 AND NOT a.attisdropped"#).fetch_all(&pool).await.unwrap();
     for column in columns {

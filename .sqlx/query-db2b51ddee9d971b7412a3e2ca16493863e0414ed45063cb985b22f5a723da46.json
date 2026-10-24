@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE photos SET deleted_at=now()-interval '1 day' WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "db2b51ddee9d971b7412a3e2ca16493863e0414ed45063cb985b22f5a723da46"
+}

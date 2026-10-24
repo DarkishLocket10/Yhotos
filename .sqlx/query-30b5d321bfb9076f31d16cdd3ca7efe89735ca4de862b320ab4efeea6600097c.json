@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT coalesce(jsonb_agg(jsonb_build_object('id',l.id,'target_kind',l.target_kind,'target_id',l.target_id,'allow_view',l.allow_view,'allow_download',l.allow_download,'allow_like',l.allow_like,'allow_flag',l.allow_flag,'expires_at',l.expires_at,'revoked_at',l.revoked_at,'passphrase',l.passphrase_hash IS NOT NULL,'opens',(SELECT count(*) FROM share_link_opens WHERE share_link_id=l.id),'unique_visitors',(SELECT count(DISTINCT visitor_hash) FROM share_link_opens WHERE share_link_id=l.id),'last_open',(SELECT max(opened_at) FROM share_link_opens WHERE share_link_id=l.id)) ORDER BY l.created_at DESC),'[]') AS \"page!\" FROM share_links l",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "page!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "30b5d321bfb9076f31d16cdd3ca7efe89735ca4de862b320ab4efeea6600097c"
+}

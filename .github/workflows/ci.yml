@@ -75,7 +75,7 @@ jobs:
       - name: Test offline gazetteer importer
         run: python3 -m unittest discover -s deploy/geo -p 'test_*.py'
       - name: Test bundled islands
-        run: node --test crates/yhotos-http/tests/passkey_redirect.mjs crates/yhotos-http/tests/upload.mjs
+        run: node --test crates/yhotos-http/tests/passkey_redirect.mjs crates/yhotos-http/tests/upload.mjs crates/yhotos-http/tests/admin_library/islands.mjs
 
   test:
     needs: changes

@@ -9,9 +9,9 @@ use crate::{
 use axum::{
     Extension, Json, Router,
     extract::{Path, Query, Request, State},
-    http::{StatusCode, header},
+    http::{HeaderMap, StatusCode, header},
     middleware::Next,
-    response::Response,
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use yhotos_core::{ShortId, Slug, access::ShareTarget};
@@ -71,7 +71,8 @@ async fn album(
     Extension(links): Extension<Links>,
     Path(id): Path<String>,
     Query(options): Query<pages::Options>,
-) -> Result<Json<serde_json::Value>, HttpError> {
+    headers: HeaderMap,
+) -> Result<Response, HttpError> {
     let id = id.parse::<uuid::Uuid>().map_err(|_| HttpError::NotFound)?;
     let number = options.number()?;
     let bindings = bindings(&identity, &links);
@@ -93,13 +94,20 @@ async fn album(
     let page = albums::page_for(&mut conn, &bindings, &path, number, options.sort())
         .await?
         .ok_or(HttpError::NotFound)?;
-    Ok(Json(pages::island(
-        &page,
-        number,
-        options.sort(),
+    pages::cache_response(
+        Json(pages::island(
+            &page,
+            number,
+            options.sort(),
+            &identity,
+            &links,
+        )?)
+        .into_response(),
+        &headers,
         &identity,
-        &links,
-    )?))
+        &format!("album:{}", page.album.id),
+        "public, max-age=60",
+    )
 }
 async fn photo(
     State(state): State<AppState>,
@@ -107,7 +115,8 @@ async fn photo(
     Extension(links): Extension<Links>,
     Path(id): Path<String>,
     Query(options): Query<pages::Options>,
-) -> Result<Json<serde_json::Value>, HttpError> {
+    headers: HeaderMap,
+) -> Result<Response, HttpError> {
     let id = id.parse::<ShortId>().map_err(|_| HttpError::NotFound)?;
     let mut conn = state.pool.acquire().await?;
     let row = photos::page_for(&mut conn, &bindings(&identity, &links), &id, options.sort())
@@ -121,7 +130,13 @@ async fn photo(
     );
     object.insert("previous".into(), serde_json::to_value(row.previous)?);
     object.insert("next".into(), serde_json::to_value(row.next)?);
-    Ok(Json(value))
+    pages::cache_response(
+        Json(value).into_response(),
+        &headers,
+        &identity,
+        &format!("album:{},photo:{}", row.photo.album_id, row.photo.id),
+        "public, max-age=60",
+    )
 }
 /// Normalize even extractor, middleware and fallback errors without revealing internals.
 pub(crate) async fn envelope(request: Request, next: Next) -> Response {

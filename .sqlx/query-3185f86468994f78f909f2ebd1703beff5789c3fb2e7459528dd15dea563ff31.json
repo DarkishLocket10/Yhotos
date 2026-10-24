@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO album_grants(id,album_id,principal_kind,principal_id) SELECT yhotos_uuid_v7(),$1,g.kind::principal_kind,g.id FROM jsonb_to_recordset($2) g(kind text,id uuid)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3185f86468994f78f909f2ebd1703beff5789c3fb2e7459528dd15dea563ff31"
+}

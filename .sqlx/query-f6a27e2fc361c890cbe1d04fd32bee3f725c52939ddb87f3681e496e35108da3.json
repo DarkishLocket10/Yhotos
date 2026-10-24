@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT coalesce(jsonb_agg(to_jsonb(a)),'[]') AS \"page!\" FROM (SELECT at,user_id,action,target_kind,target_id,detail FROM audit_log WHERE action ILIKE '%'||$1||'%' OR target_id::text=$1 OR user_id::text=$1 ORDER BY at DESC,id DESC LIMIT 100 OFFSET $2) a",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "page!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "f6a27e2fc361c890cbe1d04fd32bee3f725c52939ddb87f3681e496e35108da3"
+}

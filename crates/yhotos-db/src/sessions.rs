@@ -355,6 +355,8 @@ pub async fn revoke_setup(c: &mut PgConnection, user: UserId) -> Result<Vec<Uuid
 
 /// A validated cache eviction received from PostgreSQL, never bearer material.
 pub enum Invalidation {
+    /// Content access or memberships changed; discard every affected snapshot.
+    Library,
     /// One session changed or was deleted.
     Session(Uuid),
     /// Account authentication or privilege changed.
@@ -393,6 +395,7 @@ impl Invalidations {
             .ok_or(DbError::InvalidInput)?;
         let id = Uuid::parse_str(id).map_err(|_| DbError::InvalidInput)?;
         match kind {
+            "library" => Ok(Invalidation::Library),
             "session" => Ok(Invalidation::Session(id)),
             "user" => Ok(Invalidation::User(UserId(id))),
             "link" => Ok(Invalidation::Link(yhotos_core::ShareLinkId(id))),

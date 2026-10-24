@@ -1,5 +1,6 @@
 ---
 source: crates/yhotos-http/src/pages/tests.rs
+assertion_line: 195
 expression: "snapshot_html(render_album(&anonymous, 1, PageSort::Taken,\n&context()).unwrap())"
 ---
 <!doctype html>
@@ -20,7 +21,8 @@ expression: "snapshot_html(render_album(&anonymous, 1, PageSort::Taken,\n&contex
 <meta property="og:image:height" content="1365">
 <meta property="og:type" content="website">
 </head>
-<body><header class="site-header"><a href="/">Yhotos</a><span>Photo gallery</span><nav aria-label="Gallery"><a href="/map">Map</a> <a href="/calendar">Calendar</a></nav></header><main><nav aria-label="Breadcrumb"><ol class="breadcrumbs"><li><a href="/">Home</a></li><li><a href="/a/gallery">Fixture gallery</a></li></ol></nav><h1>Fixture gallery</h1><p>Photos from the garden</p>
+<body><header class="site-header"><a href="/">Yhotos</a><span>Photo gallery</span><nav aria-label="Gallery"><a href="/map">Map</a> <a href="/calendar">Calendar</a></nav></header><main><nav aria-label="Breadcrumb"><ol class="breadcrumbs"><li><a href="/">Home</a></li><li><a href="/a/gallery">Fixture gallery</a></li></ol></nav><h1>Fixture gallery</h1><div class="description"><p>Photos from the garden</p>
+</div>
 
 <form method="get" class="sort-form"><label for="sort">Sort photos</label><select name="sort" id="sort">
 <option value="taken" selected>Date taken</option><option value="posted">Date posted</option><option value="name">Name</option><option value="manual">Manual order</option></select><button type="submit">Apply sorting</button></form>

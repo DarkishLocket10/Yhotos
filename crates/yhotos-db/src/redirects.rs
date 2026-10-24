@@ -51,6 +51,14 @@ impl From<RedirectTarget> for yhotos_core::access::ShareTarget {
     }
 }
 
+/// A visible, validated internal redirect and the resource whose mutations invalidate it.
+pub struct RedirectDestination {
+    /// Canonical relative path, validated against the gallery URL grammar.
+    pub path: String,
+    /// Resource that the principal is permitted to view.
+    pub target: yhotos_core::access::ShareTarget,
+}
+
 /// Constructs a relative destination only when the principal can view the stored target.
 /// Missing, deleted and restricted targets (including ancestors) resolve to no destination.
 ///
@@ -58,10 +66,9 @@ impl From<RedirectTarget> for yhotos_core::access::ShareTarget {
 /// Returns database failures; invalid stored slugs or short ids fail closed.
 pub async fn destination(
     conn: &mut PgConnection,
-    principal: &yhotos_core::access::Principal<'_>,
+    bindings: &crate::access_sql::Bindings,
     patterns: &[String],
-) -> Result<Option<String>, DbError> {
-    let bindings = crate::access_sql::visible_photos(principal);
+) -> Result<Option<RedirectDestination>, DbError> {
     let row = crate::visible_page_query!(
         r#", target AS (
       SELECT target_kind,target_id FROM legacy_redirects WHERE pattern=ANY($6)
@@ -69,14 +76,23 @@ pub async fn destination(
     ) SELECT CASE WHEN t.target_kind='photo' THEN
       (SELECT '/p/' || p.short_id FROM visible_photos p WHERE p.id=t.target_id)
       ELSE (SELECT '/a/' || a.path FROM visible_albums a WHERE a.id=t.target_id)
-      END AS destination FROM target t"#,
+      END AS destination, t.target_kind AS "target_kind!: TargetKind", t.target_id AS "target_id!" FROM target t"#,
         bindings,
         patterns
     )
     .fetch_optional(conn)
     .await?;
-    let target = row.and_then(|row| row.destination);
-    Ok(target.filter(|path| valid_destination(path)))
+    Ok(row.and_then(|row| {
+        let path = row.destination.filter(|path| valid_destination(path))?;
+        let target = RedirectTarget {
+            target_kind: row.target_kind,
+            target_id: row.target_id,
+        };
+        Some(RedirectDestination {
+            path,
+            target: target.into(),
+        })
+    }))
 }
 
 /// Accepts only canonical album and photo paths, excluding schemes, slashes and escapes.

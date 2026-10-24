@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT taken_at_override,gps_overridden,title FROM photos WHERE id=$1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "taken_at_override",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "taken_at_override"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "gps_overridden",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "gps_overridden"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "title",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "title"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "daa08adcbed96cf3f61bf8e371d52a7482c525380a1d38a045182cde277910f6"
+}

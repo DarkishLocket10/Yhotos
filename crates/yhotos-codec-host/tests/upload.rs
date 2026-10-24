@@ -19,6 +19,7 @@ use yhotos_auth::{Token, TokenKind};
 use yhotos_core::{AlbumId, Slug, UserId, access::Visibility};
 use yhotos_db::{DatabaseTls, Db, Role, albums, mfa, sessions, users};
 use yhotos_http::{AppState, auth::Auth, middleware::csrf::CsrfToken};
+use yhotos_jobs::JobHandler;
 struct Client {
     app: Router,
     state: AppState,
@@ -1187,3 +1188,339 @@ async fn tus_configured_ceiling_matches_the_host_and_is_advertised(pool: PgPool)
     );
     c.no_pending().await;
 }
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn admin_replacement_tus_preserves_identity_interactions_and_regenerates(pool: PgPool) {
+    let c = Client::new(pool.clone()).await;
+    let old = fixture("tiny-1x1.jpg");
+    let uploaded = c.upload(&old, "first.jpg").await;
+    assert_eq!(uploaded.status(), StatusCode::NO_CONTENT);
+    let photo = sqlx::query!("SELECT id,short_id,original_hash FROM photos")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let id = yhotos_core::PhotoId(photo.id);
+    let ingest = yhotos_pipeline::Ingest::new(
+        c.state.store.clone(),
+        pool.clone(),
+        env!("CARGO_BIN_EXE_yhotos-codec-host").into(),
+    );
+    ingest.ingest(id).await.unwrap();
+    let derivatives =
+        sqlx::query_scalar!("SELECT hash FROM derivatives WHERE photo_id=$1", photo.id)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_ne!(derivatives.len(), 0);
+    yhotos_db::likes::like(
+        &mut pool.acquire().await.unwrap(),
+        id,
+        yhotos_db::likes::Actor::User(c.user),
+    )
+    .await
+    .unwrap();
+    let like = sqlx::query_scalar!("SELECT id FROM likes WHERE photo_id=$1", photo.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let flag = yhotos_db::flags::flag(
+        &mut pool.acquire().await.unwrap(),
+        id,
+        yhotos_db::likes::Actor::User(c.user),
+    )
+    .await
+    .unwrap();
+    let event = Uuid::now_v7();
+    let visitor = Token::generate()
+        .hash(TokenKind::Session)
+        .as_bytes()
+        .to_vec();
+    sqlx::query!(
+        "INSERT INTO events(id,kind,photo_id,visitor_hash) VALUES($1,'photo_view',$2,$3)",
+        event,
+        photo.id,
+        visitor
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let new = fixture("gray.jpg");
+    assert!(new.len() < 8192);
+    let created = c
+        .send(
+            "POST",
+            "/admin/upload",
+            &[
+                ("upload-length", new.len().to_string()),
+                ("upload-replace-photo", photo.id.to_string()),
+                (
+                    "upload-metadata",
+                    format!(
+                        "filename {},album {},filetype {}",
+                        STANDARD.encode("replacement.jpg"),
+                        STANDARD.encode(c.album.to_string()),
+                        STANDARD.encode("image/jpeg")
+                    ),
+                ),
+            ],
+            Body::empty(),
+        )
+        .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let patched = c
+        .patch(created.headers()["location"].to_str().unwrap(), 0, &new)
+        .await;
+    assert_eq!(patched.status(), StatusCode::NO_CONTENT);
+    assert_eq!(patched.headers()["upload-result"], "replaced");
+    assert_eq!(
+        patched.headers()["location"],
+        format!("/admin/api/photos/{}", photo.short_id)
+    );
+    let after = sqlx::query!(
+        "SELECT id,short_id,original_hash,status::text AS \"status!\",generation FROM photos"
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(after.id, photo.id);
+    assert_eq!(after.short_id, photo.short_id);
+    assert_ne!(after.original_hash, photo.original_hash);
+    assert_eq!(after.status, "pending");
+    assert_eq!(after.generation, 1);
+    assert_eq!(
+        sqlx::query_scalar!("SELECT count(*) FROM photos")
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        Some(1)
+    );
+    assert_eq!(
+        sqlx::query_scalar!(
+            "SELECT count(*) FROM derivatives WHERE photo_id=$1",
+            photo.id
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap(),
+        Some(0)
+    );
+    let retained=sqlx::query!("SELECT original_hash,expires_at-created_at AS retention FROM original_trash WHERE photo_id=$1",photo.id).fetch_one(&pool).await.unwrap();
+    assert_eq!(retained.original_hash, photo.original_hash);
+    assert!(retained.retention.is_some_and(|r| r.days >= 30));
+    assert!(
+        c.state
+            .store
+            .exists(
+                yhotos_storage::Area::Originals,
+                &photo.original_hash.parse().unwrap(),
+                None
+            )
+            .await
+    );
+    assert!(
+        yhotos_db::library::original_referenced(
+            &mut pool.acquire().await.unwrap(),
+            &photo.original_hash
+        )
+        .await
+        .unwrap()
+    );
+    assert_eq!(
+        sqlx::query_scalar!("SELECT photo_id FROM likes WHERE id=$1", like)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        photo.id
+    );
+    let f = sqlx::query!(
+        "SELECT photo_id,resolution::text AS resolution FROM flags WHERE id=$1",
+        flag.id
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(f.photo_id, photo.id);
+    assert_eq!(f.resolution.as_deref(), Some("replaced"));
+    assert_eq!(
+        sqlx::query_scalar!("SELECT photo_id FROM events WHERE id=$1", event)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        Some(photo.id)
+    );
+    ingest.ingest(id).await.unwrap();
+    let new_derivatives =
+        sqlx::query_scalar!("SELECT hash FROM derivatives WHERE photo_id=$1", photo.id)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_ne!(new_derivatives.len(), 0);
+    assert_ne!(new_derivatives, derivatives);
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn admin_purge_gc_retains_shared_original_then_collects_final_reference(pool: PgPool) {
+    let c = Client::new(pool.clone()).await;
+    let bytes = fixture("tiny-1x1.jpg");
+    assert_eq!(
+        c.upload(&bytes, "fixture.jpg").await.status(),
+        StatusCode::NO_CONTENT
+    );
+    let photo = sqlx::query!("SELECT id,original_hash FROM photos")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let actor = c.user;
+    yhotos_db::library::execute(&pool,actor,&serde_json::from_value(serde_json::json!({"op":"bulk","ids":[photo.id],"action":{"kind":"copy","album_id":c.album}})).unwrap()).await.unwrap();
+    let copied = sqlx::query_scalar!("SELECT id FROM photos WHERE id<>$1", photo.id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let file = c
+        .state
+        .store
+        .open_read(
+            yhotos_storage::Area::Originals,
+            &photo.original_hash.parse().unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    file.into_std()
+        .await
+        .set_modified(std::time::SystemTime::now() - std::time::Duration::from_hours(48))
+        .unwrap();
+    let ingest = yhotos_pipeline::Ingest::new(
+        c.state.store.clone(),
+        pool.clone(),
+        env!("CARGO_BIN_EXE_yhotos-codec-host").into(),
+    );
+    for (id, expected) in [(photo.id, true), (copied, false)] {
+        yhotos_db::library::execute(
+            &pool,
+            actor,
+            &serde_json::from_value(serde_json::json!({"op":"trash","kind":"photo","id":id}))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        yhotos_db::library::execute(
+            &pool,
+            actor,
+            &serde_json::from_value(
+                serde_json::json!({"op":"purge","kind":"photo","id":id,"confirmation":"PURGE"}),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        let (job, claim) =
+            yhotos_db::jobs::claim(&mut pool.acquire().await.unwrap(), "purge-gc", &["gc"])
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            yhotos_jobs::Job::from_row(&job).unwrap(),
+            yhotos_jobs::Job::Gc
+        );
+        ingest
+            .handle(
+                &job,
+                &yhotos_jobs::JobCtx {
+                    queue: yhotos_jobs::Queue::new(pool.clone()),
+                    shutdown: tokio_util::sync::CancellationToken::new(),
+                },
+            )
+            .await
+            .unwrap();
+        assert!(
+            yhotos_db::jobs::complete(&mut pool.acquire().await.unwrap(), &claim)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            c.state
+                .store
+                .exists(
+                    yhotos_storage::Area::Originals,
+                    &photo.original_hash.parse().unwrap(),
+                    None
+                )
+                .await,
+            expected
+        );
+    }
+}
+
+#[sqlx::test(migrations = "../yhotos-db/migrations")]
+async fn final_replacement_retries_busy_tree_without_holding_album_lock(pool: PgPool) {
+    let c = Arc::new(Client::new(pool.clone()).await);
+    assert_eq!(
+        c.upload(&fixture("tiny-1x1.jpg"), "first.jpg")
+            .await
+            .status(),
+        StatusCode::NO_CONTENT
+    );
+    let photo = sqlx::query_scalar!("SELECT id FROM photos")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let bytes = fixture("gray.jpg");
+    let created = c
+        .send(
+            "POST",
+            "/admin/upload",
+            &[
+                ("upload-length", bytes.len().to_string()),
+                ("upload-replace-photo", photo.to_string()),
+                (
+                    "upload-metadata",
+                    format!(
+                        "filename {},album {},filetype {}",
+                        STANDARD.encode("replacement.jpg"),
+                        STANDARD.encode(c.album.to_string()),
+                        STANDARD.encode("image/jpeg")
+                    ),
+                ),
+            ],
+            Body::empty(),
+        )
+        .await;
+    assert_eq!(created.status(), StatusCode::CREATED);
+    let path = created.headers()["location"].to_str().unwrap().to_owned();
+    let mut edit = pool.begin().await.unwrap();
+    sqlx::query!("SELECT pg_advisory_xact_lock(20)")
+        .execute(&mut *edit)
+        .await
+        .unwrap();
+    let response = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        c.patch(&path, 0, &bytes),
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    // The final PATCH has reached the tree lock. It must not already hold the album row.
+    let command: yhotos_db::library::Command=serde_json::from_value(serde_json::json!({"op":"album_edit","id":c.album,"title":"Edited during replacement","description":"","visibility":"public","manual_order":false,"grants":[]})).unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        yhotos_db::library::execute_in(&mut edit, c.user, &command),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    edit.commit().await.unwrap();
+    let response = c.patch(&path, bytes.len(), &[]).await;
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    assert_eq!(response.headers()["upload-result"], "replaced");
+    assert_eq!(
+        sqlx::query_scalar!("SELECT title FROM albums WHERE id=$1", c.album.0)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+        "Edited during replacement"
+    );
+}
+
+#[path = "upload/lifecycle.rs"]
+mod lifecycle;

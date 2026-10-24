@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT tmp_path FROM upload_gc ORDER BY tmp_path LIMIT 100 FOR UPDATE SKIP LOCKED",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tmp_path",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "upload_gc",
+            "name": "tmp_path"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "91ff0652978df4a8155ce2ffb9a5eede6c25c3b844a41abdf89f46975f08d2f6"
+}

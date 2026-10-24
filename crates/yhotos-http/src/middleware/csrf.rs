@@ -86,6 +86,17 @@ fn canonical_token(value: &str) -> bool {
             .decode_slice(value, &mut bytes)
             .is_ok_and(|len| len == 32)
 }
+fn valid_public_api_headers(headers: &HeaderMap, expected: &str) -> bool {
+    let single = |name: &str| {
+        let mut values = headers.get_all(name).iter();
+        let value = values.next().and_then(|v| v.to_str().ok());
+        if values.next().is_some() { None } else { value }
+    };
+    single("x-requested-with") == Some("yhotos")
+        && (!headers.contains_key("sec-fetch-site")
+            || single("sec-fetch-site") == Some("same-origin"))
+        && (!headers.contains_key(header::ORIGIN) || single("origin") == Some(expected))
+}
 fn expected_origin(request: &Request, state: &crate::AppState) -> Option<String> {
     request
         .extensions()
@@ -98,6 +109,14 @@ pub(crate) async fn protect(
     request: Request,
     next: Next,
 ) -> Response {
+    if !request
+        .extensions()
+        .get::<crate::auth::Audience>()
+        .is_some_and(|a| a.0)
+        && (request.uri().path() == "/admin" || request.uri().path().starts_with("/admin/"))
+    {
+        return HttpError::NotFound.into_response();
+    }
     let state_changing = matches!(
         *request.method(),
         Method::POST | Method::PUT | Method::PATCH | Method::DELETE
@@ -106,21 +125,10 @@ pub(crate) async fn protect(
         return next.run(request).await;
     }
     if request.uri().path().starts_with("/api/v1/") {
-        let headers = request.headers();
-        let single = |name: &str| {
-            let mut values = headers.get_all(name).iter();
-            let value = values.next().and_then(|v| v.to_str().ok());
-            if values.next().is_some() { None } else { value }
-        };
         let Some(expected) = expected_origin(&request, &state) else {
             return HttpError::Csrf.into_response();
         };
-        let valid = single("x-requested-with") == Some("yhotos")
-            && (!headers.contains_key("sec-fetch-site")
-                || single("sec-fetch-site") == Some("same-origin"))
-            && (!headers.contains_key(header::ORIGIN)
-                || single("origin") == Some(expected.as_str()));
-        return if valid {
+        return if valid_public_api_headers(request.headers(), &expected) {
             next.run(request).await
         } else {
             HttpError::Csrf.into_response()

@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT rolname::text AS \"role!\",has_function_privilege(oid,'yhotos_uuid_v7()','EXECUTE') AS \"allowed!\" FROM pg_roles WHERE rolname IN ('yhotos_public','yhotos_admin','yhotos_worker')",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "role!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "allowed!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "8da3cee57279b9b497ea7909767be278b2cd8b01d227ba56e2d747716639137a"
+}

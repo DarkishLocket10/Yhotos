@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT 'album:'||id AS \"tag!\" FROM albums UNION SELECT 'photo:'||id FROM photos UNION SELECT 'place:'||place_id FROM photos WHERE place_id IS NOT NULL",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tag!",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "b7cb06739a80122a383aaeabfd6c15699bbe303a3ad9af8b000089c4892c091e"
+}

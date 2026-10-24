@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE photos SET place_id=$2,place_overridden=true WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1a1d6bc6b11624cabac7f2752d873430d33e8d79f0bd9b9c403a3b6e8b25ac4a"
+}

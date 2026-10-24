@@ -24,15 +24,24 @@ use yhotos_pipeline::Ingest;
 use yhotos_storage::TempId;
 
 /// Mounts only on the authenticated admin listener.
-pub fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/admin/upload", get(page).post(create).options(options))
-        .route(
+pub(crate) fn route_table() -> Vec<(&'static str, axum::routing::MethodRouter<AppState>)> {
+    vec![
+        ("/admin/upload", get(page).post(create).options(options)),
+        (
             "/admin/upload/{id}",
             axum::routing::head(head).patch(patch).delete(terminate),
-        )
-        .route("/admin/upload/{id}/finish", axum::routing::post(finish))
-        .route("/admin/api/photos/{id}/status", get(status))
+        ),
+        ("/admin/upload/{id}/finish", axum::routing::post(finish)),
+        ("/admin/api/photos/{id}/status", get(status)),
+    ]
+}
+/// Mounts only on the authenticated admin listener.
+pub fn routes() -> Router<AppState> {
+    route_table()
+        .into_iter()
+        .fold(Router::new(), |router, (path, methods)| {
+            router.route(path, methods)
+        })
         .layer(from_fn(protocol))
 }
 pub(crate) fn with_method_override(router: Router) -> Router {
@@ -167,6 +176,16 @@ async fn create(
     current: Current,
     headers: HeaderMap,
 ) -> Result<Response, HttpError> {
+    super::guard(&current)?;
+    let replace = headers
+        .get("upload-replace-photo")
+        .map(|v| {
+            v.to_str()
+                .ok()
+                .and_then(|s| s.parse::<Uuid>().ok())
+                .ok_or(HttpError::BadRequest)
+        })
+        .transpose()?;
     let length = number(&headers, "upload-length")?;
     if length == 0 {
         return Err(HttpError::Upload(StatusCode::UNPROCESSABLE_ENTITY));
@@ -192,6 +211,18 @@ async fn create(
             &metadata.filetype,
             &temp.to_string(),
             metadata_header,
+        )
+        .await?;
+        if let Some(photo) = replace {
+            yhotos_db::library::bind_replacement(&mut tx, row.id, photo).await?;
+        }
+        yhotos_db::audit::write_target(
+            &mut tx,
+            Some(current.0.session.user_id),
+            "upload.create",
+            "upload",
+            Some(row.id),
+            &serde_json::json!({"album_id":album,"replace_photo_id":replace}),
         )
         .await?;
         tx.commit().await?;
@@ -231,6 +262,9 @@ async fn head(
         add(&mut r, "upload-metadata", &row.metadata)?;
     }
 
+    if let Some(target) = yhotos_db::library::replacement_target(&mut tx, id).await? {
+        add(&mut r, "upload-replace-photo", target)?;
+    }
     add(&mut r, "upload-offset", row.received_bytes)?;
     add(&mut r, "upload-length", row.declared_bytes)?;
     add(&mut r, "upload-expires", expires(row.expires_at))?;
@@ -339,13 +373,14 @@ async fn patch(
         }
     })?;
     drop(file);
+    let previous_offset = row.received_bytes;
     row.received_bytes = i64::try_from(next).map_err(internal)?;
     uploads::advance(&mut tx, id, row.received_bytes).await?;
     if next < u64::try_from(row.declared_bytes).map_err(internal)? {
         tx.commit().await?;
         return progress(&row);
     }
-    complete(&state, tx, row).await
+    complete(&state, tx, row, previous_offset).await
 }
 fn progress(row: &uploads::Upload) -> Result<Response, HttpError> {
     let mut r = StatusCode::NO_CONTENT.into_response();
@@ -366,7 +401,8 @@ async fn finish(
     if row.received_bytes != row.declared_bytes {
         return Err(HttpError::Upload(StatusCode::CONFLICT));
     }
-    complete(&state, tx, row).await
+    let previous_offset = row.received_bytes;
+    complete(&state, tx, row, previous_offset).await
 }
 async fn prepare_original(
     state: &AppState,
@@ -396,12 +432,14 @@ async fn prepare_original(
         .map_err(|_| HttpError::UploadUnavailable)?;
     Ok((validated, put))
 }
+#[allow(clippy::too_many_lines)] // One upload transaction owns validation, replacement, and durable attribution.
 async fn complete(
     state: &AppState,
     mut tx: sqlx::Transaction<'_, sqlx::Postgres>,
     row: uploads::Upload,
+    previous_offset: i64,
 ) -> Result<Response, HttpError> {
-    // Both entry points hold the creator's upload lock and a share lock on its live album.
+    // Both entry points coordinate only on the creator's upload during IO and validation.
     let id = row.id;
     let temp: TempId = row.tmp_path.parse().map_err(internal)?;
     let prepared = prepare_original(state, &row, &temp).await;
@@ -424,12 +462,65 @@ async fn complete(
     };
     let mut r = progress(&row)?;
     let hash = put.hash.to_string();
+    // Serialize identical publications before taking library coordination, so
+    // competing uploads deduplicate normally rather than conflict on the tree.
     uploads::lock_hash(&mut tx, &hash).await?;
+    // No tree or album lock is held while the request body streams or the host validates.
+    // Revalidate under short-lived library coordination before changing any photo rows.
+    let unavailable = match uploads::lock_for_completion(&mut tx, row.album_id).await {
+        Ok(true) => None,
+        Ok(false) => Some(HttpError::Upload(StatusCode::CONFLICT)),
+        Err(yhotos_db::DbError::InvalidInput) => Some(HttpError::NotFound),
+        Err(error) => return Err(HttpError::from(error)),
+    };
+    if let Some(error) = unavailable {
+        // Validation may already have published bytes. Keep their GC identity even
+        // when a concurrent purge cancels this upload before it can be retried.
+        yhotos_db::library::abandoned_original(&mut tx, &hash).await?;
+        if matches!(error, HttpError::NotFound) {
+            // An unavailable destination rejects this PATCH's progress, while a
+            // busy tree retains it for an empty final PATCH retry.
+            uploads::advance(&mut tx, id, previous_offset).await?;
+        }
+        tx.commit().await?;
+        return Err(error);
+    }
+    let replacement = yhotos_db::library::replacement_target(&mut tx, id).await?;
     let existing = photos::get_by_hash(&mut tx, &hash)
         .await?
         .into_iter()
         .next();
-    let (photo, result) = if let Some(photo) = existing {
+    let mut replaced_change = None;
+    let (photo, result) = if let Some(target) = replacement {
+        let original = photos::NewPhoto {
+            album_id: row.album_id,
+            title: row.filename.clone(),
+            original_hash: hash,
+            original_name: row.filename,
+            original_bytes: row.declared_bytes,
+            mime: validated.mime.into(),
+            kind: validated.kind,
+        };
+        replaced_change = Some(
+            match yhotos_db::library::replace(&mut tx, row.user_id, target, &original).await {
+                Ok(change) => change,
+                Err(yhotos_db::DbError::InvalidInput) => {
+                    yhotos_db::library::abandoned_original(&mut tx, &original.original_hash)
+                        .await?;
+                    uploads::advance(&mut tx, id, previous_offset).await?;
+                    tx.commit().await?;
+                    return Err(HttpError::NotFound);
+                }
+                Err(error) => return Err(HttpError::from(error)),
+            },
+        );
+        (
+            photos::get_by_id(&mut tx, yhotos_core::PhotoId(target))
+                .await?
+                .ok_or(HttpError::NotFound)?,
+            "replaced",
+        )
+    } else if let Some(photo) = existing {
         (photo, "duplicate")
     } else {
         let photo = photos::create(
@@ -472,6 +563,14 @@ async fn complete(
     )
     .await?;
     tx.commit().await?;
+    if replaced_change.is_some() {
+        super::cache::changed(state);
+    } else {
+        state.files.invalidate_all();
+        if let Some(auth) = &state.auth {
+            auth.invalidate_all();
+        }
+    }
     // A crash after commit leaves only an orphan directory; the hourly sweep removes it.
     if state.store.remove_upload(&temp).await.is_err() {
         tracing::warn!(upload_id=%id,"upload cleanup deferred");
@@ -486,9 +585,10 @@ async fn complete(
 }
 async fn status(
     State(state): State<AppState>,
-    _current: Current,
+    current: Current,
     Path(id): Path<String>,
 ) -> Result<Response, HttpError> {
+    super::guard(&current)?;
     let short: ShortId = id.parse().map_err(|_| HttpError::NotFound)?;
     let mut conn = pool(&state)?.acquire().await?;
     let status = uploads::status(&mut conn, &short.to_string())
@@ -507,10 +607,11 @@ struct UploadPage<'a> {
 }
 async fn page(
     State(state): State<AppState>,
-    _current: Current,
+    current: Current,
     Extension(nonce): Extension<Nonce>,
     headers: HeaderMap,
 ) -> Result<Response, HttpError> {
+    super::guard(&current)?;
     let token = CsrfToken::for_page(&headers)?;
     let mut conn = pool(&state)?.acquire().await?;
     let albums = yhotos_db::albums::list_tree(&mut conn).await?;

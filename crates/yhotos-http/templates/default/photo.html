@@ -1,6 +1,6 @@
 {% extends "default/base.html" %}
 {% block metadata %}{% include "default/partials/og.html" %}{% endblock %}
-{% block content %}<main class="photo-page">{% include "default/partials/breadcrumbs.html" %}<h1>{{ title }}</h1><figure class="photo-image">{% include "default/partials/picture.html" %}{% if !badge.is_empty() %}<span class="badge">{{ badge }}</span>{% endif %}<figcaption>{{ description }}</figcaption></figure>
+{% block content %}<main class="photo-page">{% include "default/partials/breadcrumbs.html" %}<h1>{{ title }}</h1><figure class="photo-image">{% include "default/partials/picture.html" %}{% if !badge.is_empty() %}<span class="badge">{{ badge }}</span>{% endif %}<figcaption>{{ description_html|safe }}</figcaption></figure>
 <p><a href="{{ similar }}">More like this</a></p>
 <nav aria-label="Photo navigation" class="pagination">{% if let Some(url) = previous %}<a rel="prev" href="{{ url }}">Previous photo</a>{% endif %}{% if let Some(url) = next %}<a rel="next" href="{{ url }}">Next photo</a>{% endif %}</nav>
 {% if !downloads.is_empty() %}<details><summary>Download photo</summary><ul>{% for download in downloads %}<li><a href="{{ download.href }}" download>{{ download.label }}</a></li>{% endfor %}</ul></details>{% endif %}{% if let Some(actions) = actions %}{% include "default/share/actions.html" %}{% endif %}

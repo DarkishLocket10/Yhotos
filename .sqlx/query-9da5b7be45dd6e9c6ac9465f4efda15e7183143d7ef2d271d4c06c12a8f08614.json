@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT detail FROM audit_log WHERE action IN ('user_temporary_password','group_save','user_groups','session_revoke','user_state')",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "detail",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "audit_log",
+            "name": "detail"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9da5b7be45dd6e9c6ac9465f4efda15e7183143d7ef2d271d4c06c12a8f08614"
+}

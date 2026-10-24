@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO uploads(id,user_id,album_id,filename,declared_bytes,mime_hint,tmp_path,replace_photo_id) VALUES($1,$2,$3,'pending.jpeg',100,'image/jpeg',$4,$5)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "94fd2cfd061030897bf2b082509c78b61868bd77c9b2ff8819ee676b8a472e78"
+}

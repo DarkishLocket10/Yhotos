@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO user_groups(id,user_id,group_id) SELECT yhotos_uuid_v7(),$1,id FROM unnest($2::uuid[]) g(id)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5d23c798e35aef21486477d1a191b3dc97af149b55b33f1e1c6d378f8fad2daf"
+}

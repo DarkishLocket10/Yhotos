@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH RECURSIVE tree AS (\n       SELECT a.*,a.slug::text AS path,ARRAY[a.id] AS visited,\n         ARRAY[lpad((a.sort_order::bigint+2147483648)::text,10,'0')||':'||a.id::text] AS sort_path\n       FROM albums a WHERE parent_id IS NULL\n       UNION ALL SELECT a.*,t.path||'/'||a.slug::text,t.visited||a.id,\n         t.sort_path||(lpad((a.sort_order::bigint+2147483648)::text,10,'0')||':'||a.id::text)\n       FROM albums a JOIN tree t ON a.parent_id=t.id WHERE NOT a.id=ANY(t.visited)\n    ) SELECT coalesce(jsonb_agg(to_jsonb(t)-'visited'-'sort_path'||jsonb_build_object('grants',(SELECT coalesce(jsonb_agg(jsonb_build_object('kind',g.principal_kind,'id',g.principal_id)),'[]') FROM album_grants g WHERE g.album_id=t.id)) ORDER BY t.sort_path),'[]') AS \"state!\" FROM tree t",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "state!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "81989d5c2b2c6726c6303de1e8afc552b4cfc133d4ecf4b78f4bcfdc2ace248a"
+}

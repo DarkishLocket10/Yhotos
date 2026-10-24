@@ -60,10 +60,15 @@ async fn album_photos_and_derivatives_are_one_query(pool: PgPool) {
     sqlx::query!("INSERT INTO derivatives(id,photo_id,variant,format,hdr,hash,width,height,bytes) VALUES ($1,$2,'small','jpeg',false,$3,640,480,123)",Uuid::now_v7(),p.id.0,hash).execute(&mut conn).await.unwrap();
     let counter = Arc::new(AtomicUsize::new(0));
     let subscriber = tracing_subscriber::registry().with(QueryCount(counter.clone()));
-    let rows = photos::list_in_album(&mut conn, album.id, photos::PhotoOrder::Manual, 0, 50)
-        .with_subscriber(subscriber)
-        .await
-        .unwrap();
+    // Drop the query future/stream while its subscriber is still entered. Attaching
+    // the subscriber directly to that future can miss the SQLx logger's Drop event.
+    let rows = async {
+        photos::list_in_album(&mut conn, album.id, photos::PhotoOrder::Manual, 0, 50)
+            .await
+            .unwrap()
+    }
+    .with_subscriber(subscriber)
+    .await;
     assert_eq!(counter.load(Ordering::Relaxed), 1);
     assert_eq!(rows.len(), 1);
     let derivative = rows.first().unwrap().derivatives.get(0).unwrap();

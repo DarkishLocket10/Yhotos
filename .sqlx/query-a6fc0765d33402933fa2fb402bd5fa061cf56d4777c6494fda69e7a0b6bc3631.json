@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT p.place_overridden,l.name FROM photos p JOIN places l ON l.id=p.place_id WHERE p.id=$1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "place_overridden",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "place_overridden"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "places",
+            "name": "name"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "a6fc0765d33402933fa2fb402bd5fa061cf56d4777c6494fda69e7a0b6bc3631"
+}

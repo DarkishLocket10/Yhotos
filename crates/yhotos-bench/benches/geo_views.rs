@@ -147,6 +147,8 @@ fn benchmark_config(
     Ok(Box::leak(Box::new(yhotos_config::Config {
         ml_address: "127.0.0.1:1".into(),
         worker: yhotos_config::Worker::default(),
+        cloudflare_zone: None,
+        cloudflare_api_token: None,
         map_tiles: yhotos_config::MapTiles::default(),
         public_listen: std::net::SocketAddr::from(([127, 0, 0, 1], 18015)),
         admin_listen: None,

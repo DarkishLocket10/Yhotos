@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO embeddings(photo_id,model,vector) VALUES($1,'fixture',array_fill(1::real,ARRAY[768])::vector)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "74ff63696e5afdd640556424c1aa858cbd83f1f79bf141c5f29269d948ac5495"
+}

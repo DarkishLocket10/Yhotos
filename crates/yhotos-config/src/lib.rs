@@ -52,6 +52,10 @@ pub struct Config {
     pub upload: Upload,
     /// Structured or interactive tracing output.
     pub log_format: LogFormat,
+    /// Optional Cloudflare zone identity for administrative cache purges.
+    pub cloudflare_zone: Option<String>,
+    /// Optional edge purge credential; never logged.
+    pub cloudflare_api_token: Option<SecretString>,
     /// CPU worker limits and trusted codec executable.
     pub worker: Worker,
     /// Browser-only vector tile source, validated once at startup.
@@ -189,6 +193,8 @@ pub enum LogFormat {
 
 #[derive(Serialize)]
 struct Defaults {
+    cloudflare_zone: Option<String>,
+    cloudflare_api_token: Option<String>,
     public_listen: &'static str,
     ml_address: &'static str,
     admin_listen: Option<SocketAddr>,
@@ -208,6 +214,8 @@ struct Defaults {
 impl Default for Defaults {
     fn default() -> Self {
         Self {
+            cloudflare_zone: None,
+            cloudflare_api_token: None,
             public_listen: "0.0.0.0:8080",
             ml_address: "ml:8090",
             admin_listen: None,
@@ -309,6 +317,24 @@ impl Config {
         let max_bytes = read::<u64>(&f, "upload.max_bytes", &mut errors);
         let chunk_bytes = read::<u32>(&f, "upload.chunk_bytes", &mut errors);
         let log_format = read::<LogFormat>(&f, "log_format", &mut errors);
+        let cloudflare_zone = read::<Option<String>>(&f, "cloudflare_zone", &mut errors).flatten();
+        let cloudflare_api_token =
+            read::<Option<SecretString>>(&f, "cloudflare_api_token", &mut errors).flatten();
+        if cloudflare_zone.is_some() != cloudflare_api_token.is_some()
+            || cloudflare_zone
+                .as_ref()
+                .is_some_and(|v| v.len() != 32 || !v.bytes().all(|b| b.is_ascii_hexdigit()))
+            || cloudflare_api_token.as_ref().is_some_and(|v| {
+                v.expose_secret().is_empty()
+                    || v.expose_secret().len() > 512
+                    || !v
+                        .expose_secret()
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            })
+        {
+            errors.push("cloudflare: supply a valid zone and token together".into());
+        }
         let worker = read::<Worker>(&f, "worker", &mut errors);
         let map_tiles = read::<String>(&f, "map_tiles", &mut errors).and_then(|value| {
             match MapTiles::parse(&value) {
@@ -491,6 +517,8 @@ impl Config {
                 Some(worker),
                 Some(map_tiles),
             ) => Ok(Self {
+                cloudflare_zone,
+                cloudflare_api_token,
                 ml_address: ml_address.unwrap_or_else(|| "ml:8090".into()),
                 public_listen,
                 admin_listen,

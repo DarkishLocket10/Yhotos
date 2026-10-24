@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT coalesce(jsonb_agg(jsonb_build_object('id',u.id,'username',u.username,'disabled_at',u.disabled_at,'deleted_at',u.deleted_at,'is_admin',u.is_admin,'must_change_password',u.must_change_password,'mfa',(SELECT coalesce(jsonb_agg(jsonb_build_object('kind',kind,'label',label,'enabled_at',enabled_at)),'[]') FROM user_mfa WHERE user_id=u.id),'groups',(SELECT coalesce(jsonb_agg(group_id),'[]') FROM user_groups WHERE user_id=u.id),'sessions',(SELECT coalesce(jsonb_agg(jsonb_build_object('id',id,'last_seen_at',last_seen_at,'expires_at',expires_at,'admin',admin,'ua_class',ua_class)),'[]') FROM sessions WHERE user_id=u.id)) ORDER BY u.username),'[]') AS \"page!\" FROM users u",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "page!",
+        "type_info": "Jsonb",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "760e62e8baae45524ff2a45c5deaf66c5e6016f1ffbe53973ae644b5187476cf"
+}

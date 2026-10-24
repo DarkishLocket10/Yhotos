@@ -84,6 +84,8 @@ fn config(dir: &std::path::Path, url: secrecy::SecretString) -> BenchResult<&'st
         database_url_admin: None,
         database_url_worker: None,
         worker: yhotos_config::Worker::default(),
+        cloudflare_zone: None,
+        cloudflare_api_token: None,
         map_tiles: yhotos_config::MapTiles::default(),
         admin_base_url: None,
         data_dir: dir.to_owned(),

@@ -1,5 +1,6 @@
 ---
 source: crates/yhotos-http/src/pages/tests.rs
+assertion_line: 476
 expression: snapshot_html(detail)
 ---
 <!doctype html>
@@ -33,7 +34,8 @@ expression: snapshot_html(detail)
 <source type="image/jxl" srcset="/i/9a9d0df9335d93fd27756284451504644cfde75c1232c38956013142370e47c8/small.jxl 640w, /i/560e59ba4bdcfa9b4e62586a16d15575e7444f2064e42b69161cfb4fe63f4f57/medium.jxl 1280w, /i/55d293db28ed212a3c5c3b19a1bc0becc7be9f023cc540afc8a57b5f65e5d5ff/large.jxl 2048w" sizes="100vw">
 <source type="image/avif" srcset="/i/22a3e0e373d4af995786f78be8d28a6396eb57b451ad0d5173c6bc90d6b51897/small.avif 640w, /i/87f57d9aad1683052ee00428a56caaa120b8b00ac4112ebe36d2a315e557a474/medium.avif 1280w, /i/24d58d5f002e73354750dc552ada9b3b8e7808b4fc075b0c4c73cbd386ff5157/large.avif 2048w" sizes="100vw">
 <img src="/i/dbe20967102be0a87131e9be345f342b10e32adcde50dafbd98d00c30388febd/medium.jpeg" srcset="/i/3b2b250ebd7cbd209b5be1bab8741021edc11ebd74c187ff81f5bfdd3592e5c3/small.jpeg 640w, /i/dbe20967102be0a87131e9be345f342b10e32adcde50dafbd98d00c30388febd/medium.jpeg 1280w, /i/64124e39b9341b76e3e5d01e18c0bbd1330332b8b80a4c4531488a2d5201c636/large.jpeg 2048w" sizes="100vw" width="1500" height="1000" loading="eager" decoding="async" alt="Photo 01" data-thumbhash="AAgCBwAAAAAAAAAAAAAAAAAAAAAAAAAA">
-</picture><figcaption>Garden detail</figcaption></figure>
+</picture><figcaption><p>Garden detail</p>
+</figcaption></figure>
 <p><a href="/search?like=aaaaaaaaaaab">More like this</a></p>
 <nav aria-label="Photo navigation" class="pagination"></nav>
 <details><summary>Download photo</summary><ul><li><a href="/o/d14d9d7024a954714409ca8c6a9a0bf5325886e537a8ca32375820af184e4eab/garden.jpeg" download>Download original</a></li><li><a href="/i/3b2b250ebd7cbd209b5be1bab8741021edc11ebd74c187ff81f5bfdd3592e5c3/small.jpeg?download=1" download>Download small (640 × 426)</a></li><li><a href="/i/dbe20967102be0a87131e9be345f342b10e32adcde50dafbd98d00c30388febd/medium.jpeg?download=1" download>Download medium (1280 × 853)</a></li><li><a href="/i/64124e39b9341b76e3e5d01e18c0bbd1330332b8b80a4c4531488a2d5201c636/large.jpeg?download=1" download>Download large (2048 × 1365)</a></li></ul></details>

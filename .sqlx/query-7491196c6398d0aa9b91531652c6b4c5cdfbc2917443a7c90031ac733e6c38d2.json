@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO original_gc(original_hash) VALUES($1) ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7491196c6398d0aa9b91531652c6b4c5cdfbc2917443a7c90031ac733e6c38d2"
+}

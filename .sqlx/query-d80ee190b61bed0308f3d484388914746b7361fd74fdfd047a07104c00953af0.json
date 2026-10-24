@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE photos p SET title=replace(replace($2,'{album}',a.title),'{n}',o.n::text),description=replace(replace($3,'{album}',a.title),'{n}',o.n::text) FROM unnest($1::uuid[]) WITH ORDINALITY o(id,n),albums a WHERE p.id=o.id AND a.id=p.album_id",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d80ee190b61bed0308f3d484388914746b7361fd74fdfd047a07104c00953af0"
+}

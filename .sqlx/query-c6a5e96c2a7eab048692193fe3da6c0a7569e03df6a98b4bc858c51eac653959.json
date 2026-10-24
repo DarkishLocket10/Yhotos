@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT photo_id FROM likes WHERE id=$1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "photo_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "likes",
+            "name": "photo_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c6a5e96c2a7eab048692193fe3da6c0a7569e03df6a98b4bc858c51eac653959"
+}

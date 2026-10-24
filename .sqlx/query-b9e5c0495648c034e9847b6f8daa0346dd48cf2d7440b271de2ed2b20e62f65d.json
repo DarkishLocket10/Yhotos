@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE flags SET resolution=$2::text::flag_resolution,resolved_at=now() WHERE photo_id=$1 AND resolved_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b9e5c0495648c034e9847b6f8daa0346dd48cf2d7440b271de2ed2b20e62f65d"
+}

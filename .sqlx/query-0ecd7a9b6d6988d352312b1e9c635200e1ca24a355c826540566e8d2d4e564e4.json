@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO events(id,kind,photo_id,visitor_hash) VALUES($1,'photo_view',$2,$3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0ecd7a9b6d6988d352312b1e9c635200e1ca24a355c826540566e8d2d4e564e4"
+}

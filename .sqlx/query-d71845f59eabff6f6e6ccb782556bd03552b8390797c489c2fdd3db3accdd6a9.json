@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT place_id,place_overridden FROM photos WHERE id=$1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "place_id",
+        "type_info": "Uuid",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "place_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "place_overridden",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "photos",
+            "name": "place_overridden"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": [
+      true,
+      false
+    ]
+  },
+  "hash": "d71845f59eabff6f6e6ccb782556bd03552b8390797c489c2fdd3db3accdd6a9"
+}

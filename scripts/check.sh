@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Match deployment permissions even when the agent sandbox starts with umask 077.
+umask 027
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 # Storage tests assert 0640/0750 modes; a stricter caller umask (agent sandboxes use 077) breaks them.
@@ -28,9 +30,10 @@ export SQLX_OFFLINE=true
 
 run_step web npm --prefix web run check
 run_step fmt cargo fmt --all --check
+run_step build-islands npm --prefix web run build
 run_step clippy cargo clippy --workspace --all-targets --all-features -- -D warnings
 run_step test cargo test --workspace --all-features
-run_step islands node --test crates/yhotos-http/tests/passkey_redirect.mjs crates/yhotos-http/tests/upload.mjs
+run_step islands node --test crates/yhotos-http/tests/passkey_redirect.mjs crates/yhotos-http/tests/upload.mjs crates/yhotos-http/tests/admin_library/islands.mjs
 run_step deny cargo deny check
 run_step audit cargo audit
 

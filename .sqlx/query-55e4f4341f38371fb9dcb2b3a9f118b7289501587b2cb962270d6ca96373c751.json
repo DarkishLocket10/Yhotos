@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE photos SET status=$2::text::photo_status,failure_reason=CASE WHEN $2='failed' THEN 'fixture failure' END WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "55e4f4341f38371fb9dcb2b3a9f118b7289501587b2cb962270d6ca96373c751"
+}

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO photo_grants(id,photo_id,principal_kind,principal_id) SELECT yhotos_uuid_v7(),p.id,g.kind::principal_kind,g.id FROM unnest($1::uuid[]) p(id) CROSS JOIN jsonb_to_recordset($2) g(kind text,id uuid)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "35a4481f38b421f71de07d577d4766453b4830e34beea4a8aaaa1e84ebe77490"
+}

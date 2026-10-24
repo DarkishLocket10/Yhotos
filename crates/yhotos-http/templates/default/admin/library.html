@@ -1,0 +1,28 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="csrf-token" content="{{ csrf }}"><title>{{ title }} · Yhotos admin</title><link rel="stylesheet" href="{{ stylesheet }}"><script type="module" nonce="{{ nonce }}" src="{{ script }}"></script></head>
+<body><a href="#content">Skip to content</a><header><a href="/admin">Yhotos administration</a><nav aria-label="Administration">
+<a href="/admin/albums">Albums</a> <a href="/admin/upload">Upload</a> <a href="/admin/trash">Trash</a> <a href="/admin/flags">Flags</a> <a href="/admin/likes">Likes</a> <a href="/admin/users">Users</a> <a href="/admin/groups">Groups</a> <a href="/admin/links">Share links</a> <a href="/admin/jobs">Jobs</a> <a href="/admin/audit">Audit log</a>
+</nav></header><main id="content" data-admin-page="{{ name }}" data-album="{{ album }}" data-manual="{{ manual }}"><h1>{{ title }}</h1>
+<p role="status" aria-live="polite" id="admin-status"></p>
+{% if name == "audit" %}<form method="get"><label>Filter by action, user ID, or target ID <input name="q" value="{{ filter }}" maxlength="128"></label><button>Filter audit log</button></form><a href="?page={{ next }}&amp;q={{ filter|urlencode }}">Next 100 entries</a>{% endif %}
+{% if name == "jobs" %}<form method="get"><label>Job state <select name="q"><option value="">All jobs</option>{% for state in ["running", "failed", "pending", "complete"] %}<option value="{{ state }}"{% if filter == *state %} selected{% endif %}>{{ state }}</option>{% endfor %}</select></label><button>Filter jobs</button></form><a href="?page={{ next }}&amp;q={{ filter|urlencode }}">Next 100 jobs</a> <a href="?q={{ filter|urlencode }}">First page</a>{% endif %}
+{% if !counts.is_empty() %}<dl>{% for (label, value) in counts %}<dt>{{ label }}</dt><dd>{{ value }}</dd>{% endfor %}</dl>{% endif %}
+{% if name == "album" %}<p>Copy creates a second photo row sharing the immutable original and derivatives. Likes and flags remain on the source photo.</p><div><button type="button" id="select-all">Select all</button> <button type="button" id="select-none">Clear selection</button><span id="selection-count" aria-live="polite">0 photos selected</span></div>
+{% if manual %}<p>Drag photos to reorder. Keyboard: focus a photo and press Alt + Up or Alt + Down.</p><button type="button" id="save-photo-order">Save photo order</button>{% endif %}
+<button type="button" disabled aria-describedby="zip-status">Download originals as a zip</button><p id="zip-status">Zip downloads will be available in a later release.</p>{% endif %}
+{% if name == "albums" %}<p>Drag an album onto another album to make it a child. Drop near the top of an album to place it before that album; drop lower to make it a child. Each album also has Move up, Move down, Indent, Outdent, and Move to parent controls.</p>{% endif %}
+{% if name == "photo" %}<section id="replace"><h2>Replace original</h2><p>The new file keeps this photo's URL, likes, flags, and analytics. Its previous original remains in trash for 30 days.</p><label>New original file <input type="file" id="replace-file" data-photo="{{ cards[0].id }}" data-album="{{ album }}" data-chunk-bytes="{{ chunk }}"></label><button type="button" id="replace-start">Upload replacement</button><progress id="replace-progress" value="0" max="100">0%</progress></section>{% endif %}
+{% if name != "album" %}{% for form in forms %}{% include "form.html" %}{% endfor %}{% endif %}
+<section class="admin-cards" aria-label="{{ title }} entries">
+{% for card in cards %}<article class="admin-card" data-id="{{ card.id }}" data-parent="{{ card.parent }}" {% if card.selectable || name == "albums" %}draggable="true" tabindex="0"{% endif %}>
+<h2>{% if !card.href.is_empty() %}<a href="{{ card.href }}">{{ card.title }}</a>{% else %}{{ card.title }}{% endif %}</h2>
+{% if card.selectable %}<label><input type="checkbox" class="photo-select" value="{{ card.id }}">Select {{ card.title }}</label>{% endif %}
+{% if !card.preview.is_empty() %}<img src="{{ card.preview }}" alt="{{ card.title }}" width="240" height="160" loading="lazy">{% endif %}
+<p>{{ card.badges }}</p>{% if !card.description.is_empty() %}<div>{{ card.description|safe }}</div>{% endif %}
+{% if !card.download.is_empty() %}<a href="{{ card.download }}" download>Download original for re-editing</a>{% endif %}
+{% if name == "flags" %}<a href="{{ card.href }}#replace">Replace original</a>{% endif %}
+{% if !card.details.is_empty() %}<dl>{% for (key,value) in card.details %}<dt>{{ key }}</dt><dd><pre>{{ value }}</pre></dd>{% endfor %}</dl>{% endif %}
+{% for form in card.forms %}{% include "form.html" %}{% endfor %}
+</article>{% endfor %}</section>
+{% if name == "album" %}{% for form in forms %}{% include "form.html" %}{% endfor %}{% endif %}
+{% if cards.is_empty() %}<p>No entries yet.</p>{% endif %}
+</main><dialog id="admin-secret"><h2>Copy this value now</h2><p>This value is shown once. It will not be available after closing.</p><output id="secret-value"></output><button type="button" id="secret-copy">Copy value</button><button type="button" id="secret-close">Close</button></dialog></body></html>

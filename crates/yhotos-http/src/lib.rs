@@ -8,6 +8,7 @@ mod api;
 pub mod auth;
 pub mod error;
 pub mod files;
+mod markdown;
 pub mod middleware;
 pub mod pages;
 pub mod search;
@@ -107,6 +108,7 @@ fn file_routes() -> Router<AppState> {
 /// Compiles only with `admin`, and must be served on the separate admin socket.
 #[cfg(feature = "admin")]
 pub fn admin_router(state: AppState) -> Router {
+    state.start_cache_worker();
     admin::upload::with_method_override(stack(
         Router::new()
             .merge(gallery_routes())
@@ -114,10 +116,10 @@ pub fn admin_router(state: AppState) -> Router {
             .merge(api::routes())
             .merge(auth::routes(auth::Audience(true)))
             .merge(admin::upload::routes())
+            .merge(admin::routes())
             .merge(share::admin_routes())
             .merge(search::people::routes())
             .route("/admin/healthz", get(health))
-            .route("/admin/", get(health))
             .route("/admin/setup-mfa", get(auth::security::setup))
             .route("/static/{*path}", get(static_assets::serve)),
         state,

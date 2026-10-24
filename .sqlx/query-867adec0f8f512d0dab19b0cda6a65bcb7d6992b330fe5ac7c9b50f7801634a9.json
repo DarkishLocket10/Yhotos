@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE users SET password_hash=$2,must_change_password=true WHERE id=$1 AND NOT is_admin AND deleted_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "867adec0f8f512d0dab19b0cda6a65bcb7d6992b330fe5ac7c9b50f7801634a9"
+}

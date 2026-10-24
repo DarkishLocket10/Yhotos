@@ -286,6 +286,45 @@ fn parse_derivative(name: &str) -> Option<(ContentHash, &str, &str, bool)> {
     Some((hash, variant, format, hdr))
 }
 
+impl Store {
+    /// Unlinks one queued original only after the grace period and a fresh reference check,
+    /// under the publication lock. Re-publication refreshes mtime before releasing that lock.
+    /// The callback runs on a blocking worker and must fail closed on database errors.
+    /// # Errors
+    /// Rejects unsafe storage entries and reports redacted filesystem failures.
+    pub async fn collect_original(
+        &self,
+        hash: ContentHash,
+        min_age: Duration,
+        keep: impl FnOnce() -> bool + Send + 'static,
+    ) -> Result<bool, StorageError> {
+        let store = self.clone();
+        blocking(move || {
+            let _lock = store.lock_publication(std::fs::File::lock)?;
+            let path = store.path_original(&hash);
+            if !path.exists() {
+                return Ok(true);
+            }
+            store.check_path(&path, true)?;
+            let modified = std::fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .map_err(|e| store.error("original age", &path, e))?;
+            if SystemTime::now()
+                .duration_since(modified)
+                .unwrap_or_default()
+                <= min_age
+                || keep()
+            {
+                return Ok(false);
+            }
+            std::fs::remove_file(&path).map_err(|e| store.error("collect original", &path, e))?;
+            store.sync_parent(&path)?;
+            Ok(true)
+        })
+        .await
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE users SET disabled_at=CASE WHEN $2 OR $3 THEN now() ELSE NULL END,deleted_at=CASE WHEN $3 THEN now() ELSE deleted_at END WHERE id=$1 AND NOT is_admin AND (deleted_at IS NULL OR $3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bool",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "372504c9509625ce987fa334130771d7bc2fdd348de3c75fa32df861c5d59301"
+}

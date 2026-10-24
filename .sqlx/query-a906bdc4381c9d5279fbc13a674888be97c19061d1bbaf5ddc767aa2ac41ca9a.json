@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE jobs SET locked_by='matrix-worker',locked_at=now(),attempts=1 WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a906bdc4381c9d5279fbc13a674888be97c19061d1bbaf5ddc767aa2ac41ca9a"
+}

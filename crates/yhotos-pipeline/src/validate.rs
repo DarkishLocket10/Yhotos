@@ -101,7 +101,7 @@ impl Ingest {
             },
         })
     }
-    /// Sweeps expired upload rows under locks and abandoned durable directories after 24 hours.
+    /// Removes cancelled and expired uploads under locks, then orphans older than 24 hours.
     /// # Errors
     /// Returns retryable failures without leaking storage paths.
     pub async fn sweep_uploads(&self) -> Result<(), JobError> {
@@ -114,6 +114,22 @@ impl Ingest {
             yhotos_db::uploads::remove_expired_completions(&mut tx)
                 .await
                 .map_err(|_| retry("upload sweep failed"))?;
+            let cancelled = yhotos_db::uploads::cancelled(&mut tx)
+                .await
+                .map_err(|_| retry("upload sweep failed"))?;
+            let cancelled_count = cancelled.len();
+            for temp in cancelled {
+                let id: TempId = temp
+                    .parse()
+                    .map_err(|_| retry("invalid upload identifier"))?;
+                self.store
+                    .remove_upload(&id)
+                    .await
+                    .map_err(|_| retry("upload cleanup failed"))?;
+                yhotos_db::uploads::cancellation_done(&mut tx, &temp)
+                    .await
+                    .map_err(|_| retry("upload sweep failed"))?;
+            }
             let rows = yhotos_db::uploads::expired(&mut tx)
                 .await
                 .map_err(|_| retry("upload sweep failed"))?;
@@ -134,7 +150,7 @@ impl Ingest {
             tx.commit()
                 .await
                 .map_err(|_| retry("upload sweep failed"))?;
-            if count < 100 {
+            if count < 100 && cancelled_count < 100 {
                 break;
             }
         }
@@ -164,6 +180,74 @@ impl Ingest {
                     .remove_upload(&id)
                     .await
                     .map_err(|_| retry("upload cleanup failed"))?;
+            }
+        }
+        self.collect_library_trash().await?;
+        Ok(())
+    }
+    async fn collect_library_trash(&self) -> Result<(), JobError> {
+        // Storage performs the final age and reference check under the publication lock.
+        // A day exceeds every upload deadline, so a fresh publication always has time to commit.
+        let runtime = tokio::runtime::Handle::current();
+        let pool = self.db.clone();
+        self.store
+            .gc(
+                move |hash, _| {
+                    runtime.block_on(async {
+                        match pool.acquire().await {
+                            Ok(mut c) => {
+                                yhotos_db::library::derivative_referenced(&mut c, &hash.to_string())
+                                    .await
+                                    .unwrap_or(true)
+                            }
+                            Err(_) => true,
+                        }
+                    })
+                },
+                Duration::from_hours(24),
+                Duration::from_hours(720),
+            )
+            .await
+            .map_err(|_| retry("storage cleanup failed"))?;
+        let mut conn = self
+            .db
+            .acquire()
+            .await
+            .map_err(|_| retry("original cleanup failed"))?;
+        let candidates = yhotos_db::library::gc_candidates(&mut conn)
+            .await
+            .map_err(|_| retry("original cleanup failed"))?;
+        drop(conn);
+        for candidate in candidates {
+            let hash = candidate
+                .parse()
+                .map_err(|_| retry("invalid original identity"))?;
+            let pool = self.db.clone();
+            let runtime = tokio::runtime::Handle::current();
+            let checked = candidate.clone();
+            if self
+                .store
+                .collect_original(hash, Duration::from_hours(24), move || {
+                    runtime.block_on(async {
+                        match pool.acquire().await {
+                            Ok(mut c) => yhotos_db::library::original_referenced(&mut c, &checked)
+                                .await
+                                .unwrap_or(true),
+                            Err(_) => true,
+                        }
+                    })
+                })
+                .await
+                .map_err(|_| retry("original cleanup failed"))?
+            {
+                let mut conn = self
+                    .db
+                    .acquire()
+                    .await
+                    .map_err(|_| retry("original cleanup failed"))?;
+                yhotos_db::library::gc_done(&mut conn, &candidate)
+                    .await
+                    .map_err(|_| retry("original cleanup failed"))?;
             }
         }
         Ok(())

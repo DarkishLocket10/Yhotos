@@ -96,12 +96,20 @@ fn guard(current: &Current) -> Result<(), HttpError> {
         Err(HttpError::NotFound)
     }
 }
+pub(super) fn route_table() -> Vec<(&'static str, axum::routing::MethodRouter<AppState>)> {
+    vec![
+        ("/admin/api/share-links", post(create)),
+        ("/admin/api/share-links/{id}", patch(update)),
+        ("/admin/api/share-links/{id}/revoke", post(revoke)),
+        ("/admin/api/share-links/{id}/stats", get(stats)),
+    ]
+}
 pub(super) fn routes() -> Router<AppState> {
-    Router::new()
-        .route("/admin/api/share-links", post(create))
-        .route("/admin/api/share-links/{id}", patch(update))
-        .route("/admin/api/share-links/{id}/revoke", post(revoke))
-        .route("/admin/api/share-links/{id}/stats", get(stats))
+    route_table()
+        .into_iter()
+        .fold(Router::new(), |router, (path, methods)| {
+            router.route(path, methods)
+        })
 }
 async fn create(
     State(state): State<AppState>,
@@ -140,12 +148,13 @@ async fn create(
         },
     )
     .await?;
+    let after = yhotos_db::library::link_state(&mut tx, link.id.0).await?;
     audit::write(
         &mut tx,
         Some(current.0.session.user_id),
         "share_created",
         Some(link.id.0),
-        &serde_json::json!({}),
+        &serde_json::json!({"before":null,"after":after}),
     )
     .await?;
     tx.commit().await?;
@@ -169,6 +178,7 @@ async fn update(
     Json(input): Json<Patch>,
 ) -> Result<StatusCode, HttpError> {
     guard(&current)?;
+    let passphrase_changed = input.passphrase.is_some();
     let passphrase = match input.passphrase {
         Some(value) => Some(hash(&state, value).await?),
         None => None,
@@ -184,6 +194,7 @@ async fn update(
     let row = share_links::get_for_update(&mut tx, id)
         .await?
         .ok_or(HttpError::NotFound)?;
+    let before = yhotos_db::library::link_state(&mut tx, id.0).await?;
     let mut flags = scoped(&row).caps;
     if let Some(v) = input.allow_view {
         flags.view = v;
@@ -211,12 +222,13 @@ async fn update(
         )
         .await?;
     }
+    let after = yhotos_db::library::link_state(&mut tx, id.0).await?;
     audit::write(
         &mut tx,
         Some(current.0.session.user_id),
         "share_updated",
         Some(id.0),
-        &serde_json::json!({}),
+        &serde_json::json!({"before":before,"after":after,"passphrase_changed":passphrase_changed}),
     )
     .await?;
     tx.commit().await?;
@@ -232,15 +244,20 @@ async fn revoke(
     let auth = auth::required(&state)?;
     let mut c = auth.db(Audience(true))?.pool().acquire().await?;
     let mut tx = c.begin().await?;
+    share_links::get_for_update(&mut tx, ShareLinkId(id))
+        .await?
+        .ok_or(HttpError::NotFound)?;
+    let before = yhotos_db::library::link_state(&mut tx, id).await?;
     if share_links::revoke(&mut tx, ShareLinkId(id)).await? == 0 {
         return Err(HttpError::NotFound);
     }
+    let after = yhotos_db::library::link_state(&mut tx, id).await?;
     audit::write(
         &mut tx,
         Some(current.0.session.user_id),
         "share_revoked",
         Some(id),
-        &serde_json::json!({}),
+        &serde_json::json!({"before":before,"after":after}),
     )
     .await?;
     tx.commit().await?;

@@ -288,7 +288,7 @@ async fn pagination_sorting_counts_and_private_cache(pool: PgPool) {
     );
     assert_eq!(
         response.headers()["cache-tag"],
-        format!("album:{}", f.album)
+        format!("album:{},visibility", f.album)
     );
     for cookie in ["ys=invalid", "__Host-ys=invalid", "share=invalid"] {
         let mut req = Fixture::request("/a/gallery");
