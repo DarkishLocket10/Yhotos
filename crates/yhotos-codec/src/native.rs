@@ -105,6 +105,12 @@ impl Image {
         NonNull::new(output).map(Self).ok_or(CodecError::Decode)
     }
     pub(crate) fn load(path: &Path, kind: &Kind) -> Result<Self, CodecError> {
+        Self::load_inner(path, kind, false)
+    }
+    pub(crate) fn load_sdr(path: &Path, kind: &Kind) -> Result<Self, CodecError> {
+        Self::load_inner(path, kind, true)
+    }
+    fn load_inner(path: &Path, kind: &Kind, force_sdr: bool) -> Result<Self, CodecError> {
         init()?;
         let info = if matches!(kind, Kind::Heif | Kind::Avif) {
             Some(crate::bmff::heif_info(
@@ -123,7 +129,7 @@ impl Image {
         if matches!(kind, Kind::Heif) {
             return Err(CodecError::Unsupported);
         }
-        let image = if info.as_ref().is_some_and(|i| i.sdr_only) {
+        let image = if force_sdr || info.as_ref().is_some_and(|i| i.sdr_only) {
             Err(CodecError::Decode)
         } else {
             operation!(|out| match kind {
@@ -149,6 +155,11 @@ impl Image {
                 };
                 Self::heif_source(&bytes)?
             }
+            Err(_) if *kind == Kind::Jxl => {
+                let bytes = crate::hdr::read(input_path, &crate::Limits::default())?;
+                let bytes = crate::gain_container::jxl_sdr(&bytes)?;
+                Self::jxl_sdr_buffer(&bytes, &crate::Limits::default())?
+            }
             Err(error) => return Err(error),
         };
         if let Some(info) = &info {
@@ -167,6 +178,23 @@ impl Image {
             return image.with_profile(nclx_profile(nclx)?);
         }
         Ok(image)
+    }
+    pub(crate) fn jxl_sdr_buffer(bytes: &[u8], limits: &crate::Limits) -> Result<Self, CodecError> {
+        init()?;
+        // Metadata-only and fuzz callers also check dimensions before pixels.
+        jxl_stored_identity(bytes, limits)?;
+        // SAFETY: the buffer loader borrows bytes until evaluation. Materialization
+        // completes before this checked container buffer is released. The
+        // malformed-JXL corpus decodes/encodes after this function returns.
+        let image = operation!(|out| ffi::vips_jxlload_buffer(
+            bytes.as_ptr().cast_mut().cast(),
+            bytes.len(),
+            out,
+            c"fail_on".as_ptr(),
+            3i32,
+            END
+        ))?;
+        image.materialize()
     }
     fn heif_source(bytes: &[u8]) -> Result<Self, CodecError> {
         // SAFETY: blob_copy owns a copy of the bounded container. The source
@@ -583,8 +611,10 @@ impl Image {
         let scale = match self.format() {
             ffi::VipsBandFormat_VIPS_FORMAT_UCHAR => 257.0,
             ffi::VipsBandFormat_VIPS_FORMAT_USHORT
-                if self.string("vips-loader").as_deref() == Some("heifload")
-                    && matches!(self.bits(), 10 | 12) =>
+                if matches!(
+                    self.string("vips-loader").as_deref(),
+                    Some("heifload" | "heifload_source")
+                ) && matches!(self.bits(), 10 | 12) =>
             {
                 let bits = self.bits();
                 let opaque = ((1u32 << bits) - 1) << (16 - bits);

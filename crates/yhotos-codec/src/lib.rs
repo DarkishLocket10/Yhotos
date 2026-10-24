@@ -284,7 +284,16 @@ pub fn decode(path: &Path, id: &Identity, limits: &Limits) -> Result<Working, Co
     if matches!(id.kind, Kind::Raw(_)) {
         return raw::decode(path, limits);
     }
-    let mut working = from_image(native::Image::load(path, &id.kind)?)?;
+    let mut working = match from_image(native::Image::load(path, &id.kind)?) {
+        Ok(working) => working,
+        // Some native versions defer optional-container validation until pixels
+        // are evaluated. Retry the same bounded SDR projection used for header
+        // failures, preserving its color, orientation, metadata and alpha.
+        Err(_) if id.has_gain_map && matches!(id.kind, Kind::Heif | Kind::Avif | Kind::Jxl) => {
+            from_image(native::Image::load_sdr(path, &id.kind)?)?
+        }
+        Err(error) => return Err(error),
+    };
     if id.has_gain_map {
         match hdr::extract(path, id, limits) {
             Ok(gain_map) => working.gain_map = Some(gain_map),
@@ -373,6 +382,56 @@ pub fn resize(w: &Working, spec: ResizeSpec) -> Result<Working, CodecError> {
         alpha: w.alpha,
         gain_map,
         hdr_skipped_reason,
+    })
+}
+
+/// Validates a normalized face box and returns a square 256 px private preview.
+/// Boxes must be finite, inside [0,1], ordered, and at least .01 on each axis.
+/// The crop includes the box where the source bounds permit and strips no pixels
+/// outside the source. Upscaling is allowed for these administrative previews.
+///
+/// # Errors
+/// Returns `Options` for an invalid or sub-two-pixel box, or native crop errors.
+pub fn crop_face(w: &Working, bbox: [f32; 4]) -> Result<Working, CodecError> {
+    let [x1, y1, x2, y2] = bbox;
+    if bbox
+        .iter()
+        .any(|v| !v.is_finite() || !(0.0..=1.0).contains(v))
+        || x2 - x1 < 0.01
+        || y2 - y1 < 0.01
+    {
+        return Err(CodecError::Options);
+    }
+    let (width, height) = w.dimensions()?;
+    let (fw, fh) = (f64::from(width), f64::from(height));
+    let bw = f64::from(x2 - x1) * fw;
+    let bh = f64::from(y2 - y1) * fh;
+    if bw < 2.0 || bh < 2.0 {
+        return Err(CodecError::Options);
+    }
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let side = (bw.max(bh).ceil() as u32).min(width.min(height));
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let left = ((f64::from(x1 + x2) * fw - f64::from(side)) / 2.0).max(0.0) as u32;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let top = ((f64::from(y1 + y2) * fh - f64::from(side)) / 2.0).max(0.0) as u32;
+    let mut image = w
+        .image
+        .crop(left.min(width - side), top.min(height - side), side, side)?;
+    if w.alpha {
+        image = image.premultiply()?;
+    }
+    image = image.resize(256.0 / f64::from(side))?;
+    if w.alpha {
+        image = image.unpremultiply()?;
+    }
+    Ok(Working {
+        identity: Arc::new(()),
+        gain_map: None,
+        hdr_skipped_reason: None,
+        image: image.cast(native::USHORT)?,
+        profile: w.profile.clone(),
+        alpha: w.alpha,
     })
 }
 

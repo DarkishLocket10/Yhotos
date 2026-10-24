@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO face_crops(face_id,bbox,source_hash,hash,bytes) SELECT f.id,f.bbox,d.hash,$4,$5 FROM faces f JOIN persons p ON p.id=f.person_id JOIN photos photo ON photo.id=f.photo_id JOIN derivatives d ON d.photo_id=photo.id AND d.variant='medium' AND d.format='jpeg' AND NOT d.hdr WHERE f.id=$1 AND f.bbox=$2 AND d.hash=$3 AND NOT p.hidden AND photo.deleted_at IS NULL AND photo.status='ready' ON CONFLICT(face_id) DO UPDATE SET bbox=excluded.bbox,source_hash=excluded.source_hash,hash=excluded.hash,bytes=excluded.bytes",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Float4Array",
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "13190c091a9c4453cd3dbe833f35d76eb469b5af08370fcc669cd413c5389e88"
+}

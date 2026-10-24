@@ -13,3 +13,5 @@ Check, in this order:
 7. Style. Only where it hides a bug or violates AGENTS.md. Do not comment on taste.
 
 End with one line: VERDICT: approve | request-changes, and a one-sentence reason.
+
+Maintainer decisions recorded in `docs/decisions.md` are binding and override older text in briefs and design documents. Do not report an implementation of a recorded decision as a scope violation; report it only if it implements the decision incorrectly.

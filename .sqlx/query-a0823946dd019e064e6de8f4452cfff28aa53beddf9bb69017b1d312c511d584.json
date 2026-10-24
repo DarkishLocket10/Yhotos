@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO albums(id,slug,title,visibility) VALUES($1,$2,'Admin gallery','restricted')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        {
+          "Custom": {
+            "name": "citext",
+            "kind": "Simple"
+          }
+        }
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a0823946dd019e064e6de8f4452cfff28aa53beddf9bb69017b1d312c511d584"
+}

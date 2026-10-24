@@ -402,6 +402,9 @@ pub fn validate_gain_map_metadata(bytes: &[u8]) -> Result<(), CodecError> {
         }
     }
     if bytes.starts_with(b"\0\0\0\x0cJXL ") {
+        if let Ok(base) = crate::gain_container::jxl_sdr(bytes) {
+            let _ = native::Image::jxl_sdr_buffer(&base, &limits);
+        }
         let _ = crate::gain_container::jxl(bytes, &limits);
     }
     Ok(())

@@ -54,6 +54,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         criterion.bench_function(&format!("hdr/identify_avif_tmap/{form}"), |b| {
             b.iter(|| yhotos_codec::identify(black_box(path), &Limits::default()));
         });
+        criterion.bench_function(&format!("hdr/metadata_avif_tmap/{form}"), |b| {
+            b.iter(|| yhotos_codec::metadata(black_box(path)));
+        });
         if let Ok(identity) = yhotos_codec::identify(path, &Limits::default()) {
             criterion.bench_function(&format!("hdr/decode_avif_tmap/{form}"), |b| {
                 b.iter(|| yhotos_codec::decode(black_box(path), &identity, &Limits::default()));

@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT has_table_privilege('yhotos_public','faces','SELECT') AS allowed",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "allowed",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "8687d496b0f941f5ad0dbbdd7f1d90cb4187c12dcd8e117081258006d5a018a6"
+}

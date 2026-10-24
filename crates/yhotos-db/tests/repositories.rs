@@ -346,10 +346,26 @@ async fn photos_all_operations_and_replacement_preserves_identity(pool: PgPool) 
     let f = flags::flag(&mut conn, p.id, likes::Actor::User(u.id))
         .await
         .unwrap();
+    // Replacement must invalidate even a completed zero-face ML run.
+    sqlx::query!(
+        "INSERT INTO face_runs(photo_id,model,source_hash) VALUES($1,'fixture',$2)",
+        p.id.0,
+        hash()
+    )
+    .execute(&mut *conn)
+    .await
+    .unwrap();
     let new_original = original(a.id);
     photos::replace_original(&mut conn, p.id, &new_original, &metadata)
         .await
         .unwrap();
+    assert_eq!(
+        sqlx::query_scalar!("SELECT count(*) FROM face_runs WHERE photo_id=$1", p.id.0)
+            .fetch_one(&mut *conn)
+            .await
+            .unwrap(),
+        Some(0)
+    );
     let replaced = photos::get_by_short_id(&mut conn, &p.short_id)
         .await
         .unwrap()

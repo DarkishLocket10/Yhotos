@@ -29,6 +29,7 @@ pub(crate) struct HeifInfo {
 
 const MAX_BOXES: usize = 4096;
 const MAX_DEPTH: u8 = 8;
+const MAX_FTYP: u64 = 4096;
 const MAX_METADATA: u64 = 16 << 20;
 
 struct BoxHeader {
@@ -211,10 +212,21 @@ impl Walker {
                 ..
             } = head;
             match (context, &kind) {
-                (Context::Top, b"ftyp") if self.optional_fallback => {
+                (Context::Top, b"ftyp") => {
+                    // Only the initial, small file-type box may supply brands.
+                    // Reject a duplicate before reading any of its payload.
+                    if offset != 0 || payload != 8 || box_end < 16 || !box_end.is_multiple_of(4) {
+                        return Err(CodecError::Decode);
+                    }
+                    if box_end > MAX_FTYP {
+                        return Err(CodecError::Limits);
+                    }
                     let mut at = payload;
                     while at + 4 <= box_end {
-                        if at != payload + 4 && self.read::<4>(at, box_end)? == *b"tmap" {
+                        if at != payload + 4
+                            && self.read::<4>(at, box_end)? == *b"tmap"
+                            && self.optional_fallback
+                        {
                             info.gain_map = true;
                         }
                         at += 4;
@@ -567,6 +579,12 @@ impl Walker {
         {
             return bytes.try_into().map_err(|_| CodecError::Decode);
         }
+        // Every physical header/field read shares the scan byte budget.
+        // Buffered meta slices were charged once when they were loaded.
+        self.metadata_remaining = self
+            .metadata_remaining
+            .checked_sub(N as u64)
+            .ok_or(CodecError::Limits)?;
         let mut bytes = [0; N];
         self.file
             .seek(SeekFrom::Start(offset))
@@ -644,7 +662,7 @@ impl Walker {
             return Err(CodecError::Decode);
         }
         // Check the actual ftyp extent, not bytes from later boxes.
-        if end > 4096 {
+        if end > MAX_FTYP {
             return Err(CodecError::Limits);
         }
         let mut canon = self.read::<4>(payload, end)? == *b"crx ";
@@ -794,7 +812,7 @@ pub(crate) fn brand_kind(mut file: File) -> Result<crate::Kind, CodecError> {
         head[..4].try_into().map_err(|_| CodecError::Decode)?,
     ));
     if &head[4..] != b"ftyp"
-        || !(16..=4096).contains(&size)
+        || !(16..=MAX_FTYP).contains(&size)
         || size > len
         || !size.is_multiple_of(4)
     {
@@ -930,4 +948,83 @@ pub(crate) fn video_dimensions(
         at = movie.end;
     }
     Ok(first.flatten())
+}
+
+#[cfg(test)]
+mod scan_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use std::io::Write;
+
+    fn boxed(kind: &[u8], data: &[u8]) -> Vec<u8> {
+        let mut result = u32::try_from(data.len() + 8)
+            .unwrap()
+            .to_be_bytes()
+            .to_vec();
+        result.extend(kind);
+        result.extend(data);
+        result
+    }
+
+    #[test]
+    fn duplicate_ftyp_rejected_before_large_payload_is_scanned() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(&boxed(b"ftyp", b"avif\0\0\0\0avif"))
+            .unwrap();
+        file.write_all(&(32_u32 << 20).to_be_bytes()).unwrap();
+        file.write_all(b"ftyp").unwrap();
+        // Sparse payload: the regression must reject on the second header,
+        // without millions of physical brand reads or allocating its payload.
+        file.as_file().set_len((32 << 20) + 20).unwrap();
+        for fallback in [false, true] {
+            assert!(matches!(
+                heif_info_inner(file.reopen().unwrap(), fallback),
+                Err(CodecError::Decode)
+            ));
+        }
+    }
+
+    #[test]
+    fn first_ftyp_size_and_all_box_counts_and_read_bytes_are_bounded() {
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(&boxed(b"ftyp", &vec![0; 8192])).unwrap();
+        assert!(matches!(
+            heif_info(file.reopen().unwrap()),
+            Err(CodecError::Limits)
+        ));
+        let mut bytes = boxed(b"ftyp", b"avif\0\0\0\0avif");
+        bytes.extend(boxed(b"free", &[]).repeat(MAX_BOXES));
+        std::fs::write(file.path(), &bytes).unwrap();
+        assert!(matches!(
+            heif_info(file.reopen().unwrap()),
+            Err(CodecError::Limits)
+        ));
+        assert!(matches!(
+            video_dimensions(file.reopen().unwrap(), &crate::Limits::default()),
+            Err(CodecError::Limits)
+        ));
+        // Check the exact physical byte budget independently of the box-count
+        // ceiling. The same read() guard is used by HEIF, CR3 and video walks.
+        let mut walker = Walker {
+            file: file.reopen().unwrap(),
+            remaining: MAX_BOXES,
+            metadata_remaining: 7,
+            metadata: None,
+            optional_fallback: true,
+            #[cfg(feature = "raw")]
+            seen: [false; 3],
+            #[cfg(feature = "raw")]
+            limits: Limits::default(),
+            #[cfg(feature = "raw")]
+            preview: None,
+            #[cfg(feature = "raw")]
+            jpeg_budget: MAX_METADATA,
+            #[cfg(feature = "raw")]
+            preview_count: 0,
+        };
+        assert!(matches!(
+            walker.header(0, bytes.len() as u64),
+            Err(CodecError::Limits)
+        ));
+    }
 }

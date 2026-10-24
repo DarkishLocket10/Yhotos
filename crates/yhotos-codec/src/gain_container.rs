@@ -20,6 +20,7 @@ pub(crate) fn jxl_present(path: &std::path::Path) -> Result<bool, CodecError> {
         return Ok(false);
     }
     let mut at = 0_u64;
+    let mut remaining = 16_u64 << 20;
     for _ in 0..4096 {
         if at == len {
             return Ok(false);
@@ -43,6 +44,14 @@ pub(crate) fn jxl_present(path: &std::path::Path) -> Result<bool, CodecError> {
             .checked_add(size)
             .filter(|n| *n <= len && size >= minimum)
             .ok_or(CodecError::Decode)?;
+        // Pixel boxes are skipped by checked extents; all metadata bytes and
+        // every box header share the same finite scan budget.
+        let charge = if matches!(&header[4..], b"jxlc" | b"jxlp") {
+            minimum
+        } else {
+            size
+        };
+        remaining = remaining.checked_sub(charge).ok_or(CodecError::Limits)?;
         if &header[4..] == b"jhgm" {
             return Ok(true);
         }
@@ -62,6 +71,78 @@ pub(crate) fn jxl_present(path: &std::path::Path) -> Result<bool, CodecError> {
         at = end;
     }
     Err(CodecError::Limits)
+}
+
+/// Retain checked base/metadata boxes while removing optional JPEG XL gain data.
+/// A damaged trailing optional header cannot invalidate an already complete base.
+pub(crate) fn jxl_sdr(bytes: &[u8]) -> Result<Vec<u8>, CodecError> {
+    if !bytes.starts_with(b"\0\0\0\x0cJXL \r\n\x87\n") {
+        return Err(CodecError::Decode);
+    }
+    let mut data = bytes;
+    let mut result = Vec::new();
+    let mut budget = ScanBudget::default();
+    let mut removed = false;
+    while !data.is_empty() {
+        budget.boxes = budget.boxes.checked_sub(1).ok_or(CodecError::Limits)?;
+        if data.len() < 8 {
+            budget
+                .bytes
+                .checked_sub(data.len())
+                .ok_or(CodecError::Limits)?;
+            // No complete box remains. The native decoder must still prove
+            // that the retained codestream is complete before returning pixels.
+            removed = true;
+            break;
+        }
+        let mut c = Cursor::new(data);
+        let size = c.num(4)?;
+        let kind = c.take(4)?;
+
+        let size = if size == 0 {
+            Ok(data.len())
+        } else {
+            (if size == 1 { c.num(8) } else { Ok(size) })
+                .and_then(|n| usize::try_from(n).map_err(|_| CodecError::Limits))
+        };
+        let gain = kind == b"jhgm" || kind == b"brob" && data.get(c.at..c.at + 4) == Some(b"jhgm");
+        let size = match size {
+            Ok(size) if size >= c.at && size <= data.len() => size,
+            _ if gain || removed => {
+                budget
+                    .bytes
+                    .checked_sub(data.len())
+                    .ok_or(CodecError::Limits)?;
+                removed = true;
+                break;
+            }
+            _ => return Err(CodecError::Decode),
+        };
+        let charge = if matches!(kind, b"jxlc" | b"jxlp") {
+            c.at
+        } else {
+            size
+        };
+        budget.bytes = budget.bytes.checked_sub(charge).ok_or(CodecError::Limits)?;
+        if gain {
+            removed = true;
+        } else if !removed
+            || matches!(
+                kind,
+                b"Exif" | b"xml " | b"brob" | b"jumb" | b"jbrd" | b"jxlc" | b"jxlp"
+            )
+        {
+            // A broken gain extent can leave opaque junk at the next boundary.
+            // Keep all native metadata/codestream boxes and skip unknown suffix
+            // boxes, which the normal loader does not expose as photo metadata.
+            result.extend_from_slice(&data[..size]);
+        }
+        data = &data[size..];
+    }
+    if !removed {
+        return Err(CodecError::Decode);
+    }
+    Ok(result)
 }
 
 struct Cursor<'a> {
@@ -192,7 +273,7 @@ pub(crate) fn iso_write(metadata: &Metadata) -> Result<Vec<u8>, CodecError> {
 }
 
 pub(crate) fn jxl(bytes: &[u8], limits: &Limits) -> Result<crate::hdr::GainMap, CodecError> {
-    let top = parse_boxes(bytes, &mut 4096, true)?;
+    let top = parse_boxes(bytes, &mut ScanBudget::default(), true)?;
     if top
         .iter()
         .any(|b| b.kind == b"brob" && b.data.starts_with(b"jhgm"))
@@ -229,7 +310,7 @@ pub(crate) fn jxl_mux(
     let gain = if gain.starts_with(b"\xff\x0a") {
         gain
     } else {
-        one(&boxes(gain, &mut 4096)?, b"jxlc")?
+        one(&boxes(gain, &mut ScanBudget::default())?, b"jxlc")?
     };
     if gain.len() > 16 << 20 {
         return Err(CodecError::Limits);
@@ -256,7 +337,7 @@ pub(crate) fn jxl_mux(
         append(b"ftyp", b"jxl \0\0\0\0jxl ")?;
         append(b"jxlc", base)?;
     } else {
-        boxes(base, &mut 4096)?;
+        boxes(base, &mut ScanBudget::default())?;
         result.extend_from_slice(base);
     }
     let size = u32::try_from(encoded.len() + 8).map_err(|_| CodecError::Limits)?;
@@ -266,21 +347,36 @@ pub(crate) fn jxl_mux(
     Ok(result)
 }
 
+// Shared across nested box walks. Pixel payloads remain opaque; scanned
+// headers and non-container metadata leaves consume the byte budget once.
+struct ScanBudget {
+    boxes: usize,
+    bytes: usize,
+}
+impl Default for ScanBudget {
+    fn default() -> Self {
+        Self {
+            boxes: 4096,
+            bytes: 16 << 20,
+        }
+    }
+}
+
 struct Box<'a> {
     kind: &'a [u8],
     data: &'a [u8],
 }
-fn boxes<'a>(data: &'a [u8], budget: &mut usize) -> Result<Vec<Box<'a>>, CodecError> {
+fn boxes<'a>(data: &'a [u8], budget: &mut ScanBudget) -> Result<Vec<Box<'a>>, CodecError> {
     parse_boxes(data, budget, false)
 }
 fn parse_boxes<'a>(
     mut data: &'a [u8],
-    budget: &mut usize,
+    budget: &mut ScanBudget,
     allow_to_eof: bool,
 ) -> Result<Vec<Box<'a>>, CodecError> {
     let mut result = Vec::new();
     while !data.is_empty() {
-        *budget = budget.checked_sub(1).ok_or(CodecError::Limits)?;
+        budget.boxes = budget.boxes.checked_sub(1).ok_or(CodecError::Limits)?;
         let mut c = Cursor::new(data);
         let n = c.num(4)?;
         let kind = c.take(4)?;
@@ -294,6 +390,15 @@ fn parse_boxes<'a>(
             return Err(CodecError::Decode);
         }
         let payload = data.get(c.at..n).ok_or(CodecError::Decode)?;
+        let charge = if matches!(
+            kind,
+            b"meta" | b"iinf" | b"iref" | b"iprp" | b"ipco" | b"mdat" | b"jxlc" | b"jxlp"
+        ) {
+            c.at
+        } else {
+            n
+        };
+        budget.bytes = budget.bytes.checked_sub(charge).ok_or(CodecError::Limits)?;
         result.push(Box {
             kind,
             data: payload,
@@ -398,7 +503,7 @@ pub(crate) struct HeifGain {
 }
 #[allow(clippy::too_many_lines)] // Item tables share one bounded namespace and box budget.
 pub(crate) fn heif(bytes: &[u8], limits: &Limits) -> Result<HeifGain, CodecError> {
-    let mut budget = 4096;
+    let mut budget = ScanBudget::default();
     let top = boxes(bytes, &mut budget)?;
     let meta = one(&top, b"meta")?;
     if meta.len() > 16 << 20 {
@@ -536,6 +641,7 @@ pub(crate) fn heif(bytes: &[u8], limits: &Limits) -> Result<HeifGain, CodecError
             .checked_sub(count as usize)
             .ok_or(CodecError::Limits)?;
         let mut indices = std::collections::BTreeSet::new();
+        let mut spatial = false;
         for _ in 0..count {
             let index = c.num(if flags == 0 { 1 } else { 2 })? as usize
                 & if flags == 0 { 127 } else { 32767 };
@@ -546,6 +652,32 @@ pub(crate) fn heif(bytes: &[u8], limits: &Limits) -> Result<HeifGain, CodecError
                 return Err(CodecError::Decode);
             }
             let p = properties.get(index - 1).ok_or(CodecError::Decode)?;
+            if p.kind == b"ispe" {
+                let mut c = Cursor::new(p.data);
+                if c.num(4)? != 0 || spatial {
+                    return Err(CodecError::Decode);
+                }
+                limits.check(c.num(4)? as u32, c.num(4)? as u32, 1)?;
+                if c.at != p.data.len() {
+                    return Err(CodecError::Decode);
+                }
+                spatial = true;
+            }
+            if p.kind == b"pixi" {
+                let mut c = Cursor::new(p.data);
+                if c.num(4)? != 0 {
+                    return Err(CodecError::Decode);
+                }
+                let channels = c.num(1)? as usize;
+                if !(1..=4).contains(&channels)
+                    || c.take(channels)?
+                        .iter()
+                        .any(|bits| !(1..=16).contains(bits))
+                    || c.at != p.data.len()
+                {
+                    return Err(CodecError::Decode);
+                }
+            }
             if p.kind == b"irot" || p.kind == b"imir" {
                 let orientation = match (p.kind, p.data) {
                     (b"irot", [0]) => 1,
@@ -577,6 +709,13 @@ pub(crate) fn heif(bytes: &[u8], limits: &Limits) -> Result<HeifGain, CodecError
                     return Err(CodecError::Decode);
                 }
             }
+        }
+        if matches!(
+            types.get(&id),
+            Some(&b"hvc1" | &b"av01" | &b"grid" | &b"iden")
+        ) && !spatial
+        {
+            return Err(CodecError::Decode);
         }
     }
     if c.at != ipma.len() {
@@ -853,7 +992,10 @@ mod tests {
             jxl(bytes, &Limits::default()),
             Err(CodecError::CompressedJxlGainMap)
         ));
-        assert!(matches!(boxes(bytes, &mut 4096), Err(CodecError::Decode)));
+        assert!(matches!(
+            boxes(bytes, &mut ScanBudget::default()),
+            Err(CodecError::Decode)
+        ));
         for length in 0..4 {
             let mut bytes = (8 + length as u32).to_be_bytes().to_vec();
             bytes.extend_from_slice(b"brob");

@@ -1,7 +1,7 @@
 //! Rebuild only the required SDR item graph after an optional item breaks libheif.
 //! Absolute pixel offsets and primary properties are retained; no pixels are copied
 //! from auxiliary items into the graph handed to the native loader.
-use super::{Box, Cursor, boxes, one};
+use super::{Box, Cursor, ScanBudget, boxes, one};
 use crate::CodecError;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -76,7 +76,10 @@ fn id(c: &mut Cursor<'_>, wide: bool) -> Result<u32, CodecError> {
     u32::try_from(c.num(if wide { 4 } else { 2 })?).map_err(|_| CodecError::Decode)
 }
 
-fn infos<'a>(data: &'a [u8], budget: &mut usize) -> Result<BTreeMap<u32, Box<'a>>, CodecError> {
+fn infos<'a>(
+    data: &'a [u8],
+    budget: &mut ScanBudget,
+) -> Result<BTreeMap<u32, Box<'a>>, CodecError> {
     let mut c = Cursor::new(data);
     let version = c.num(1)?;
     if version > 1 || c.num(3)? != 0 || c.num(if version == 0 { 2 } else { 4 })? > 4096 {
@@ -110,10 +113,48 @@ fn item_type<'a>(info: &Box<'a>) -> Result<&'a [u8], CodecError> {
     c.take(4)
 }
 
-// Copy only checked locations of required items. Optional extents are never followed.
+// Validate the complete declaration before exposing a metadata item to libheif.
+fn primary_metadata(info: &Box<'_>) -> bool {
+    let parse = || -> Result<bool, CodecError> {
+        let mut c = Cursor::new(info.data);
+        let version = c.num(1)?;
+        if !matches!(version, 2 | 3) || c.num(3)? != 0 {
+            return Ok(false);
+        }
+        id(&mut c, version == 3)?;
+        if c.num(2)? != 0 {
+            return Ok(false);
+        }
+        let kind = c.take(4)?;
+        let rest = &info.data[c.at..];
+        let Some(name_end) = rest.iter().position(|b| *b == 0) else {
+            return Ok(false);
+        };
+        let content = &rest[name_end + 1..];
+        Ok(match kind {
+            b"Exif" => content.is_empty(),
+            b"mime" => content
+                .strip_prefix(b"application/rdf+xml\0")
+                .is_some_and(|encoding| {
+                    // content_encoding is optional, but when present it is one
+                    // complete UTF-8 string. Retain it exactly as the normal loader does.
+                    encoding.is_empty()
+                        || encoding.strip_suffix(&[0]).is_some_and(|text| {
+                            !text.contains(&0) && std::str::from_utf8(text).is_ok()
+                        })
+                }),
+            _ => false,
+        })
+    };
+    parse() == Ok(true)
+}
+
+// Copy only checked locations. Invalid optional metadata is dropped independently
+// of required pixels; a bad auxiliary extent is never followed.
 fn iloc(
     data: &[u8],
-    required: &BTreeSet<u32>,
+    required: &mut BTreeSet<u32>,
+    metadata: &BTreeSet<u32>,
     bytes: &[u8],
     idat: &[u8],
 ) -> Result<Vec<u8>, CodecError> {
@@ -143,6 +184,7 @@ fn iloc(
     }
     let mut entries = BTreeMap::new();
     let mut extents = 4096_usize;
+    let mut metadata_remaining = 16_u64 << 20;
     for _ in 0..count {
         let start = c.at;
         let item = id(&mut c, version == 2)?;
@@ -151,27 +193,38 @@ fn iloc(
         let base = c.num(base)?;
         let count = c.num(2)? as usize;
         extents = extents.checked_sub(count).ok_or(CodecError::Limits)?;
+        let mut valid = count > 0 && method <= 1 && reference == 0;
+        let mut item_bytes = 0_u64;
         for _ in 0..count {
             let index = c.num(index)?;
             let at = c.num(offset)?;
             let len = c.num(length)?;
-            if required.contains(&item) {
-                if method > 1 || reference != 0 || index != 0 {
-                    return Err(CodecError::Unsupported);
-                }
-                let end = base
-                    .checked_add(at)
-                    .and_then(|at| at.checked_add(len))
-                    .ok_or(CodecError::Decode)?;
-                if len == 0 || end > if method == 0 { bytes.len() } else { idat.len() } as u64 {
-                    return Err(CodecError::Decode);
-                }
-            }
+            let end = base.checked_add(at).and_then(|at| at.checked_add(len));
+            valid &= index == 0
+                && len > 0
+                && end.is_some_and(|end| {
+                    end <= if method == 0 { bytes.len() } else { idat.len() } as u64
+                });
+            // Invalid optional extents are discarded, so their untrusted
+            // lengths must not overflow accounting for retained metadata.
+            item_bytes = item_bytes.saturating_add(len);
         }
-        if required.contains(&item) && entries.insert(item, &data[start..c.at]).is_some() {
+        if required.contains(&item) && !valid {
+            return Err(CodecError::Decode);
+        }
+        let keep_metadata = metadata.contains(&item) && valid;
+        if keep_metadata {
+            metadata_remaining = metadata_remaining
+                .checked_sub(item_bytes)
+                .ok_or(CodecError::Limits)?;
+        }
+        if (required.contains(&item) || keep_metadata)
+            && entries.insert(item, &data[start..c.at]).is_some()
+        {
             return Err(CodecError::Decode);
         }
     }
+    required.extend(metadata.iter().filter(|item| entries.contains_key(item)));
     if c.at != data.len() || entries.len() != required.len() {
         return Err(CodecError::Decode);
     }
@@ -189,8 +242,12 @@ fn iloc(
 
 #[allow(clippy::too_many_lines)] // One bounded primary graph rebuild with a shared box budget.
 pub(crate) fn heif_sdr(bytes: &[u8]) -> Result<Vec<u8>, CodecError> {
-    let mut budget = 4096;
+    let mut budget = ScanBudget::default();
     let top = boxes(bytes, &mut budget)?;
+    let ftyp = one(&top, b"ftyp")?;
+    if !(8..=4088).contains(&ftyp.len()) || !ftyp.len().is_multiple_of(4) {
+        return Err(CodecError::Decode);
+    }
     let original = one(&top, b"meta")?;
     if original.len() > 16 << 20 || original.get(..4) != Some(&[0; 4]) {
         return Err(CodecError::Limits);
@@ -250,6 +307,7 @@ pub(crate) fn heif_sdr(bytes: &[u8]) -> Result<Vec<u8>, CodecError> {
     }
     let mut required = BTreeSet::from([primary]);
     let mut references = Vec::new();
+    let mut metadata = BTreeSet::new();
     if let Some(iref) = meta.iter().find(|b| b.kind == b"iref") {
         let header = iref.data.get(..4);
         let known = header.is_some_and(|h| h[0] <= 1 && h[1..] == [0; 3]);
@@ -270,7 +328,7 @@ pub(crate) fn heif_sdr(bytes: &[u8]) -> Result<Vec<u8>, CodecError> {
             Vec::new()
         };
         for reference in raw_references.into_iter().filter(|_| known) {
-            if !matches!(reference.kind, b"dimg" | b"auxl") {
+            if !matches!(reference.kind, b"dimg" | b"auxl" | b"cdsc" | b"prem") {
                 continue;
             }
             if reference.data.len() < if version == 1 { 6 } else { 4 } {
@@ -286,8 +344,27 @@ pub(crate) fn heif_sdr(bytes: &[u8]) -> Result<Vec<u8>, CodecError> {
                 .get(&from)
                 .and_then(|info| item_type(info).ok())
                 .is_some_and(|t| matches!(t, b"grid" | b"iden"));
+            if reference.kind == b"cdsc" {
+                // Descriptive metadata points from the metadata item to the
+                // primary. Ignore damaged/foreign auxiliary descriptions.
+                let parsed = (|| -> Result<bool, CodecError> {
+                    let mut targets = Vec::new();
+                    for _ in 0..count {
+                        targets.push(id(&mut c, version == 1)?);
+                    }
+                    Ok(c.at == reference.data.len()
+                        && targets.contains(&primary)
+                        && targets.iter().collect::<BTreeSet<_>>().len() == targets.len()
+                        && infos.get(&from).is_some_and(primary_metadata))
+                })();
+                if parsed == Ok(true) && metadata.insert(from) {
+                    references.push((version, from, vec![primary], reference));
+                }
+                continue;
+            }
             if reference.kind == b"dimg" && derived
                 || reference.kind == b"auxl" && alpha.contains(&from)
+                || reference.kind == b"prem" && from == primary
             {
                 let mut targets = Vec::new();
                 for _ in 0..count {
@@ -314,7 +391,12 @@ pub(crate) fn heif_sdr(bytes: &[u8]) -> Result<Vec<u8>, CodecError> {
             &mut checked,
         )?;
     }
-    let required = checked;
+    let mut required = checked;
+    let idat = meta
+        .iter()
+        .find(|b| b.kind == b"idat")
+        .map_or(&[][..], |b| b.data);
+    let locations = iloc(one(&meta, b"iloc")?, &mut required, &metadata, bytes, idat)?;
     let mut new_meta = vec![0; 4];
     append(&mut new_meta, b"hdlr", one(&meta, b"hdlr")?)?;
     append(&mut new_meta, b"pitm", pitm)?;
@@ -328,11 +410,6 @@ pub(crate) fn heif_sdr(bytes: &[u8]) -> Result<Vec<u8>, CodecError> {
         )?;
     }
     append(&mut new_meta, b"iinf", &iinf)?;
-    let idat = meta
-        .iter()
-        .find(|b| b.kind == b"idat")
-        .map_or(&[][..], |b| b.data);
-    let locations = iloc(one(&meta, b"iloc")?, &required, bytes, idat)?;
     if new_meta.len() + locations.len() > 16 << 20 {
         return Err(CodecError::Limits);
     }
@@ -346,7 +423,11 @@ pub(crate) fn heif_sdr(bytes: &[u8]) -> Result<Vec<u8>, CodecError> {
     let mut index = 0_u16;
     let mut property_indices = BTreeMap::new();
     for item in &required {
-        let values = items.get(item).ok_or(CodecError::Decode)?;
+        let values = match items.get(item) {
+            Some(values) => values.as_slice(),
+            None if metadata.contains(item) => &[],
+            None => return Err(CodecError::Decode),
+        };
         ipma.extend_from_slice(&item.to_be_bytes());
         ipma.push(values.len() as u8);
         for value in values {
@@ -379,21 +460,58 @@ pub(crate) fn heif_sdr(bytes: &[u8]) -> Result<Vec<u8>, CodecError> {
     if !references.is_empty() {
         let version = references[0].0;
         let mut iref = vec![version as u8, 0, 0, 0];
-        for (_, from, _, reference) in references {
-            if required.contains(&from) {
+        for (_, from, targets, reference) in references {
+            if !required.contains(&from) || !targets.iter().all(|item| required.contains(item)) {
+                continue;
+            }
+            if reference.kind == b"cdsc" {
+                // A metadata item can describe both primary and auxiliary items.
+                // Keep the primary link without references to stripped items.
+                let mut data = if version == 0 {
+                    (from as u16).to_be_bytes().to_vec()
+                } else {
+                    from.to_be_bytes().to_vec()
+                };
+                data.extend_from_slice(&1_u16.to_be_bytes());
+                if version == 0 {
+                    data.extend_from_slice(&(primary as u16).to_be_bytes());
+                } else {
+                    data.extend_from_slice(&primary.to_be_bytes());
+                }
+                append(&mut iref, b"cdsc", &data)?;
+            } else {
                 append(&mut iref, reference.kind, reference.data)?;
             }
         }
         append(&mut new_meta, b"iref", &iref)?;
     }
-    let padding = original
-        .len()
-        .checked_sub(new_meta.len())
-        .filter(|n| *n >= 8)
-        .ok_or(CodecError::Decode)?;
-    new_meta.extend(boxed(b"free", &vec![0; padding - 8])?);
     let start = original.as_ptr() as usize - bytes.as_ptr() as usize;
     let mut result = bytes.to_vec();
-    result[start..start + original.len()].copy_from_slice(&new_meta);
+    if let Some(padding) = original.len().checked_sub(new_meta.len())
+        && (padding == 0 || padding >= 8)
+    {
+        if padding != 0 {
+            new_meta.extend(boxed(b"free", &vec![0; padding - 8])?);
+        }
+        result[start..start + original.len()].copy_from_slice(&new_meta);
+    } else {
+        // Widening ipma entries can outgrow the old meta. Move it to EOF,
+        // keeping mdat at its absolute offsets and idat relative to the copy.
+        let kind_at = start.checked_sub(4).ok_or(CodecError::Decode)?;
+        let kind_at = if bytes.get(kind_at..start) == Some(b"meta") {
+            kind_at
+        } else {
+            start.checked_sub(12).ok_or(CodecError::Decode)?
+        };
+        result
+            .get_mut(kind_at..kind_at + 4)
+            .ok_or(CodecError::Decode)?
+            .copy_from_slice(b"free");
+        result.extend(boxed(b"meta", &new_meta)?);
+    }
     Ok(result)
 }
+
+#[cfg(test)]
+#[path = "sdr_tests.rs"]
+mod tests;
