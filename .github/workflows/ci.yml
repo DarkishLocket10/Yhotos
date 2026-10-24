@@ -10,12 +10,36 @@ permissions:
 
 env:
   SQLX_OFFLINE: 'true'
+  # Full debug info dominates compile and link time and cache size; line tables keep
+  # panics and backtraces readable (measured on Linux: test build 157 s -> 121 s, 9.1 -> 4.6 GB).
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # Superseded PR runs are cancelled; every commit on main gets a complete run.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Decides whether the heavy jobs must run. Pull requests that touch only documentation,
+  # task briefs or the agent scripts skip them; a skipped job counts as passing for required
+  # checks. Pushes to main always run everything, and any doubt counts as code.
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: scripts/ci-changes.sh
+
   check:
     runs-on: ubuntu-24.04
     steps:
@@ -23,7 +47,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Install native codec development libraries
-        run: sudo apt-get update && sudo apt-get install -y unzip libvips-dev libvips-tools liblcms2-dev libclang-dev libjxl-dev libheif-plugin-aomenc libheif-plugin-aomdec libheif-plugin-libde265
+        # Time-boxed attempts that fall back across Ubuntu mirrors (see the script).
+        timeout-minutes: 16
+        run: scripts/ci-apt.sh unzip
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -53,6 +79,8 @@ jobs:
         run: node --test crates/yhotos-http/tests/passkey_redirect.mjs crates/yhotos-http/tests/upload.mjs
 
   test:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     services:
       postgres:
@@ -76,7 +104,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Install native codec development libraries
-        run: sudo apt-get update && sudo apt-get install -y unzip libvips-dev libvips-tools liblcms2-dev libclang-dev libjxl-dev libheif-plugin-aomenc libheif-plugin-aomdec libheif-plugin-libde265
+        # Time-boxed attempts that fall back across Ubuntu mirrors (see the script).
+        timeout-minutes: 16
+        run: scripts/ci-apt.sh unzip
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
@@ -90,6 +120,46 @@ jobs:
         run: deploy/dev/video-tools.sh
       - name: Test workspace
         run: cargo test --workspace --all-features
+
+  # A second feature set means a second compile; running it in parallel keeps it off the
+  # critical path.
+  test-public:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
+        env:
+          POSTGRES_USER: yhotos
+          POSTGRES_DB: yhotos_test
+          # Disposable, localhost-only CI database; no stored credentials.
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready --username yhotos --dbname yhotos_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://yhotos@127.0.0.1:5432/yhotos_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install native codec development libraries
+        # Time-boxed attempts that fall back across Ubuntu mirrors (see the script).
+        timeout-minutes: 16
+        run: scripts/ci-apt.sh unzip
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # Server tests (create-admin) write to the database, so it needs the schema.
+      - name: Install pinned SQLx CLI
+        run: cargo install sqlx-cli --version 0.9.0 --locked --no-default-features --features postgres,rustls
+      - name: Apply database migrations
+        run: cargo sqlx migrate run --source crates/yhotos-db/migrations
       - name: Test public build without admin routes
         run: cargo test -p yhotos-config -p yhotos-http -p yhotos-server --no-default-features
 
@@ -137,6 +207,8 @@ jobs:
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: 'false'
 
   codec:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     services:
       postgres:
@@ -158,5 +230,58 @@ jobs:
           persist-credentials: false
       - name: Build codec image from pinned base digest
         run: docker build --iidfile /tmp/codec-image -f deploy/dev/Dockerfile.codec .
+      # The container compiles into the mounted checkout's target/; keep it between runs.
+      # The key covers everything that changes the toolchain or the native libraries.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: target
+          key: codec-target-${{ hashFiles('deploy/dev/Dockerfile.codec', 'rust-toolchain.toml', 'Cargo.lock') }}
+          restore-keys: |
+            codec-target-${{ hashFiles('deploy/dev/Dockerfile.codec', 'rust-toolchain.toml') }}-
       - name: Test Linux codec and seccomp inside the built image digest
-        run: docker run --rm --network=host -e SQLX_OFFLINE=true -e DATABASE_URL=postgres://yhotos@127.0.0.1:5432/yhotos_test?sslmode=disable -v "$PWD:/workspace" "$(cat /tmp/codec-image)"
+        run: >-
+          docker run --rm --network=host
+          -e SQLX_OFFLINE=true
+          -e CARGO_INCREMENTAL=0
+          -e CARGO_PROFILE_DEV_DEBUG -e CARGO_PROFILE_TEST_DEBUG
+          -e DATABASE_URL=postgres://yhotos@127.0.0.1:5432/yhotos_test?sslmode=disable
+          -v "$PWD:/workspace" "$(cat /tmp/codec-image)"
+      # Files written by the container belong to root; let the cache step read them.
+      - name: Prepare codec build cache
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" target || true
+
+  ml:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16@sha256:7b822b0aac60967beb1ea5e576b8602c94c300a157d187f385ae3e0da199b90a
+        env:
+          POSTGRES_USER: yhotos
+          POSTGRES_DB: yhotos_test
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready --username yhotos --dbname yhotos_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgres://yhotos@127.0.0.1:5432/yhotos_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Install hashed CPU and check dependencies with Python 3.12
+        run: |
+          python3.12 -m venv ml/.venv
+          ml/.venv/bin/pip install --no-deps --require-hashes -r ml/requirements-cpu.txt -r ml/requirements-dev.txt
+      - name: Download and verify pinned model artifacts at build time
+        working-directory: ml
+        run: PATH="$PWD/.venv/bin:$PATH" make models
+      - name: Check Python and process three local photo fixtures on CPU
+        working-directory: ml
+        run: PATH="$PWD/.venv/bin:$PATH" make check AUDIT_REQUIREMENTS=requirements-cpu.txt

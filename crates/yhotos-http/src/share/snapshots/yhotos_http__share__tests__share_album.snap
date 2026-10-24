@@ -1,5 +1,6 @@
 ---
 source: crates/yhotos-http/src/share/tests.rs
+assertion_line: 1330
 expression: "crate::pages::snapshot_html(html)"
 ---
 <!doctype html>

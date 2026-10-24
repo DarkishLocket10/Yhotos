@@ -77,6 +77,7 @@ async fn mutate(
 }
 fn config(dir: &std::path::Path, url: secrecy::SecretString) -> BenchResult<&'static Config> {
     Ok(Box::leak(Box::new(Config {
+        ml_address: "127.0.0.1:1".into(),
         public_listen: "127.0.0.1:1".parse()?,
         admin_listen: None,
         database_url_public: url,

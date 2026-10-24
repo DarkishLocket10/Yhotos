@@ -564,6 +564,7 @@ struct PhotoTemplate<'a> {
     exif: Vec<(&'static str, String)>,
     map: Option<String>,
     badge: String,
+    similar: String,
     island: String,
     scripts: Vec<&'static str>,
     video: Option<Video>,
@@ -705,6 +706,7 @@ fn render_photo_with_controls(
             format!("https://www.openstreetmap.org/?mlat={lat}&mlon={lon}#map=14/{lat}/{lon}")
         });
     PhotoTemplate {
+        similar: format!("/search?like={}", page.photo.short_id),
         context,
         title: &p.title,
         description: &p.description,
@@ -1108,4 +1110,95 @@ mod video_tests {
         assert!(!image.jpeg.all.contains("scrub"));
         assert!(video(&photo).is_some());
     }
+}
+
+#[derive(Template)]
+#[template(path = "default/search.html")]
+struct SearchTemplate<'a> {
+    context: &'a PageContext<'a>,
+    title: &'static str,
+    description: &'static str,
+    styles: String,
+    query: &'a str,
+    rows: Vec<Row>,
+    total: usize,
+    chips: Vec<String>,
+    excerpts: Vec<&'a str>,
+    previous: Option<String>,
+    next: Option<String>,
+    search_script: &'static str,
+    action: &'a str,
+}
+pub(crate) fn render_search(
+    results: &crate::search::Results,
+    query: &str,
+    like: Option<&str>,
+    context: &PageContext<'_>,
+    action: &str,
+) -> Result<String, HttpError> {
+    let photos: Vec<_> = results
+        .rows
+        .iter()
+        .map(|r| r.candidate.photo.clone())
+        .collect();
+    let mut styles = String::new();
+    let rows = photo_rows(&photos, PageSort::Taken, &mut styles);
+    styles.push_str(".filter-chips{display:flex;flex-wrap:wrap;gap:.5rem;list-style:none;padding:0}.filter-chips:empty{display:none}.filter-chips li{border:1px solid currentColor;border-radius:999px;padding:.25rem .65rem}");
+    let url = |page| {
+        format!(
+            "{action}?q={}&page={page}{}",
+            filename_query(query),
+            like.map(|v| format!("&like={}", filename_query(v)))
+                .unwrap_or_default()
+        )
+    };
+    SearchTemplate {
+        context,
+        action,
+        title: "Search photos",
+        description: "Search photos by text, tags and filters",
+        styles,
+        query,
+        rows,
+        total: results.total,
+        chips: results
+            .parsed
+            .filters
+            .iter()
+            .map(|f| {
+                let value = if f.key == "color" {
+                    f.value
+                        .parse::<u32>()
+                        .map(|v| format!("#{v:06x}"))
+                        .unwrap_or_default()
+                } else {
+                    f.value.clone()
+                };
+                format!("{}:{value}", f.key)
+            })
+            .collect(),
+        excerpts: results
+            .rows
+            .iter()
+            .map(|r| r.candidate.text.as_str())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        previous: (results.page > 1).then(|| url(results.page - 1)),
+        next: (usize::try_from(results.page).unwrap_or(10) * 60 < results.total)
+            .then(|| url(results.page + 1)),
+        search_script: crate::static_assets::search_url()?,
+    }
+    .render()
+    .map_err(|e| HttpError::Internal(e.into()))
+}
+fn filename_query(value: &str) -> String {
+    let mut result = String::new();
+    for b in value.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~') {
+            result.push(char::from(b));
+        } else {
+            let _ = write!(result, "%{b:02X}");
+        }
+    }
+    result
 }

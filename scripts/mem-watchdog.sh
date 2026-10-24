@@ -6,13 +6,19 @@
 # Pauses with SIGSTOP (no work is lost) every process in the trees of the agent runs listed in
 # .worktrees/.running/*.pid, plus any cargo, rustc and test binaries of this repository.
 # macOS reads kern.memorystatus_level (percent available); Linux reads MemAvailable/MemTotal.
-# Overrides: YHOTOS_WATCHDOG_PAUSE_BELOW (default 15), YHOTOS_WATCHDOG_RESUME_ABOVE (default 30).
+# Overrides: YHOTOS_WATCHDOG_PAUSE_BELOW (default 15), YHOTOS_WATCHDOG_RESUME_ABOVE (default 30),
+# YHOTOS_WATCHDOG_PRESSURE_PAUSE (default 15), YHOTOS_WATCHDOG_PRESSURE_RESUME (default 3).
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN_DIR="$REPO_ROOT/.worktrees/.running"
 PAUSE_BELOW="${YHOTOS_WATCHDOG_PAUSE_BELOW:-15}"
 RESUME_ABOVE="${YHOTOS_WATCHDOG_RESUME_ABOVE:-30}"
+# Linux also pauses on memory pressure (PSI "some" avg10, percent of time stalled). systemd-oomd
+# kills at 60% for 20 s across the user slice, including the owner's other sessions; on
+# 2026-10-22 it fired at 67% with 10 GB still available, so free memory alone is not enough.
+PRESSURE_PAUSE="${YHOTOS_WATCHDOG_PRESSURE_PAUSE:-15}"
+PRESSURE_RESUME="${YHOTOS_WATCHDOG_PRESSURE_RESUME:-3}"
 
 level() {
   if [[ "$(uname)" == "Darwin" ]]; then
@@ -40,6 +46,14 @@ targets() {
   pgrep -u "$(id -u)" -f "$REPO_ROOT/.*target/.*/deps/" 2>/dev/null
 }
 
+pressure() {
+  if [[ -r /proc/pressure/memory ]]; then
+    awk '/^some/ {split($2, a, "="); printf "%d", a[2]}' /proc/pressure/memory
+  else
+    echo 0
+  fi
+}
+
 log() { echo "$(date -u +%FT%TZ) $*"; }
 
 paused=0
@@ -47,20 +61,21 @@ log "watchdog started: pause below ${PAUSE_BELOW}%, resume above ${RESUME_ABOVE}
 trap 'if (( paused )); then targets | sort -u | xargs kill -CONT 2>/dev/null; fi; exit 0' INT TERM
 while true; do
   l="$(level)"
-  if (( l < PAUSE_BELOW )); then
+  p="$(pressure)"
+  if (( l < PAUSE_BELOW || p > PRESSURE_PAUSE )); then
     # Re-send on every tick so processes started since the last pause are caught too.
     pids="$(targets | sort -u | tr '\n' ' ')"
     if [[ -n "${pids// /}" ]]; then
       # shellcheck disable=SC2086
       kill -STOP $pids 2>/dev/null
-      (( paused )) || log "memory at ${l}%: paused ${pids}"
+      (( paused )) || log "memory at ${l}%, pressure ${p}%: paused ${pids}"
       paused=1
     fi
-  elif (( paused && l > RESUME_ABOVE )); then
+  elif (( paused && l > RESUME_ABOVE && p < PRESSURE_RESUME )); then
     pids="$(targets | sort -u | tr '\n' ' ')"
     # shellcheck disable=SC2086
     kill -CONT $pids 2>/dev/null
-    log "memory at ${l}%: resumed"
+    log "memory at ${l}%, pressure ${p}%: resumed"
     paused=0
   fi
   # Wait on a background sleep so INT/TERM run the trap (and resume everything) at once.

@@ -133,6 +133,120 @@ fn containers_rotation_renditions_and_poster() {
         assert_eq!(poster["streams"][0]["height"], height);
     }
 }
+
+#[derive(serde::Deserialize)]
+struct ColorPatch {
+    file: String,
+    primaries: String,
+    transfer: String,
+    matrix: String,
+    full: bool,
+    tagged: bool,
+    rgb: Vec<[u8; 3]>,
+}
+
+fn color_tags(path: &Path) -> Value {
+    let output = Command::new(video_binary("ffprobe"))
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v:0",
+            "-show_streams",
+            "-of",
+            "json",
+        ])
+        .arg(path)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let probe: Value = serde_json::from_slice(&output.stdout).unwrap();
+    probe["streams"][0].clone()
+}
+
+fn measured_patches(path: &Path) -> Vec<[f64; 3]> {
+    // Decode the target BT.709 YCbCr to nonlinear BT.709 RGB. No primaries or
+    // transfer conversion here: the independent reference already includes it.
+    let output = Command::new(video_binary("ffmpeg"))
+        .args(["-v", "error", "-i"])
+        .arg(path)
+        .args([
+            "-vf",
+            "scale=in_color_matrix=bt709:in_range=tv:out_range=pc,format=rgb24",
+            "-frames:v",
+            "1",
+            "-f",
+            "rawvideo",
+            "pipe:1",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(output.stdout.len(), 144 * 96 * 3);
+    [24, 72, 120]
+        .map(|center| {
+            let mut sums = [0_u32; 3];
+            for y in 40..56 {
+                for x in center - 8..center + 8 {
+                    for (channel, sum) in sums.iter_mut().enumerate() {
+                        *sum += u32::from(output.stdout[(y * 144 + x) * 3 + channel]);
+                    }
+                }
+            }
+            sums.map(|sum| f64::from(sum) / 256.0)
+        })
+        .to_vec()
+}
+
+#[test]
+fn sdr_renditions_convert_pixels_before_tagging_bt709() {
+    let patches: Vec<ColorPatch> =
+        serde_json::from_slice(&std::fs::read(fixture("color-reference.json")).unwrap()).unwrap();
+    for patch in patches {
+        let input = fixture(&patch.file);
+        assert!(std::fs::metadata(&input).unwrap().len() < 300_000);
+        let source = color_tags(&input);
+        if patch.tagged {
+            assert_eq!(source["color_primaries"], patch.primaries);
+            assert_eq!(source["color_transfer"], patch.transfer);
+            assert_eq!(source["color_space"], patch.matrix);
+            assert_eq!(source["color_range"], if patch.full { "pc" } else { "tv" });
+        } else {
+            assert!(source["color_primaries"].is_null());
+            assert!(source["color_transfer"].is_null());
+            assert!(source["color_space"].is_null());
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let output = invoke(&json!({"input":input,"out_dir":dir.path()}), &["--video"]);
+        assert!(
+            output.status.success(),
+            "{}: {}",
+            patch.file,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        for codec in ["h264", "av1"] {
+            let rendition = dir.path().join(format!("{codec}.mp4"));
+            let tags = color_tags(&rendition);
+            assert_eq!(tags["color_primaries"], "bt709", "{} {codec}", patch.file);
+            assert_eq!(tags["color_transfer"], "bt709", "{} {codec}", patch.file);
+            assert_eq!(tags["color_space"], "bt709", "{} {codec}", patch.file);
+            assert_eq!(tags["color_range"], "tv", "{} {codec}", patch.file);
+            for (measured, expected) in measured_patches(&rendition).iter().zip(&patch.rgb) {
+                for (actual, expected) in measured.iter().zip(expected) {
+                    assert!(
+                        (actual - f64::from(*expected)).abs() <= 5.0,
+                        "{} {codec}: measured {measured:?}, expected {expected:?}",
+                        patch.file
+                    );
+                }
+            }
+        }
+    }
+}
 #[test]
 fn malformed_and_over_duration_inputs_are_rejected() {
     let dir = tempfile::tempdir().unwrap();

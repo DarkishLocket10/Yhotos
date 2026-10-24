@@ -175,6 +175,7 @@ fn config(
         database_url_admin: None,
         database_url_worker: None,
         public_base_url: "https://gallery.example".parse()?,
+        ml_address: "127.0.0.1:1".into(),
         admin_base_url: None,
         data_dir: data.to_owned(),
         session_key: STANDARD

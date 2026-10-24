@@ -9,6 +9,7 @@ use std::{
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
+mod color;
 mod command;
 mod probe;
 use probe::Info;

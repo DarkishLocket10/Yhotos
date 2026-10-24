@@ -1,5 +1,6 @@
 ---
 source: crates/yhotos-http/src/pages/tests.rs
+assertion_line: 477
 expression: snapshot_html(grid)
 ---
 <!doctype html>

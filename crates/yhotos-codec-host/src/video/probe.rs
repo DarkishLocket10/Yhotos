@@ -1,3 +1,4 @@
+use super::color::Color;
 use super::{Failure, rejected};
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -7,6 +8,7 @@ pub(super) struct Info {
     pub height: u32,
     pub duration_ms: u64,
     pub hdr: bool,
+    pub color: Color,
 }
 #[derive(Deserialize)]
 struct Probe {
@@ -25,6 +27,9 @@ struct Stream {
     height: Option<u32>,
     sample_aspect_ratio: Option<String>,
     color_transfer: Option<String>,
+    color_primaries: Option<String>,
+    color_space: Option<String>,
+    color_range: Option<String>,
     #[serde(default)]
     side_data_list: Vec<SideData>,
 }
@@ -91,6 +96,14 @@ pub(super) fn parse(bytes: &[u8], max_duration: u32) -> Result<Info, Failure> {
                 {
                     return Err(rejected());
                 }
+                let color = Color::parse(
+                    width,
+                    height,
+                    s.color_primaries.as_deref(),
+                    s.color_transfer.as_deref(),
+                    s.color_space.as_deref(),
+                    s.color_range.as_deref(),
+                )?;
                 width = display_width(width, s.sample_aspect_ratio.as_deref())?;
                 if width > 7680 || u64::from(width) * u64::from(height) > 7680 * 4320 {
                     return Err(rejected());
@@ -115,10 +128,8 @@ pub(super) fn parse(bytes: &[u8], max_duration: u32) -> Result<Info, Failure> {
                             .div_ceil(1_000_000),
                     )
                     .map_err(|_| rejected())?,
-                    hdr: matches!(
-                        s.color_transfer.as_deref(),
-                        Some("smpte2084" | "arib-std-b67")
-                    ),
+                    hdr: color.hdr(),
+                    color,
                 });
             }
             ("audio", Some("aac" | "pcm_s16le" | "pcm_s24le" | "alac")) => {}

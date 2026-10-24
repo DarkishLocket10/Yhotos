@@ -33,10 +33,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     ))?;
     let dir = tempfile::tempdir()?;
     let store = Store::open(dir.path())?;
-    let put = runtime.block_on(store.put_original(
-        runtime.block_on(tokio::fs::File::open(root.join("fixtures/video/h264.mp4")))?,
-        300_000,
-    ))?;
     let mut ingest = Ingest::new(store, db.pool().clone(), host);
     ingest.video.ffmpeg = tools.join("ffmpeg");
     ingest.video.ffprobe = tools.join("ffprobe");
@@ -55,37 +51,50 @@ fn main() -> Result<(), Box<dyn Error>> {
         .warm_up_time(Duration::from_secs(1))
         .measurement_time(Duration::from_secs(5))
         .configure_from_args();
-    c.bench_function("video_pipeline/1_2s_128x96", |b| {
-        b.iter_custom(|iterations| {
-            let started = Instant::now();
-            for _ in 0..iterations {
-                let run = runtime.block_on(async {
-                    let mut conn = db.pool().acquire().await?;
-                    let photo = photos::create(
-                        &mut conn,
-                        &photos::NewPhoto {
-                            album_id: album.id,
-                            title: "Video benchmark".into(),
-                            original_hash: put.hash.to_string(),
-                            original_name: "video.mp4".into(),
-                            original_bytes: i64::try_from(put.bytes)?,
-                            mime: "video/mp4".into(),
-                            kind: photos::MediaKind::Video,
-                        },
-                    )
-                    .await?;
-                    drop(conn);
-                    ingest.transcode_video(photo.id, 1).await?;
-                    Ok::<(), Box<dyn Error>>(())
-                });
-                if let Err(error) = run {
-                    failure = Some(error);
-                    break;
+    for (name, fixture) in [
+        ("1_2s_128x96", "h264.mp4"),
+        ("bt709_passthrough", "color-bt709.mp4"),
+        ("bt601_to_bt709", "color-bt601.mp4"),
+        ("display_p3_to_bt709", "color-p3.mp4"),
+    ] {
+        let put = runtime.block_on(ingest.store.put_original(
+            runtime.block_on(tokio::fs::File::open(
+                root.join("fixtures/video").join(fixture),
+            ))?,
+            300_000,
+        ))?;
+        c.bench_function(&format!("video_pipeline/{name}"), |b| {
+            b.iter_custom(|iterations| {
+                let started = Instant::now();
+                for _ in 0..iterations {
+                    let run = runtime.block_on(async {
+                        let mut conn = db.pool().acquire().await?;
+                        let photo = photos::create(
+                            &mut conn,
+                            &photos::NewPhoto {
+                                album_id: album.id,
+                                title: "Video benchmark".into(),
+                                original_hash: put.hash.to_string(),
+                                original_name: "video.mp4".into(),
+                                original_bytes: i64::try_from(put.bytes)?,
+                                mime: "video/mp4".into(),
+                                kind: photos::MediaKind::Video,
+                            },
+                        )
+                        .await?;
+                        drop(conn);
+                        ingest.transcode_video(photo.id, 1).await?;
+                        Ok::<(), Box<dyn Error>>(())
+                    });
+                    if let Err(error) = run {
+                        failure = Some(error);
+                        break;
+                    }
                 }
-            }
-            started.elapsed()
+                started.elapsed()
+            });
         });
-    });
+    }
     c.final_summary();
     runtime.block_on(async {
         sqlx::query!("DELETE FROM photos WHERE album_id=$1", album.id.0)

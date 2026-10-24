@@ -95,7 +95,7 @@ Each entry: threat, then the control, then where it lives in code so reviewers c
 
 ### 4.8 Privacy
 
-- **Analytics becoming tracking.** Control: no cookies for analytics, daily salted visitor hash, salt never stored, GeoIP to city at most, raw events deleted after 90 days, no third-party scripts anywhere, face data admin-only and never in public responses.
+- **Analytics becoming tracking.** Control: no cookies for analytics, daily salted visitor hash, salt never stored, GeoIP to city at most, raw events deleted after 90 days, no third-party scripts anywhere, face names, embeddings and person search admin-only. Non-admin responses carry face data only for people the admin opted in (off by default): normalized boxes, crops served under the photo's own visibility check, and a random, resettable public id, on photos the viewer can already see; `/f/` pages are `noindex` and return the standard 404 for unknown, opted-out, hidden or empty ids (task 024).
 - **EXIF leaking location.** Control: GPS is stored in the database for map/search but stripped from every derivative; originals keep it and are only downloadable by people who can see the photo (the owner decides what goes public). An admin setting can strip GPS from originals on download for public photos.
 
 ## 5. Residual risks, accepted

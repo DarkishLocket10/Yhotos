@@ -100,7 +100,7 @@ impl Ingest {
         let (plan, outputs) = self.plan.expand()?;
         let marker = blake3::hash(
             format!(
-                "video-v1:{hash}:{plan}:{}",
+                "video-v2-bt709:{hash}:{plan}:{}",
                 serde_json::to_string(&self.video).map_err(|_| bad())?
             )
             .as_bytes(),
@@ -143,7 +143,7 @@ impl Ingest {
             let poster_dir=self.store.tmp_dir().map_err(|_|retry("poster storage unavailable"))?;
             let poster=self.run_host(&snapshot.path().join("poster.jpeg"),poster_dir.path(),&outputs,attempt).await?;
             let placeholder=self.validate_report(&poster)?;
-            let verified=self.verify_outputs(poster_dir.path(),&outputs,&poster).await?;
+            let verified=self.verify_outputs(poster_dir.path(),&outputs,&poster.outputs).await?;
             self.publish(photo,&source.original_hash,source.generation,&marker,&poster,&outputs,&verified,&placeholder,-2,Some(&assets)).await
         }.await;
         if let Err(error) = &result {

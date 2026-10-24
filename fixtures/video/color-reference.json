@@ -1,0 +1,202 @@
+[
+  {
+    "file": "color-bt601.mp4",
+    "primaries": "smpte170m",
+    "transfer": "smpte170m",
+    "matrix": "smpte170m",
+    "full": false,
+    "tagged": true,
+    "rgb": [
+      [
+        178,
+        118,
+        65
+      ],
+      [
+        34,
+        58,
+        121
+      ],
+      [
+        157,
+        202,
+        236
+      ]
+    ]
+  },
+  {
+    "file": "color-bt709.mp4",
+    "primaries": "bt709",
+    "transfer": "bt709",
+    "matrix": "bt709",
+    "full": false,
+    "tagged": true,
+    "rgb": [
+      [
+        188,
+        120,
+        63
+      ],
+      [
+        27,
+        58,
+        123
+      ],
+      [
+        148,
+        199,
+        237
+      ]
+    ]
+  },
+  {
+    "file": "color-p3.mp4",
+    "primaries": "smpte432",
+    "transfer": "iec61966-2-1",
+    "matrix": "bt709",
+    "full": false,
+    "tagged": true,
+    "rgb": [
+      [
+        193,
+        103,
+        32
+      ],
+      [
+        5,
+        43,
+        115
+      ],
+      [
+        120,
+        195,
+        240
+      ]
+    ]
+  },
+  {
+    "file": "color-srgb.mp4",
+    "primaries": "bt709",
+    "transfer": "iec61966-2-1",
+    "matrix": "bt709",
+    "full": false,
+    "tagged": true,
+    "rgb": [
+      [
+        180,
+        107,
+        47
+      ],
+      [
+        13,
+        42,
+        111
+      ],
+      [
+        137,
+        193,
+        235
+      ]
+    ]
+  },
+  {
+    "file": "color-bt2020.mp4",
+    "primaries": "bt2020",
+    "transfer": "bt2020-10",
+    "matrix": "bt2020nc",
+    "full": false,
+    "tagged": true,
+    "rgb": [
+      [
+        219,
+        104,
+        49
+      ],
+      [
+        0,
+        63,
+        130
+      ],
+      [
+        96,
+        208,
+        243
+      ]
+    ]
+  },
+  {
+    "file": "color-bt709-full.mp4",
+    "primaries": "bt709",
+    "transfer": "bt709",
+    "matrix": "bt709",
+    "full": true,
+    "tagged": true,
+    "rgb": [
+      [
+        178,
+        119,
+        69
+      ],
+      [
+        39,
+        65,
+        123
+      ],
+      [
+        142,
+        187,
+        221
+      ]
+    ]
+  },
+  {
+    "file": "color-untagged-sd.mp4",
+    "primaries": "smpte170m",
+    "transfer": "bt709",
+    "matrix": "smpte170m",
+    "full": false,
+    "tagged": false,
+    "rgb": [
+      [
+        178,
+        118,
+        65
+      ],
+      [
+        34,
+        58,
+        121
+      ],
+      [
+        157,
+        202,
+        236
+      ]
+    ]
+  },
+  {
+    "file": "color-bt601-pal.mp4",
+    "primaries": "bt470bg",
+    "transfer": "bt709",
+    "matrix": "bt470bg",
+    "full": false,
+    "tagged": true,
+    "rgb": [
+      [
+        184,
+        117,
+        67
+      ],
+      [
+        29,
+        56,
+        120
+      ],
+      [
+        150,
+        202,
+        235
+      ]
+    ]
+  }
+]

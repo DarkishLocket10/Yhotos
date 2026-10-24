@@ -80,6 +80,39 @@ impl Fixture {
     }
 }
 #[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
+async fn shared_file_routes_preserve_zip_visibility_and_archive_contents(pool: PgPool) {
+    let f = Fixture::new(pool).await;
+    let request = Request::builder()
+        .uri(format!("/zip?album={}&size=original", f.album))
+        .extension(ConnectInfo(
+            "127.0.0.1:8080".parse::<std::net::SocketAddr>().unwrap(),
+        ))
+        .extension(SessionIdentity::Anonymous)
+        .extension(Links::default())
+        .extension(ClientIp("127.0.0.1".parse().unwrap()))
+        .body(Body::empty())
+        .unwrap();
+    // Both listeners compose these routes after their session middleware has
+    // established the identity. Admin authentication itself is covered separately.
+    let response = crate::file_routes()
+        .with_state(f.state.clone())
+        .oneshot(request)
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "application/zip");
+    let shared_archive = response.into_body().collect().await.unwrap().to_bytes();
+    let public_archive = f
+        .get()
+        .await
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes();
+    assert_eq!(shared_archive, public_archive);
+}
+#[sqlx::test(migrator = "yhotos_db::MIGRATOR")]
 async fn zip_visibility_safe_unique_names_unzip_checksums_and_analytics(pool: PgPool) {
     let f = Fixture::new(pool).await;
     let response = f.get().await;

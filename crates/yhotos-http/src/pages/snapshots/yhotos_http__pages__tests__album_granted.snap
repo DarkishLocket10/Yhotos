@@ -1,5 +1,6 @@
 ---
 source: crates/yhotos-http/src/pages/tests.rs
+assertion_line: 206
 expression: "snapshot_html(render_album(&granted, 1, PageSort::Taken, &context()).unwrap())"
 ---
 <!doctype html>

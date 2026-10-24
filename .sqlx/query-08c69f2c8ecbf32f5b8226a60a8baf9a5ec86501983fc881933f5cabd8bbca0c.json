@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE persons SET name=nullif($2,''),hidden=$3 WHERE id=$1 AND NOT hidden",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "08c69f2c8ecbf32f5b8226a60a8baf9a5ec86501983fc881933f5cabd8bbca0c"
+}

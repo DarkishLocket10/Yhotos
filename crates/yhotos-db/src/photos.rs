@@ -429,6 +429,9 @@ pub async fn replace_original(
     sqlx::query!("DELETE FROM embeddings WHERE photo_id=$1", id as _)
         .execute(&mut *tx)
         .await?;
+    sqlx::query!("DELETE FROM face_runs WHERE photo_id=$1", id as _)
+        .execute(&mut *tx)
+        .await?;
     sqlx::query!("DELETE FROM faces WHERE photo_id=$1", id as _)
         .execute(&mut *tx)
         .await?;

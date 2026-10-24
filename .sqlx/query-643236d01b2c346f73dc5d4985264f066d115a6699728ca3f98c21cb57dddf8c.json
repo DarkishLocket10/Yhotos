@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "ANALYZE photos,embeddings",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "643236d01b2c346f73dc5d4985264f066d115a6699728ca3f98c21cb57dddf8c"
+}

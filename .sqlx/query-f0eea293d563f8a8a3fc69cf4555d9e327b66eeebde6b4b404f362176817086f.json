@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO face_runs(photo_id,model,source_hash) VALUES($1,'fixture',$2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f0eea293d563f8a8a3fc69cf4555d9e327b66eeebde6b4b404f362176817086f"
+}

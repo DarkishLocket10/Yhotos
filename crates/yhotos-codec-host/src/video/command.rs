@@ -64,7 +64,7 @@ pub(super) fn build(job: &Job, stage: Stage, info: Option<&Info>) -> Result<Comm
                 "json",
             ]);
         } else {
-            cmd.arg(&job.input).args(["-show_entries", "format=duration:stream=codec_type,codec_name,width,height,sample_aspect_ratio,color_transfer:stream_side_data=rotation", "-of", "json"]);
+            cmd.arg(&job.input).args(["-show_entries", "format=duration:stream=codec_type,codec_name,width,height,sample_aspect_ratio,color_primaries,color_transfer,color_space,color_range:stream_side_data=rotation", "-of", "json"]);
         }
         return Ok(cmd);
     }
@@ -91,11 +91,7 @@ pub(super) fn build(job: &Job, stage: Stage, info: Option<&Info>) -> Result<Comm
         "-map",
         "0:v:0",
     ]);
-    let tone = if info.hdr {
-        "zscale=t=linear:npl=100,format=gbrpf32le,tonemap=tonemap=hable:desat=0,zscale=p=bt709:t=bt709:m=bt709:r=tv,"
-    } else {
-        ""
-    };
+    let color = info.color.filter();
     let name = match stage {
         Stage::H264 | Stage::Av1 => {
             let h264 = matches!(stage, Stage::H264);
@@ -108,7 +104,7 @@ pub(super) fn build(job: &Job, stage: Stage, info: Option<&Info>) -> Result<Comm
                 "-map",
                 "0:a:0?",
                 "-vf",
-                &format!("{tone}scale={w}:{h}:flags=lanczos,setsar=1,format=yuv420p"),
+                &format!("{color}scale={w}:{h}:flags=lanczos,setsar=1,format=yuv420p"),
                 "-c:v",
                 if h264 { "libx264" } else { "libsvtav1" },
                 "-crf",
@@ -137,6 +133,8 @@ pub(super) fn build(job: &Job, stage: Stage, info: Option<&Info>) -> Result<Comm
                 "bt709",
                 "-colorspace",
                 "bt709",
+                "-color_range",
+                "tv",
                 "-movflags",
                 "+faststart",
                 "-f",
@@ -149,7 +147,7 @@ pub(super) fn build(job: &Job, stage: Stage, info: Option<&Info>) -> Result<Comm
                 "-an",
                 "-vf",
                 &format!(
-                    "{tone}scale={}:{}:flags=lanczos,setsar=1,format=yuvj420p",
+                    "{color}scale={}:{}:flags=lanczos,setsar=1,format=yuvj420p",
                     info.width, info.height
                 ),
                 "-frames:v",
@@ -165,7 +163,7 @@ pub(super) fn build(job: &Job, stage: Stage, info: Option<&Info>) -> Result<Comm
         }
         Stage::Scrub => {
             let (w, h) = dimensions(info, 160);
-            cmd.args(["-an", "-vf", &format!("fps=100000/{}:start_time=0,{tone}scale={w}:{h}:flags=lanczos,setsar=1,pad=160:160:(ow-iw)/2:(oh-ih)/2,tile=10x10:nb_frames=100:padding=0:margin=0", info.duration_ms), "-frames:v", "1", "-c:v", "mjpeg", "-f", "image2", "-update", "1"]);
+            cmd.args(["-an", "-vf", &format!("fps=100000/{}:start_time=0,{color}scale={w}:{h}:flags=lanczos,setsar=1,pad=160:160:(ow-iw)/2:(oh-ih)/2,tile=10x10:nb_frames=100:padding=0:margin=0", info.duration_ms), "-frames:v", "1", "-c:v", "mjpeg", "-f", "image2", "-update", "1"]);
             "scrub.jpeg"
         }
         Stage::Probe | Stage::Av1Probe => return Err(rejected()),
@@ -190,6 +188,7 @@ mod tests {
                 height,
                 duration_ms: 1000,
                 hdr: false,
+                color: super::super::color::Color::BT709,
             };
             assert_eq!(av1_dimensions(&info), expected);
             assert!(dimensions(&info, 1080).0.max(dimensions(&info, 1080).1) <= 1080);

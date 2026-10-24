@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO tags(id,slug,name,source) SELECT id,lower(name),name,'manual' FROM unnest($1::uuid[],$2::text[]) f(id,name)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "62d0f3fc5be3fdd89f5f5b33dec54498cea0ed02cd5675409a34fd386f036644"
+}

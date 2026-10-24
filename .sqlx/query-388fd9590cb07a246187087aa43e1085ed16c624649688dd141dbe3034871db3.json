@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO photos(id,album_id,short_id,title,original_hash,original_name,original_bytes,mime,kind,status) VALUES($1,$2,$4,'Group photo',$3,'group.jpg',1,'image/jpeg','image','ready')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "388fd9590cb07a246187087aa43e1085ed16c624649688dd141dbe3034871db3"
+}

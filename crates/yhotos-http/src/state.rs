@@ -26,6 +26,8 @@ pub struct AppResources {
     pub store: Store,
     /// Bounded metadata cache and original/video stream accounting across clones.
     pub files: FileCache,
+    /// Bounded query embedding cache and internal network client.
+    pub search: crate::search::Client,
 }
 impl Deref for AppState {
     type Target = AppResources;
@@ -48,6 +50,7 @@ impl AppState {
             pool,
             store,
             files: FileCache::new(4, config.global_stream_cap),
+            search: crate::search::Client::new(config.ml_address.clone()),
         })
     }
 }

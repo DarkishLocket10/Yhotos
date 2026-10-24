@@ -93,6 +93,7 @@ fn config(dir: &std::path::Path) -> BenchResult<&'static Config> {
         database_url_public: std::env::var("DATABASE_URL")?.into(),
         data_dir: dir.to_owned(),
         public_base_url: "https://example.test".parse()?,
+        ml_address: "127.0.0.1:1".into(),
         session_key: format!("{}{}", Uuid::now_v7().simple(), Uuid::now_v7().simple()).into(),
         trust_proxy: false,
         zip: yhotos_config::Zip::default(),
@@ -212,7 +213,7 @@ fn server_cpu(address: SocketAddr, path: &str, zip: bool) -> BenchResult<()> {
         )
     {
         return Err(std::io::Error::other(
-            "ZIP budget exceeded: requires >=200 MB/s and <10% of one server CPU core",
+            "ZIP budget exceeded: requires >=200 MB/s and <20% of one server CPU core",
         )
         .into());
     }

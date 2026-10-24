@@ -86,6 +86,13 @@ fn canonical_token(value: &str) -> bool {
             .decode_slice(value, &mut bytes)
             .is_ok_and(|len| len == 32)
 }
+fn expected_origin(request: &Request, state: &crate::AppState) -> Option<String> {
+    request
+        .extensions()
+        .get::<crate::auth::Audience>()?
+        .base_url(state)
+        .map(|url| url.origin().ascii_serialization())
+}
 pub(crate) async fn protect(
     State(state): State<crate::AppState>,
     request: Request,
@@ -105,7 +112,9 @@ pub(crate) async fn protect(
             let value = values.next().and_then(|v| v.to_str().ok());
             if values.next().is_some() { None } else { value }
         };
-        let expected = state.config.public_base_url.origin().ascii_serialization();
+        let Some(expected) = expected_origin(&request, &state) else {
+            return HttpError::Csrf.into_response();
+        };
         let valid = single("x-requested-with") == Some("yhotos")
             && (!headers.contains_key("sec-fetch-site")
                 || single("sec-fetch-site") == Some("same-origin"))
@@ -129,11 +138,9 @@ pub(crate) async fn protect(
             && (request.uri().path() == "/admin/upload"
                 || request.uri().path().starts_with("/admin/upload/"))
     {
-        let audience = request.extensions().get::<crate::auth::Audience>().copied();
-        let Some(url) = audience.and_then(|a| a.base_url(&state)) else {
+        let Some(expected) = expected_origin(&request, &state) else {
             return HttpError::Csrf.into_response();
         };
-        let expected = url.origin().ascii_serialization();
         let origin = request
             .headers()
             .get(header::ORIGIN)

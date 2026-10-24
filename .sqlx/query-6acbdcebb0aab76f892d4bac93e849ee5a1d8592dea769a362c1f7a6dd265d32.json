@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE photos p SET posted_at=f.at,taken_at=CASE WHEN f.n%2=0 THEN NULL ELSE f.at END FROM unnest($1::uuid[],$2::timestamptz[]) WITH ORDINALITY f(id,at,n) WHERE p.id=f.id",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "TimestamptzArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6acbdcebb0aab76f892d4bac93e849ee5a1d8592dea769a362c1f7a6dd265d32"
+}

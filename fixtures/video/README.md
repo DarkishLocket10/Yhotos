@@ -30,3 +30,23 @@ under 300 KB and use the same synthetic source:
 target/video-tools/ffmpeg -v error -i h264.mp4 -vf setsar=2/1 -c:v libx264 -profile:v high -pix_fmt yuv420p -c:a copy -movflags +faststart anamorphic.mp4
 target/video-tools/ffmpeg -v error -display_rotation:v:0 90 -i anamorphic.mp4 -c copy anamorphic-rotated.mov
 ```
+
+`color-*.mp4` are one-second, 144x96 synthetic three-patch SDR samples, each
+under 300 KB. Regenerate with `python3 fixtures/video/generate-colors.py` after
+`deploy/dev/video-tools.sh`. Cases cover tagged BT.601 (525 and 625 line
+primaries), BT.709, Display P3 with sRGB transfer, BT.709 with sRGB transfer,
+BT.2020 SDR, full-range BT.709 and untagged SD camera YCbCr.
+
+The generator computes `color-reference.json` independently of ffmpeg using
+YCbCr coefficients, inverse transfer functions and D65 RGB/XYZ matrices.
+Tests decode both renditions as BT.709 RGB and measure a 16x16 area at each
+patch's centre. Each channel must be within 5/255 of the reference, allowing
+8-bit YCbCr quantization and the prescribed lossy encoders. Merely changing
+tags fails the BT.601 (525-line), P3, sRGB and BT.2020 cases.
+
+Missing tags use conventional camera defaults before rotation/SAR adjustment:
+SD YCbCr uses BT.601 (525-line at up to 486 pixels high, otherwise 625-line at
+up to 576; coded width at most 1024), HD uses BT.709, and range defaults to
+limited. Present matrix/primaries tags take precedence; partially tagged P3
+defaults to sRGB transfer and HDR to BT.2020 primaries/matrix. Entirely
+untagged wide-gamut footage cannot be identified from pixels alone.

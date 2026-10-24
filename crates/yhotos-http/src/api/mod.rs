@@ -1,5 +1,6 @@
 //! Visibility-filtered JSON islands and exactly-attributed interactions.
 mod interactions;
+mod search;
 pub(crate) use interactions::flag_once;
 
 use crate::{
@@ -47,6 +48,8 @@ pub(crate) fn caps(photo: &PagePhoto, identity: &SessionIdentity, links: &Links)
 }
 pub(crate) fn routes() -> Router<AppState> {
     Router::new()
+        .route("/api/v1/search", get(search::search))
+        .route("/api/v1/suggest", get(search::suggest))
         .route("/api/v1/albums/{id}/photos", get(album))
         .route("/api/v1/photos/{id}", get(photo))
         .route(
@@ -158,6 +161,12 @@ pub(crate) async fn envelope(request: Request, next: Next) -> Response {
     response
         .headers_mut()
         .insert(header::VARY, header::HeaderValue::from_static("Cookie"));
+    // Search and suggestions stay principal-specific even without a session cookie.
+    let private = private
+        || response
+            .headers()
+            .get(header::CACHE_CONTROL)
+            .is_some_and(|value| value == "private, no-store");
     response.headers_mut().insert(
         header::CACHE_CONTROL,
         header::HeaderValue::from_static(if private {

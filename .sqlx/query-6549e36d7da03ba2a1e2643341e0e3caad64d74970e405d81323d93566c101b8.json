@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO embeddings(photo_id,model,vector) SELECT id,$2,$3::text::vector FROM unnest($1::uuid[]) id",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6549e36d7da03ba2a1e2643341e0e3caad64d74970e405d81323d93566c101b8"
+}
