@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE photos SET original_hash=$4,original_bytes=$5,width=2048,height=1365,dominant_colors=ARRAY[6191729],placeholder=$2,sort_order=$3,status='ready' WHERE id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Bytea",
+        "Int4",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d25a58f541c441aeb233e6c90c9e6ed28509e6b408a0211f81dafeb17c61597c"
+}

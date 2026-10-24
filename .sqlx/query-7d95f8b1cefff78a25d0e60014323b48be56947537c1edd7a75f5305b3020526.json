@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO ocr_text(id,photo_id,text) VALUES($1,$2,$3) ON CONFLICT (photo_id) DO UPDATE SET text=excluded.text",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7d95f8b1cefff78a25d0e60014323b48be56947537c1edd7a75f5305b3020526"
+}

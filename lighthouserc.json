@@ -1,0 +1,80 @@
+{
+  "ci": {
+    "collect": {
+      "numberOfRuns": 3,
+      "settings": {
+        "onlyCategories": [
+          "performance"
+        ],
+        "chromeFlags": "--headless --no-sandbox --ignore-certificate-errors",
+        "formFactor": "mobile",
+        "screenEmulation": {
+          "mobile": true,
+          "width": 360,
+          "height": 640,
+          "deviceScaleFactor": 3,
+          "disabled": false
+        },
+        "throttling": {
+          "rttMs": 150,
+          "throughputKbps": 1638.4,
+          "cpuSlowdownMultiplier": 4,
+          "requestLatencyMs": 562.5,
+          "downloadThroughputKbps": 1474.56,
+          "uploadThroughputKbps": 675
+        }
+      }
+    },
+    "assert": {
+      "assertions": {
+        "categories:performance": [
+          "error",
+          {
+            "minScore": 0.95,
+            "aggregationMethod": "pessimistic"
+          }
+        ],
+        "largest-contentful-paint": [
+          "error",
+          {
+            "maxNumericValue": 1499,
+            "aggregationMethod": "pessimistic"
+          }
+        ],
+        "cumulative-layout-shift": [
+          "error",
+          {
+            "maxNumericValue": 0,
+            "aggregationMethod": "pessimistic"
+          }
+        ],
+        "resource-summary:script:size": [
+          "error",
+          {
+            "maxNumericValue": 49999,
+            "aggregationMethod": "pessimistic"
+          }
+        ],
+        "resource-summary:stylesheet:size": [
+          "error",
+          {
+            "maxNumericValue": 29999,
+            "aggregationMethod": "pessimistic"
+          }
+        ],
+        "http-status-code": "error",
+        "resource-summary:document:size": [
+          "error",
+          {
+            "maxNumericValue": 29999,
+            "aggregationMethod": "pessimistic"
+          }
+        ]
+      }
+    },
+    "upload": {
+      "target": "filesystem",
+      "outputDir": "bench-results/lighthouse"
+    }
+  }
+}

@@ -1,0 +1,19 @@
+FROM rust:1.99.1-trixie@sha256:c3d8fc865b8bee83c7894fb833c2c78c8cac5e865d45afc9d05ed026a6301c14 AS build
+WORKDIR /workspace
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY .sqlx ./.sqlx
+COPY crates ./crates
+COPY ml/labels.txt ./ml/labels.txt
+ENV SQLX_OFFLINE=true
+# Separate invocations keep the public server free of benchmark-only admin features.
+RUN cargo build --locked --release -p yhotos-bench --bins \
+    && cargo build --locked --release -p yhotos-server --no-default-features
+# Reuse the pinned base; no tools or credentials from the host are mounted.
+FROM rust:1.99.1-trixie@sha256:c3d8fc865b8bee83c7894fb833c2c78c8cac5e865d45afc9d05ed026a6301c14
+WORKDIR /workspace
+COPY --from=build /workspace/target/release/yhotos-server /usr/local/bin/
+COPY --from=build /workspace/target/release/fixture-loader /usr/local/bin/
+COPY deploy/dev/bench-server.sh /usr/local/bin/
+COPY deploy/dev/fixtures/generated.json deploy/dev/fixtures/generated.json
+USER 1000:1000
+ENTRYPOINT ["/usr/local/bin/bench-server.sh"]

@@ -55,3 +55,37 @@ No agent ever receives a secret. CI secrets are set by Yash in GitHub. Local run
 ## Communication
 
 PR descriptions are the record. Decisions that change scope or architecture go into `docs/` by Claude. Agent output that needs a human decision goes under "Out of scope, needs a decision" in the PR and Claude raises it with Yash only if it is a real blocker.
+
+## Ephemeral tower runners (maintainer setup)
+
+Only scheduled or manually dispatched **main** jobs in `nightly.yml` and
+`fuzz.yml` may select `[self-hosted, tower]`. PR jobs, including `perf`-labelled
+PRs and forks, use GitHub-hosted runners. Do not register a persistent runner
+on the production host OS.
+
+The maintainer provisions a disposable Linux VM on tower in a separate network
+with no route to production, the LAN, the tailnet, or cloud metadata endpoints.
+Inside it, build a reviewed, digest-pinned runner container with the GitHub
+runner release verified against its published SHA256, the repository Rust
+version, Node 22, Docker CLI, git, curl, jq, Python, the codec libraries listed in
+`ci.yml`, and a non-root user with passwordless sudo for browser dependencies.
+Use a dedicated Docker daemon **inside the disposable VM** for Compose and
+Actions services. Never mount tower's Docker socket, production volumes, SSH
+agent, home directory, or credentials. Mount only a reviewed copy of the fixture
+collection at `/fixtures:ro`; it must contain `24mp.jpg`. This is a copy, never
+the original library. Use tmpfs or disposable VM disks for work, data and caches.
+
+From a trusted maintainer terminal, capture a short-lived registration token in shell memory with
+`TOKEN="$(gh api --method POST repos/DarkishLocket10/Yhotos/actions/runners/registration-token
+--jq .token)"`. Deliver it to the container over stdin or a memory-only secret
+file, never in an image, checked-in env file, log or artifact. Register with
+`./config.sh --url https://github.com/DarkishLocket10/Yhotos --token "$TOKEN"
+--name "tower-ephemeral-$RUN_ID" --labels tower --ephemeral --unattended
+--disableupdate`, unset the token, then execute `./run.sh`. GitHub adds the
+`self-hosted` label automatically. Pin and update the runner image regularly
+when using `--disableupdate`. Each runner accepts exactly one job; forward its
+sanitized diagnostic logs and destroy the container and VM after completion or
+a watchdog deadline. Provision separate instances for concurrent nightly jobs.
+Use an external nightly launcher to create them just before the scheduled jobs;
+no registration is performed by this task. Restrict outbound traffic to the
+GitHub/Actions, crate, npm, browser and pinned image registries needed for CI.

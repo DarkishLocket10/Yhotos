@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO embeddings(photo_id,model,vector) VALUES($1,$2,$3::text::vector) ON CONFLICT (photo_id) DO UPDATE SET model=excluded.model,vector=excluded.vector",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "dddda35f31cde1163de011c7212ee08c7eaf64e0161d323a68a1bf13940b09fc"
+}

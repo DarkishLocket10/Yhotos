@@ -1,0 +1,61 @@
+name: Lighthouse and security smoke
+on:
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: lighthouse-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: scripts/ci-changes.sh
+
+  lighthouse:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install pinned browser harness
+        run: |
+          npm --prefix web ci --no-audit
+          npm install --global @lhci/cli@0.15.1
+          web/node_modules/.bin/playwright install --with-deps chromium
+      - name: Start fixture stack, smoke test and measure both profiles
+        env:
+          PLAYWRIGHT_MODULE: ${{ github.workspace }}/web/node_modules/@playwright/test/index.mjs
+        run: |
+          source scripts/bench-stack.sh
+          trap 'bench_compose down --volumes --remove-orphans' EXIT
+          bench_stack_start
+          python3 scripts/tests/test-live-smoke.py
+          scripts/lighthouse.sh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: always()
+        with:
+          name: lighthouse-reports
+          path: |
+            bench-results/lighthouse-*
+            .lighthouseci
+          retention-days: 14

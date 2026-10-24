@@ -26,6 +26,7 @@ fi
 run_step migrations cargo sqlx migrate run --source crates/yhotos-db/migrations
 export SQLX_OFFLINE=true
 
+run_step ci-harness python3 -m unittest discover -s scripts/tests
 run_step web npm --prefix web run check
 run_step fmt cargo fmt --all --check
 run_step clippy cargo clippy --workspace --all-targets --all-features -- -D warnings
