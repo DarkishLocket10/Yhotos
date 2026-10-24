@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run a task brief with Codex in an isolated worktree and open a PR.
 #
+# Exit codes: 0 pushed, 3 host busy or low on memory, 5 agent did not finish (nothing pushed).
 # Usage:
 #   scripts/agent-run.sh NNN                 run tasks/NNN-*.md on this machine
 #   scripts/agent-run.sh NNN --resume "msg"  continue in the existing worktree with extra instructions
@@ -140,7 +141,26 @@ else
 fi
 
 PROMPT_FILE="$(mktemp)"
-trap 'rm -f "$PROMPT_FILE" "$RUN_DIR/$TASK_ID.pid"' EXIT
+# Containers, volumes and networks that docker compose started from this worktree (dev
+# databases, benchmark stacks). Agents have left these running for days; always remove them.
+cleanup_containers() {
+  command -v docker >/dev/null 2>&1 || return 0
+  local id dir proj projects=""
+  for id in $(docker ps -aq --filter label=com.docker.compose.project 2>/dev/null); do
+    dir="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$id" 2>/dev/null)"
+    case "$dir" in
+      "$WT"|"$WT"/*)
+        proj="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$id" 2>/dev/null)"
+        projects="$projects $proj"
+        docker rm -f -v "$id" >/dev/null 2>&1 ;;
+    esac
+  done
+  for proj in $(printf '%s\n' $projects | sort -u); do
+    docker volume ls -q --filter "label=com.docker.compose.project=$proj" | xargs -r docker volume rm >/dev/null 2>&1
+    docker network ls -q --filter "label=com.docker.compose.project=$proj" | xargs -r docker network rm >/dev/null 2>&1
+  done
+}
+trap 'cleanup_containers; rm -f "$PROMPT_FILE" "$RUN_DIR/$TASK_ID.pid"' EXIT
 {
   echo "You are implementing one task for Yhotos. Read AGENTS.md first, then the brief below in full, then the docs it lists."
   echo "Work only inside this worktree. Do not push, do not open a PR, do not run git commands that touch other branches."
@@ -165,6 +185,8 @@ trap 'rm -f "$PROMPT_FILE" "$RUN_DIR/$TASK_ID.pid"' EXIT
 } > "$PROMPT_FILE"
 
 LAST_MSG="$WT/.agent-last-message.md"
+# A summary left over from an earlier round must never pass for this round's result.
+rm -f "$LAST_MSG"
 echo "running codex ($MODEL, effort $EFFORT) in $WT on $BRANCH (cargo jobs $CARGO_BUILD_JOBS)"
 SCOPE=()
 if [[ "$(uname)" == "Linux" ]] && command -v systemd-run >/dev/null 2>&1 \
@@ -184,7 +206,15 @@ ${SCOPE[@]+"${SCOPE[@]}"} codex exec \
   -c 'sandbox_workspace_write.network_access=true' \
   -s workspace-write \
   --output-last-message "$LAST_MSG" \
-  - < "$PROMPT_FILE"
+  - < "$PROMPT_FILE" && AGENT_RC=0 || AGENT_RC=$?
+
+# Only a finished agent's work is committed and pushed. A stopped or killed agent can still
+# exit 0, so also require a fresh summary in the PR template format.
+if (( AGENT_RC != 0 )) || [[ ! -s "$LAST_MSG" ]] || ! grep -q '^## Task' "$LAST_MSG"; then
+  echo "agent did not finish (exit $AGENT_RC, summary $( [[ -s "$LAST_MSG" ]] && echo present || echo missing )):" \
+    "changes left uncommitted in $WT; nothing pushed" >&2
+  exit 5
+fi
 
 cd "$WT"
 if [[ -n "$(git status --porcelain)" ]]; then
@@ -197,11 +227,7 @@ fi
 git push -q -u origin "$BRANCH"
 
 BODY_FILE="$(mktemp)"
-if [[ -f "$LAST_MSG" ]] && grep -q '^## Task' "$LAST_MSG"; then
-  sed -n '/^## Task/,$p' "$LAST_MSG" > "$BODY_FILE"
-else
-  { echo "## Task"; echo; echo "tasks/$(basename "$BRIEF")"; echo; echo "Agent did not produce a PR description. See commits."; } > "$BODY_FILE"
-fi
+sed -n '/^## Task/,$p' "$LAST_MSG" > "$BODY_FILE"
 
 if [[ "$(gh pr view "$BRANCH" --json state --jq .state 2>/dev/null)" == "OPEN" ]]; then
   gh pr edit "$BRANCH" --body-file "$BODY_FILE" >/dev/null
