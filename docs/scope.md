@@ -114,7 +114,7 @@ Tooling: libvips (via Rust bindings) for decode, color management (lcms2), resiz
 
 ### 5.7 ML worker
 - Separate service on tower, GPU (GTX 1080 Ti, pinned to a CUDA runtime that still supports Pascal), no internet access, consumes a job queue, writes to Postgres.
-- Models (candidates, final choice by benchmark): SigLIP or CLIP ViT-L/14 for embeddings; InsightFace (ArcFace) for faces; RapidOCR/PaddleOCR for text; zero-shot tagging from the embedding model or RAM++; offline reverse geocoding from GeoNames.
+- Models (candidates, final choice by benchmark): SigLIP or CLIP ViT-L/14 for embeddings; OpenCV Zoo YuNet + SFace for faces; RapidOCR/PaddleOCR for text; zero-shot tagging from the embedding model or RAM++; offline reverse geocoding from GeoNames.
 - Never in the request path. Query embedding at search time is the one online call, and it is small.
 
 ### 5.8 Theming

@@ -21,7 +21,8 @@ done
 [[ -z "$EFFORT" || "$EFFORT" =~ ^(low|medium|high|xhigh|max)$ ]] || { echo "bad effort" >&2; exit 2; }
 
 if [[ "$HOST" != "local" ]]; then
-  REMOTE_CMD="cd ~/work/Yhotos && git fetch -q origin && scripts/agent-review.sh $(printf %q "$TASK_ID")${EFFORT:+ --effort $EFFORT}"
+  # Run main's copy of this script and prompt (the review host's checkout can be stale).
+  REMOTE_CMD="cd ~/work/Yhotos && git fetch -q origin && git checkout -q --detach origin/main && scripts/agent-review.sh $(printf %q "$TASK_ID")${EFFORT:+ --effort $EFFORT}"
   ssh -o BatchMode=yes "$HOST" "bash -lc $(printf %q "$REMOTE_CMD")" < /dev/null
   exit $?
 fi
@@ -47,6 +48,12 @@ echo "reviewing $BRANCH with gpt-6-astra (effort $EFFORT)"
 PROMPT_FILE="$(mktemp)"
 {
   cat "$REPO_ROOT/scripts/review-prompt.md"
+  # Older branches may predate the decision log; always give the reviewer main's copy.
+  if git -C "$REPO_ROOT" show origin/main:docs/decisions.md > /dev/null 2>&1; then
+    echo
+    echo "----- docs/decisions.md on main (binding maintainer decisions) -----"
+    git -C "$REPO_ROOT" show origin/main:docs/decisions.md
+  fi
   echo
   echo "The PR is task $TASK_ID ($SLUG) on branch $BRANCH. The base is origin/main."
   echo "Get the diff with: git diff origin/main...HEAD   and the file list with: git diff --name-only origin/main...HEAD"

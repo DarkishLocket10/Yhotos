@@ -145,6 +145,7 @@ fn benchmark_config(
     data: &std::path::Path,
 ) -> Result<&'static yhotos_config::Config, Box<dyn Error>> {
     Ok(Box::leak(Box::new(yhotos_config::Config {
+        ml_address: "127.0.0.1:1".into(),
         worker: yhotos_config::Worker::default(),
         cloudflare_zone: None,
         cloudflare_api_token: None,

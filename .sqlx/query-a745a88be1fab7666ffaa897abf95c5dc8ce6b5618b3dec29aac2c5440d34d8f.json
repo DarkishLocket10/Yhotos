@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SHOW TimeZone",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "TimeZone",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "a745a88be1fab7666ffaa897abf95c5dc8ce6b5618b3dec29aac2c5440d34d8f"
+}

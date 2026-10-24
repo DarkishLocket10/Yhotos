@@ -80,6 +80,10 @@ name = "pipeline"
 harness = false
 
 [[bench]]
+name = "search"
+harness = false
+
+[[bench]]
 name = "interactions"
 harness = false
 

@@ -58,7 +58,7 @@ impl Ingest {
         request: &serde_json::Value,
         attempt: i32,
     ) -> Result<T, JobError> {
-        let data = serde_json::to_vec(&request)
+        let data = serde_json::to_vec(request)
             .map_err(|_| JobError::Fatal("invalid codec request".into()))?;
         let mut command = Command::new(&self.codec_host);
         command

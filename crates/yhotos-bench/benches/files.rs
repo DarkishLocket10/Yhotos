@@ -66,6 +66,7 @@ fn config(dir: &std::path::Path) -> BenchResult<&'static Config> {
     Ok(Box::leak(Box::new(Config {
         cloudflare_zone: None,
         cloudflare_api_token: None,
+        ml_address: "127.0.0.1:1".into(),
         worker: yhotos_config::Worker::default(),
         map_tiles: yhotos_config::MapTiles::default(),
         public_listen: peer,

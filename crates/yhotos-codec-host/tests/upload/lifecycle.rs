@@ -82,6 +82,7 @@ async fn photo_lifecycle_transition_matrix(pool: PgPool) {
     // Inspect the durable outbox before delivery. Drop the HTTP router's worker
     // and use fresh resources without starting a background cache drain.
     let state = AppState::from(yhotos_http::AppResources {
+        search: yhotos_http::search::Client::new(c.state.config.ml_address.clone()),
         config: c.state.config,
         pool: pool.clone(),
         auth: c.state.auth.clone(),
@@ -673,6 +674,7 @@ async fn place_lifecycle_transition_matrix_and_commit_before_every_purge(pool: P
     // No background drain: deliver every durable batch explicitly through the observing mock.
     c.app = Router::new();
     c.state = AppState::from(yhotos_http::AppResources {
+        search: yhotos_http::search::Client::new(c.state.config.ml_address.clone()),
         config: c.state.config,
         pool: pool.clone(),
         auth: c.state.auth.clone(),
@@ -904,7 +906,7 @@ async fn dependent_rows(pool: &PgPool, p: PhotoId) -> Value {
 async fn seed_generated_dependents(c: &Client, p: &photos::PhotoRow) {
     sqlx::query!("INSERT INTO derivatives(id,photo_id,variant,format,hash,width,height,bytes) VALUES($1,$2,'thumb','jpeg',$3,1,1,1)",Uuid::now_v7(),p.id.0,p.original_hash).execute(&c.pool).await.unwrap();
     sqlx::query!("INSERT INTO video_renditions(id,photo_id,codec,hash,width,height,bytes,duration_ms) VALUES($1,$2,'h264',$3,1,1,1,1)",Uuid::now_v7(),p.id.0,p.original_hash).execute(&c.pool).await.unwrap();
-    sqlx::query!("INSERT INTO faces(id,photo_id,bbox,embedding,quality) VALUES($1,$2,ARRAY[0,0,1,1]::real[],array_fill(1::real,ARRAY[512])::vector,1)",Uuid::now_v7(),p.id.0).execute(&c.pool).await.unwrap();
+    sqlx::query!("INSERT INTO faces(id,photo_id,bbox,embedding,quality) VALUES($1,$2,ARRAY[0,0,1,1]::real[],array_fill(1::real,ARRAY[128])::vector,1)",Uuid::now_v7(),p.id.0).execute(&c.pool).await.unwrap();
     sqlx::query!("INSERT INTO embeddings(photo_id,model,vector) VALUES($1,'fixture',array_fill(1::real,ARRAY[768])::vector)",p.id.0).execute(&c.pool).await.unwrap();
     sqlx::query!(
         "INSERT INTO ocr_text(id,photo_id,text) VALUES($1,$2,'Fixture text')",

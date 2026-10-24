@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO embeddings(photo_id,model,vector) SELECT p.id,$2,ARRAY(SELECT random()::real FROM generate_series(1,768) g WHERE p.id IS NOT NULL)::vector FROM photos p WHERE p.album_id=$1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ec3d0bfb23ca89691e31f08c5b7be976a0295e88adf27e895008d283de5b18aa"
+}

@@ -6,7 +6,9 @@ mod view;
 pub use view::{
     PageContext, render_album, render_calendar, render_home, render_photo, render_place,
 };
-pub(crate) use view::{PhotoControls, island, island_photo, render_album_for, render_scoped_photo};
+pub(crate) use view::{
+    PhotoControls, island, island_photo, render_album_for, render_scoped_photo, render_search,
+};
 
 use crate::{
     AppState,

@@ -34,7 +34,7 @@ macro_rules! kinds {
 }
 kinds! {
     Ingest => "ingest", MlEmbed => "ml.embed", MlFaces => "ml.faces", MlOcr => "ml.ocr",
-    MlTags => "ml.tags", GeoReverse => "geo.reverse", VideoTranscode => "video.transcode",
+    MlTags => "ml.tags", MlCluster => "ml.cluster", GeoReverse => "geo.reverse", VideoTranscode => "video.transcode",
     Zip => "zip", Gc => "gc", Rollup => "rollup", LegacyRedirectRebuild => "legacy_redirect_rebuild",
 }
 
@@ -78,6 +78,9 @@ pub enum Job {
         /// Existing photo identifier.
         photo_id: PhotoId,
     },
+    /// Rebuild private people clusters without merging named identities.
+    #[serde(rename = "ml.cluster")]
+    MlCluster,
     /// Resolve coordinates offline.
     #[serde(rename = "geo.reverse")]
     GeoReverse {
@@ -119,6 +122,7 @@ impl Job {
             Self::MlFaces { .. } => JobKind::MlFaces,
             Self::MlOcr { .. } => JobKind::MlOcr,
             Self::MlTags { .. } => JobKind::MlTags,
+            Self::MlCluster => JobKind::MlCluster,
             Self::GeoReverse { .. } => JobKind::GeoReverse,
             Self::VideoTranscode { .. } => JobKind::VideoTranscode,
             Self::Zip { .. } => JobKind::Zip,

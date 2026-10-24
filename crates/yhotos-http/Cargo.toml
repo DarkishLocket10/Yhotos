@@ -9,8 +9,9 @@ rust-version.workspace = true
 workspace = true
 
 [features]
-default = []
-admin = ["yhotos-config/admin", "dep:yhotos-pipeline", "dep:yhotos-jobs"]
+default = ["ml-client"]
+ml-client = []
+admin = ["yhotos-config/admin", "yhotos-db/admin", "dep:yhotos-pipeline"]
 # Enables only an explicit test constructor; Auth::new retains production costs.
 test-util = ["yhotos-auth/test-util"]
 
@@ -18,7 +19,6 @@ test-util = ["yhotos-auth/test-util"]
 pulldown-cmark.workspace = true
 ammonia.workspace = true
 yhotos-pipeline = { path = "../yhotos-pipeline", optional = true }
-yhotos-jobs = { path = "../yhotos-jobs", optional = true }
 yhotos-config = { path = "../yhotos-config" }
 yhotos-core = { path = "../yhotos-core" }
 yhotos-db = { path = "../yhotos-db" }
@@ -32,6 +32,7 @@ axum.workspace = true
 tokio = { workspace = true, features = ["time", "net"] }
 tower-http = { workspace = true, features = ["trace", "limit", "timeout"] }
 tracing.workspace = true
+metrics.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
@@ -46,6 +47,7 @@ serde.workspace = true
 serde_json.workspace = true
 
 yhotos-auth = { path = "../yhotos-auth" }
+yhotos-jobs = { path = "../yhotos-jobs" }
 secrecy.workspace = true
 time.workspace = true
 zeroize.workspace = true

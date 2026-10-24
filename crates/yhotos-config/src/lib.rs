@@ -20,6 +20,8 @@ const MAX_UPLOAD_BYTES: u64 = 2 << 30;
 pub struct Config {
     /// Public socket to bind.
     pub public_listen: SocketAddr,
+    /// Fixed internal ML host:port, never controlled by requests.
+    pub ml_address: String,
     /// Specific admin bind address, mandatory only with the admin feature.
     pub admin_listen: Option<SocketAddr>,
     /// Public login connection string, never logged.
@@ -194,6 +196,7 @@ struct Defaults {
     cloudflare_zone: Option<String>,
     cloudflare_api_token: Option<String>,
     public_listen: &'static str,
+    ml_address: &'static str,
     admin_listen: Option<SocketAddr>,
     database_url_admin: Option<String>,
     database_url_worker: Option<String>,
@@ -214,6 +217,7 @@ impl Default for Defaults {
             cloudflare_zone: None,
             cloudflare_api_token: None,
             public_listen: "0.0.0.0:8080",
+            ml_address: "ml:8090",
             admin_listen: None,
             database_url_admin: None,
             database_url_worker: None,
@@ -279,6 +283,20 @@ impl Config {
         let f = Figment::from(Serialized::defaults(Defaults::default())).merge(provider);
         let mut errors = Vec::new();
         let public_listen = read::<SocketAddr>(&f, "public_listen", &mut errors);
+        let ml_address = read::<String>(&f, "ml_address", &mut errors);
+        if let Some(address) = &ml_address {
+            let valid = address.rsplit_once(':').is_some_and(|(host, port)| {
+                !host.is_empty()
+                    && host.len() <= 253
+                    && host
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'.'))
+                    && port.parse::<u16>().is_ok_and(|v| v > 0)
+            });
+            if !valid {
+                errors.push("ml_address: must be an internal host and port".into());
+            }
+        }
         let admin_listen = read::<Option<SocketAddr>>(&f, "admin_listen", &mut errors);
         let database_url_public = read::<SecretString>(&f, "database_url_public", &mut errors);
         let database_url_admin =
@@ -501,6 +519,7 @@ impl Config {
             ) => Ok(Self {
                 cloudflare_zone,
                 cloudflare_api_token,
+                ml_address: ml_address.unwrap_or_else(|| "ml:8090".into()),
                 public_listen,
                 admin_listen,
                 database_url_public,

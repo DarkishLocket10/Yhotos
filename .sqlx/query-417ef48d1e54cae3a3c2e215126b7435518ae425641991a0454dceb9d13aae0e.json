@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO ocr_text(id,photo_id,text,model) SELECT id,id,'sunset','fixture' FROM unnest($1::uuid[]) id",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "417ef48d1e54cae3a3c2e215126b7435518ae425641991a0454dceb9d13aae0e"
+}

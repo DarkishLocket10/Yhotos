@@ -469,6 +469,7 @@ async fn auth_posts_share_a_bucket_and_get_forms_use_the_cheap_bucket() {
         map_tiles: yhotos_config::MapTiles::default(),
         cloudflare_zone: None,
         cloudflare_api_token: None,
+        ml_address: "127.0.0.1:1".into(),
         rate_limits: yhotos_config::RateLimits {
             auth_per_min: 1,
             ..state.config.rate_limits

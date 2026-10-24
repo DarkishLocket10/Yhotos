@@ -97,6 +97,13 @@ fn valid_public_api_headers(headers: &HeaderMap, expected: &str) -> bool {
             || single("sec-fetch-site") == Some("same-origin"))
         && (!headers.contains_key(header::ORIGIN) || single("origin") == Some(expected))
 }
+fn expected_origin(request: &Request, state: &crate::AppState) -> Option<String> {
+    request
+        .extensions()
+        .get::<crate::auth::Audience>()?
+        .base_url(state)
+        .map(|url| url.origin().ascii_serialization())
+}
 pub(crate) async fn protect(
     State(state): State<crate::AppState>,
     request: Request,
@@ -118,7 +125,9 @@ pub(crate) async fn protect(
         return next.run(request).await;
     }
     if request.uri().path().starts_with("/api/v1/") {
-        let expected = state.config.public_base_url.origin().ascii_serialization();
+        let Some(expected) = expected_origin(&request, &state) else {
+            return HttpError::Csrf.into_response();
+        };
         return if valid_public_api_headers(request.headers(), &expected) {
             next.run(request).await
         } else {
@@ -137,11 +146,9 @@ pub(crate) async fn protect(
             && (request.uri().path() == "/admin/upload"
                 || request.uri().path().starts_with("/admin/upload/"))
     {
-        let audience = request.extensions().get::<crate::auth::Audience>().copied();
-        let Some(url) = audience.and_then(|a| a.base_url(&state)) else {
+        let Some(expected) = expected_origin(&request, &state) else {
             return HttpError::Csrf.into_response();
         };
-        let expected = url.origin().ascii_serialization();
         let origin = request
             .headers()
             .get(header::ORIGIN)

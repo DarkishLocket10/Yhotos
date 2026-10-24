@@ -325,6 +325,7 @@ async fn visibility_and_place_edits_purge_origin_and_all_edge_tags(pool: PgPool)
         .unwrap();
     let mock = Arc::new(Purger::default());
     client.state = AppState::from(yhotos_http::AppResources {
+        search: yhotos_http::search::Client::new(client.state.config.ml_address.clone()),
         config: client.state.config,
         auth: client.state.auth.clone(),
         pool: pool.clone(),
@@ -994,6 +995,7 @@ async fn restricted_child_cover_is_removed_from_cached_parent_and_aggregate_page
         .unwrap();
     let cache = Arc::new(CachedPages::default());
     client.state = AppState::from(yhotos_http::AppResources {
+        search: yhotos_http::search::Client::new(client.state.config.ml_address.clone()),
         config: client.state.config,
         auth: client.state.auth.clone(),
         pool: pool.clone(),
@@ -1292,6 +1294,7 @@ async fn warmed_album_and_legacy_redirects_are_purged_on_restriction_and_deletio
     }
     let cache = Arc::new(CachedPages::default());
     client.state = AppState::from(yhotos_http::AppResources {
+        search: yhotos_http::search::Client::new(client.state.config.ml_address.clone()),
         config: client.state.config,
         auth: client.state.auth.clone(),
         pool: pool.clone(),

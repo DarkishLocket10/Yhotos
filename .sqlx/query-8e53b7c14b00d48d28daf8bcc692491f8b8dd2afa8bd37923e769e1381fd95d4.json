@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) SELECT photo_id FROM embeddings ORDER BY vector <=> $1::text::vector LIMIT 200",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "QUERY PLAN",
+        "type_info": "Json",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "8e53b7c14b00d48d28daf8bcc692491f8b8dd2afa8bd37923e769e1381fd95d4"
+}

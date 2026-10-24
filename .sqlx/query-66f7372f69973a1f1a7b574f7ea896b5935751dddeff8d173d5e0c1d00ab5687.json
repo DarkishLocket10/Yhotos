@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO ocr_text(id,photo_id,text,model) VALUES($1,$2,'sunset <script>alert(1)</script>','fixture')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "66f7372f69973a1f1a7b574f7ea896b5935751dddeff8d173d5e0c1d00ab5687"
+}

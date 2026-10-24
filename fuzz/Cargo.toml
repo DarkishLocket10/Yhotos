@@ -49,6 +49,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "search_query"
+path = "fuzz_targets/search_query.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "map_bbox"
 path = "fuzz_targets/map_bbox.rs"
 test = false

@@ -1,0 +1,37 @@
+[
+  {
+    "name": "siglip-vision.onnx",
+    "url": "https://huggingface.co/Xenova/siglip-base-patch16-224/resolve/4649052661e53c7000355844105f8a1792088239/onnx/vision_model.onnx",
+    "sha256": "f89d41bac7f4d4b87e010a467d93f98689d708916ed22f5a07f96fdfa26f475f"
+  },
+  {
+    "name": "siglip-text.onnx",
+    "url": "https://huggingface.co/Xenova/siglip-base-patch16-224/resolve/4649052661e53c7000355844105f8a1792088239/onnx/text_model.onnx",
+    "sha256": "3aa7fdbd20eaa8740cce17bf82913de641fcb632a768fed59f661cdcd0c32553"
+  },
+  {
+    "name": "tokenizer.json",
+    "url": "https://huggingface.co/Xenova/siglip-base-patch16-224/resolve/4649052661e53c7000355844105f8a1792088239/tokenizer.json",
+    "sha256": "4a17c975210be5ab4c36b47d8dae4eefb866dbfb1e676e394aad85dc30a3ae08"
+  },
+  {
+    "name": "face_detection_yunet_2023mar.onnx",
+    "url": "https://media.githubusercontent.com/media/opencv/opencv_zoo/f12e12798e8314f7c074a6656816c048dcc95b7a/models/face_detection_yunet/face_detection_yunet_2023mar.onnx",
+    "sha256": "8f2383e4dd3cfbb4553ea8718107fc0423210dc964f9f4280604804ed2552fa4"
+  },
+  {
+    "name": "face_recognition_sface_2021dec.onnx",
+    "url": "https://media.githubusercontent.com/media/opencv/opencv_zoo/f12e12798e8314f7c074a6656816c048dcc95b7a/models/face_recognition_sface/face_recognition_sface_2021dec.onnx",
+    "sha256": "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79"
+  },
+  {
+    "name": "ocr-det.onnx",
+    "url": "package:rapidocr_onnxruntime/models/ch_PP-OCRv4_det_infer.onnx",
+    "sha256": "d2a7720d45a54257208b1e13e36a8479894cb74155a5efe29462512d42f49da9"
+  },
+  {
+    "name": "ocr-rec.onnx",
+    "url": "package:rapidocr_onnxruntime/models/ch_PP-OCRv4_rec_infer.onnx",
+    "sha256": "48fc40f24f6d2a207a2b1091d3437eb3cc3eb6b676dc3ef9c37384005483683b"
+  }
+]

@@ -25,6 +25,8 @@ pub struct AppResources {
     /// Admin-only edge invalidation provider, replaceable with a test mock.
     #[cfg(feature = "admin")]
     pub cache_purger: Arc<dyn crate::admin::cache::CachePurger>,
+    /// Bounded query embedding cache and internal network client.
+    pub search: crate::search::Client,
 }
 impl Deref for AppState {
     type Target = AppResources;
@@ -77,6 +79,7 @@ impl AppState {
             files: FileCache::new(4, config.global_stream_cap),
             #[cfg(feature = "admin")]
             cache_purger,
+            search: crate::search::Client::new(config.ml_address.clone()),
         })
     }
 }

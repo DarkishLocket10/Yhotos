@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO faces(id,photo_id,bbox,quality,person_id,model) SELECT gen_random_uuid(),id,ARRAY[0.1,0.1,0.5,0.5],0.9,$2,'fixture' FROM unnest($1::uuid[]) id",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "UuidArray",
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c1d253b99d6b2d9e06cf221bb44cfb800b75092f7d77ad0a762c62e0df6604a1"
+}

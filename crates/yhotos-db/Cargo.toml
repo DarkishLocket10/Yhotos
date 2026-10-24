@@ -8,6 +8,10 @@ rust-version.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+admin = []
+
 [dependencies]
 yhotos-core = { path = "../yhotos-core", features = ["sqlx"] }
 sqlx.workspace = true

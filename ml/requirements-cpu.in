@@ -1,0 +1,11 @@
+# CUDA 12 builds retain Pascal support; CUDA 13 does not.
+onnxruntime==1.22.0
+psycopg[binary]==3.2.13
+numpy==2.2.6
+pillow==13.0.0
+rapidocr-onnxruntime==1.4.4
+fastapi==0.159.1
+uvicorn==0.38.0
+starlette==1.9.0
+# RapidOCR requires cv2 for OCR preprocessing, not face inference/alignment.
+opencv-python-headless==5.0.0.93

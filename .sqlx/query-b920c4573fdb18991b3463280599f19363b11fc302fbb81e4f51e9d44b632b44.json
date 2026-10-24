@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO albums(id,slug,title) VALUES($1,'search-fixture','Search')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b920c4573fdb18991b3463280599f19363b11fc302fbb81e4f51e9d44b632b44"
+}
