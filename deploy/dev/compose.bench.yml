@@ -55,6 +55,9 @@ services:
       YHOTOS_DATABASE_TLS: disable
       YHOTOS_PUBLIC_BASE_URL: https://gallery.example
       YHOTOS_DATA_DIR: /data
+      # A fixed executor profile makes allocator/thread RSS comparable on hosted
+      # runners and Tower instead of scaling it with the host's CPU count.
+      TOKIO_WORKER_THREADS: '2'
       # Avoid turning load measurements into cheap-route rate-limit measurements.
       # Auth keeps its default 10/min bucket for the security smoke test.
       YHOTOS_RATE_LIMITS__CHEAP_PER_MIN: '4294967295'

@@ -104,7 +104,7 @@ class SearchTests(unittest.TestCase):
                 data = {"total": len(photos), "photos": photos}
                 if fault == "no-embeddings" and semantic:
                     data = {"total": 0, "photos": []}
-                self.send_response_only(200)
+                self.send_response_only(404 if fault == "missing-route" else 200)
                 self.end_headers()
                 self.wfile.write(json.dumps(data).encode())
 
@@ -127,7 +127,7 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_missing_embeddings_and_visibility_and_fusion_failures_are_rejected(self):
-        for fault in ("no-embeddings", "private", "seed", "single-list"):
+        for fault in ("missing-route", "no-embeddings", "private", "seed", "single-list"):
             with self.subTest(fault=fault):
                 self.assertNotEqual(self.smoke(fault).returncode, 0)
 
@@ -137,6 +137,7 @@ class LoadTests(unittest.TestCase):
         for name in ("album", "photo", "derivative", "search", "mixed"):
             (root / f"{name}.json").write_text(json.dumps({"errorDistribution": {}, "statusCodeDistribution": {"200": 1000}, "firstBytePercentiles": {"p50": 0.001, "p99": 0.002}}))
             (root / f"{name}.cpu.json").write_text('{"cores":0.5}')
+            (root / f"{name}.rss-kib.txt").write_text("10000\n11000\n")
         (root / "rss-kib.txt").write_text("10000\n11000\n")
 
     def test_absolute_and_previous_nightly_regressions(self):
@@ -163,6 +164,35 @@ class LoadTests(unittest.TestCase):
             (root / "search.json").write_text(json.dumps(data))
             with self.assertRaises(ValueError):
                 LOAD.report(root, root / "absent")
+            with self.assertRaises(ValueError):
+                LOAD.report(root, root / "absent", enforce_tower_budgets=False)
+
+    def test_hosted_runs_report_latency_but_still_enforce_rss(self):
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(None):
+            root = pathlib.Path(directory)
+            self.write(root)
+            previous = root / "previous.json"
+            previous.write_text("not a comparable Tower baseline")
+            data = json.loads((root / "search.json").read_text())
+            data["firstBytePercentiles"]["p99"] = 0.100
+            (root / "search.json").write_text(json.dumps(data))
+            (root / "album.cpu.json").write_text('{"cores":1.1}')
+            self.assertFalse(LOAD.report(root, previous, enforce_tower_budgets=False))
+            self.assertIn("reported (hosted)", (root / "load.md").read_text())
+            self.assertTrue(LOAD.report(root, root / "absent"))
+            self.assertEqual(set(json.loads((root / "load.json").read_text())["failures"]), {"album", "search"})
+            (root / "album.rss-kib.txt").write_text("200000\n")
+            self.assertTrue(LOAD.report(root, previous, enforce_tower_budgets=False))
+
+    def test_rss_budget_applies_to_album_views_and_reports_other_peaks(self):
+        with tempfile.TemporaryDirectory() as directory, contextlib.redirect_stdout(None):
+            root = pathlib.Path(directory)
+            self.write(root)
+            (root / "search.rss-kib.txt").write_text("300000\n")
+            self.assertFalse(LOAD.report(root, root / "absent"))
+            data = json.loads((root / "load.json").read_text())
+            self.assertEqual(data["rss_bytes"], 300000 * 1024)
+            self.assertEqual(data["scenarios"]["album"]["rss_bytes"], 11000 * 1024)
 
 
 class WorkflowTests(unittest.TestCase):
@@ -175,6 +205,37 @@ class WorkflowTests(unittest.TestCase):
         writers = [name for name in ("bench", "lighthouse", "fuzz", "nightly")
                    if "pull-requests: write" in (ROOT / f".github/workflows/{name}.yml").read_text()]
         self.assertEqual(writers, ["bench"])
+
+
+class ChangesTests(unittest.TestCase):
+    def changes(self, paths, event="pull_request", git_status=0):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            git = root / "git"
+            git.write_text('#!/usr/bin/env bash\nprintf "%s\\n" "$CHANGED_PATHS"\nexit "$GIT_STATUS"\n')
+            git.chmod(0o755)
+            output = root / "output"
+            result = subprocess.run(["bash", "scripts/ci-changes.sh"], cwd=ROOT,
+                env={**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"],
+                     "EVENT": event, "BASE": "a" * 40, "HEAD": "b" * 40,
+                     "CHANGED_PATHS": paths, "GIT_STATUS": str(git_status),
+                     "GITHUB_OUTPUT": str(output)}, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return output.read_text().strip()
+
+    def test_documentation_only_pr_skips_heavy_jobs(self):
+        self.assertEqual(self.changes("docs/process.md\ntasks/018-perf-security-ci.md"), "code=false")
+
+    def test_measurement_changes_and_schedules_run_heavy_jobs(self):
+        for path in (".github/workflows/lighthouse.yml", "scripts/search-smoke.sh",
+                     "deploy/dev/compose.bench.yml", "crates/yhotos-http/src/search/mod.rs"):
+            with self.subTest(path=path):
+                self.assertEqual(self.changes(path), "code=true")
+        self.assertEqual(self.changes("docs/process.md", event="schedule"), "code=true")
+
+    def test_failed_or_empty_diff_fails_open_to_verification(self):
+        self.assertEqual(self.changes("docs/process.md", git_status=1), "code=true")
+        self.assertEqual(self.changes(""), "code=true")
 
 
 class FuzzTests(unittest.TestCase):

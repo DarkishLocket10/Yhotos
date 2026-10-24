@@ -40,6 +40,9 @@ jobs:
       actions: read
     env:
       YHOTOS_FIXTURE_COUNT: '10000'
+      # Serving latency/CPU budgets are specified for Tower hardware. Hosted PRs
+      # still require successful routes and enforce the portable RSS ceiling.
+      YHOTOS_ENFORCE_TOWER_BUDGETS: ${{ github.event_name == 'pull_request' && '0' || '1' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -55,6 +58,7 @@ jobs:
           npm --prefix web ci --no-audit
           web/node_modules/.bin/playwright install --with-deps chromium
       - name: Retrieve previous successful scheduled main result
+        if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -90,12 +94,13 @@ jobs:
             bench-results/search.json
             bench-results/mixed.json
             bench-results/rss-kib.txt
+            bench-results/*.rss-kib.txt
             bench-results/*.cpu.json
           retention-days: 30
   pipeline:
     # Keep CPU-heavy pipeline work out of the load-test measurement window.
-    needs: load
-    if: ${{ !cancelled() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+    needs: [changes, load]
+    if: ${{ !cancelled() && needs.changes.outputs.code == 'true' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
     runs-on: [self-hosted, tower]
     timeout-minutes: 180
     env:

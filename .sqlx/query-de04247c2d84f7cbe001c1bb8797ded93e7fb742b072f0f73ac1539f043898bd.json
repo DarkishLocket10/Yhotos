@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "ANALYZE albums, photos, derivatives, embeddings, ocr_text",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "de04247c2d84f7cbe001c1bb8797ded93e7fb742b072f0f73ac1539f043898bd"
+}

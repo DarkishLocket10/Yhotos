@@ -496,6 +496,17 @@ async fn dimensions_size_budget_and_xss_in_all_contexts(pool: PgPool) {
     assert!(html.contains("data:image/png;base64,"));
     assert!(html.contains("loading=\"lazy\""));
     assert!(html.contains("loading=\"eager\""));
+    for (index, row) in html.split("class=\"grid-row\">").skip(1).enumerate() {
+        let row = row.split("</div>").next().unwrap();
+        let (required, deferred) = if index < 3 {
+            ("eager", "lazy")
+        } else {
+            ("lazy", "eager")
+        };
+        assert!(row.contains(&format!("loading=\"{required}\"")));
+        assert!(!row.contains(&format!("loading=\"{deferred}\"")));
+    }
+    assert!(html.contains("flex:0 0 calc((100% - "));
     let mut gz = GzEncoder::new(Vec::new(), Compression::default());
     gz.write_all(html.as_bytes()).unwrap();
     let compressed = gz.finish().unwrap();

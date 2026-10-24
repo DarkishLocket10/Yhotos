@@ -10,7 +10,7 @@ expression: "crate::pages::snapshot_html(html)"
 <title>Shared &#60;album&#62; · Yhotos</title>
 <meta name="description" content="">
 <link rel="stylesheet" href="/static/app.fixture.css">
-<style nonce="fixture-nonce">#cell0{flex:1.33333 1 33.33333%;aspect-ratio:640/480;background-color:#777777;}#cell1{flex:1.33333 1 33.33333%;aspect-ratio:640/480;background-color:#777777;}#cell2{flex:1.33333 1 33.33333%;aspect-ratio:640/480;background-color:#777777;}</style>
+<style nonce="fixture-nonce">#cell0{flex:0 0 calc((100% - 2 * var(--gap)) * 0.333333);aspect-ratio:640/480;background-color:#777777;}#cell1{flex:0 0 calc((100% - 2 * var(--gap)) * 0.333333);aspect-ratio:640/480;background-color:#777777;}#cell2{flex:0 0 calc((100% - 2 * var(--gap)) * 0.333333);aspect-ratio:640/480;background-color:#777777;}</style>
 <script type="module" nonce="fixture-nonce" src="/static/thumbhash.fixture.js"></script>
 <meta property="og:title" content="Shared &#60;album&#62;">
 <meta property="og:description" content="">
@@ -28,41 +28,41 @@ expression: "crate::pages::snapshot_html(html)"
 
 
 
-<source media="(max-width: 600px)" type="image/jxl" srcset="/i/0000000000000000000000000000000000000000000000000000000000000001/small.jxl 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
-<source media="(max-width: 600px)" type="image/avif" srcset="/i/0000000000000000000000000000000000000000000000000000000000000001/small.avif 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
-<source media="(max-width: 600px)" type="image/jpeg" srcset="/i/0000000000000000000000000000000000000000000000000000000000000001/small.jpeg 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
+<source media="(max-width: 600px)" type="image/jxl" srcset="/i/0000000000000000000000000000000000000000000000000000000000000001/small.jxl 640w" sizes="(max-width: 1232px) calc((100vw - 32px - 2 * 8px) * 0.333333), calc((1200px - 2 * 8px) * 0.333333)">
+<source media="(max-width: 600px)" type="image/avif" srcset="/i/0000000000000000000000000000000000000000000000000000000000000001/small.avif 640w" sizes="(max-width: 1232px) calc((100vw - 32px - 2 * 8px) * 0.333333), calc((1200px - 2 * 8px) * 0.333333)">
+<source media="(max-width: 600px)" type="image/jpeg" srcset="/i/0000000000000000000000000000000000000000000000000000000000000001/small.jpeg 640w" sizes="(max-width: 1232px) calc((100vw - 32px - 2 * 8px) * 0.333333), calc((1200px - 2 * 8px) * 0.333333)">
 
 
 
-<source type="image/jxl" srcset="/i/0000000000000000000000000000000000000000000000000000000000000001/small.jxl 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
-<source type="image/avif" srcset="/i/0000000000000000000000000000000000000000000000000000000000000001/small.avif 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
-<img src="/i/0000000000000000000000000000000000000000000000000000000000000001/small.jpeg" srcset="/i/0000000000000000000000000000000000000000000000000000000000000001/small.jpeg 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px" width="640" height="480" loading="eager" decoding="async" alt="Shared photo" data-thumbhash="">
+<source type="image/jxl" srcset="/i/0000000000000000000000000000000000000000000000000000000000000001/small.jxl 640w" sizes="(max-width: 1232px) calc((100vw - 32px - 2 * 8px) * 0.333333), calc((1200px - 2 * 8px) * 0.333333)">
+<source type="image/avif" srcset="/i/0000000000000000000000000000000000000000000000000000000000000001/small.avif 640w" sizes="(max-width: 1232px) calc((100vw - 32px - 2 * 8px) * 0.333333), calc((1200px - 2 * 8px) * 0.333333)">
+<img src="/i/0000000000000000000000000000000000000000000000000000000000000001/small.jpeg" srcset="/i/0000000000000000000000000000000000000000000000000000000000000001/small.jpeg 640w" sizes="(max-width: 1232px) calc((100vw - 32px - 2 * 8px) * 0.333333), calc((1200px - 2 * 8px) * 0.333333)" width="640" height="480" loading="eager" decoding="async" alt="Shared photo" data-thumbhash="">
 </picture></a><a data-photo-link class="cell" id="cell1" href="/p/photo-2?sort=manual"><picture>
 
 
 
-<source media="(max-width: 600px)" type="image/jxl" srcset="/i/0000000000000000000000000000000000000000000000000000000000000002/small.jxl 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
-<source media="(max-width: 600px)" type="image/avif" srcset="/i/0000000000000000000000000000000000000000000000000000000000000002/small.avif 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
-<source media="(max-width: 600px)" type="image/jpeg" srcset="/i/0000000000000000000000000000000000000000000000000000000000000002/small.jpeg 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
+<source media="(max-width: 600px)" type="image/jxl" srcset="/i/0000000000000000000000000000000000000000000000000000000000000002/small.jxl 640w" sizes="(max-width: 1232px) calc((100vw - 32px - 2 * 8px) * 0.333333), calc((1200px - 2 * 8px) * 0.333333)">
+<source media="(max-width: 600px)" type="image/avif" srcset="/i/0000000000000000000000000000000000000000000000000000000000000002/small.avif 640w" sizes="(max-width: 1232px) calc((100vw - 32px - 2 * 8px) * 0.333333), calc((1200px - 2 * 8px) * 0.333333)">
+<source media="(max-width: 600px)" type="image/jpeg" srcset="/i/0000000000000000000000000000000000000000000000000000000000000002/small.jpeg 640w" sizes="(max-width: 1232px) calc((100vw - 32px - 2 * 8px) * 0.333333), calc((1200px - 2 * 8px) * 0.333333)">
 
 
 
-<source type="image/jxl" srcset="/i/0000000000000000000000000000000000000000000000000000000000000002/small.jxl 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
-<source type="image/avif" srcset="/i/0000000000000000000000000000000000000000000000000000000000000002/small.avif 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
-<img src="/i/0000000000000000000000000000000000000000000000000000000000000002/small.jpeg" srcset="/i/0000000000000000000000000000000000000000000000000000000000000002/small.jpeg 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px" width="640" height="480" loading="eager" decoding="async" alt="Second photo" data-thumbhash="">
+<source type="image/jxl" srcset="/i/0000000000000000000000000000000000000000000000000000000000000002/small.jxl 640w" sizes="(max-width: 1232px) calc((100vw - 32px - 2 * 8px) * 0.333333), calc((1200px - 2 * 8px) * 0.333333)">
+<source type="image/avif" srcset="/i/0000000000000000000000000000000000000000000000000000000000000002/small.avif 640w" sizes="(max-width: 1232px) calc((100vw - 32px - 2 * 8px) * 0.333333), calc((1200px - 2 * 8px) * 0.333333)">
+<img src="/i/0000000000000000000000000000000000000000000000000000000000000002/small.jpeg" srcset="/i/0000000000000000000000000000000000000000000000000000000000000002/small.jpeg 640w" sizes="(max-width: 1232px) calc((100vw - 32px - 2 * 8px) * 0.333333), calc((1200px - 2 * 8px) * 0.333333)" width="640" height="480" loading="eager" decoding="async" alt="Second photo" data-thumbhash="">
 </picture></a><a data-photo-link class="cell" id="cell2" href="/p/photo-3?sort=manual"><picture>
 
 
 
-<source media="(max-width: 600px)" type="image/jxl" srcset="/i/0000000000000000000000000000000000000000000000000000000000000003/small.jxl 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
-<source media="(max-width: 600px)" type="image/avif" srcset="/i/0000000000000000000000000000000000000000000000000000000000000003/small.avif 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
-<source media="(max-width: 600px)" type="image/jpeg" srcset="/i/0000000000000000000000000000000000000000000000000000000000000003/small.jpeg 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
+<source media="(max-width: 600px)" type="image/jxl" srcset="/i/0000000000000000000000000000000000000000000000000000000000000003/small.jxl 640w" sizes="(max-width: 1232px) calc((100vw - 32px - 2 * 8px) * 0.333333), calc((1200px - 2 * 8px) * 0.333333)">
+<source media="(max-width: 600px)" type="image/avif" srcset="/i/0000000000000000000000000000000000000000000000000000000000000003/small.avif 640w" sizes="(max-width: 1232px) calc((100vw - 32px - 2 * 8px) * 0.333333), calc((1200px - 2 * 8px) * 0.333333)">
+<source media="(max-width: 600px)" type="image/jpeg" srcset="/i/0000000000000000000000000000000000000000000000000000000000000003/small.jpeg 640w" sizes="(max-width: 1232px) calc((100vw - 32px - 2 * 8px) * 0.333333), calc((1200px - 2 * 8px) * 0.333333)">
 
 
 
-<source type="image/jxl" srcset="/i/0000000000000000000000000000000000000000000000000000000000000003/small.jxl 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
-<source type="image/avif" srcset="/i/0000000000000000000000000000000000000000000000000000000000000003/small.avif 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px">
-<img src="/i/0000000000000000000000000000000000000000000000000000000000000003/small.jpeg" srcset="/i/0000000000000000000000000000000000000000000000000000000000000003/small.jpeg 640w" sizes="(max-width: 1232px) calc((100vw - 32px) * 0.333333), 400px" width="640" height="480" loading="eager" decoding="async" alt="Third photo" data-thumbhash="">
+<source type="image/jxl" srcset="/i/0000000000000000000000000000000000000000000000000000000000000003/small.jxl 640w" sizes="(max-width: 1232px) calc((100vw - 32px - 2 * 8px) * 0.333333), calc((1200px - 2 * 8px) * 0.333333)">
+<source type="image/avif" srcset="/i/0000000000000000000000000000000000000000000000000000000000000003/small.avif 640w" sizes="(max-width: 1232px) calc((100vw - 32px - 2 * 8px) * 0.333333), calc((1200px - 2 * 8px) * 0.333333)">
+<img src="/i/0000000000000000000000000000000000000000000000000000000000000003/small.jpeg" srcset="/i/0000000000000000000000000000000000000000000000000000000000000003/small.jpeg 640w" sizes="(max-width: 1232px) calc((100vw - 32px - 2 * 8px) * 0.333333), calc((1200px - 2 * 8px) * 0.333333)" width="640" height="480" loading="eager" decoding="async" alt="Third photo" data-thumbhash="">
 </picture></a></div></section>
 
 <nav aria-label="Pagination" class="pagination"><span>Page 1</span></nav>

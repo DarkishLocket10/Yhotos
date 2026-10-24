@@ -21,6 +21,7 @@ async fn fixture_album(
     parent: Option<yhotos_core::AlbumId>,
     path: &[&str],
     title: &str,
+    visibility: Visibility,
 ) -> Result<yhotos_core::AlbumId> {
     let slugs = path
         .iter()
@@ -30,11 +31,9 @@ async fn fixture_album(
         return Ok(album.id);
     }
     let slug = slugs.last().context("fixture path is empty")?;
-    Ok(
-        albums::create(conn, parent, slug, title, Visibility::Restricted)
-            .await?
-            .id,
-    )
+    Ok(albums::create(conn, parent, slug, title, visibility)
+        .await?
+        .id)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -65,6 +64,7 @@ async fn main() -> Result<()> {
         None,
         &["restricted-fixture"],
         "Restricted fixture",
+        Visibility::Restricted,
     )
     .await?;
     let images: Vec<FixtureImage> = serde_json::from_slice(
@@ -86,7 +86,25 @@ async fn main() -> Result<()> {
         (60..=10_000).contains(&count),
         "fixture count must be 60..=10000"
     );
-    for index in 0..count {
+    // Keep the brief's ordinary gallery fixture at sixty photos. Extra rows
+    // enlarge the searchable library without turning every page scenario into
+    // the separate worst case of a single ten-thousand-photo album.
+    let search_album = if count > 60 {
+        fixture_album(
+            &mut conn,
+            None,
+            &["search-fixture"],
+            "Search fixture",
+            Visibility::Public,
+        )
+        .await?
+    } else {
+        album.id
+    };
+    // Publish the sixty distinct files once. The 10k-photo search fixture reuses
+    // these bytes, without tens of thousands of redundant durable file writes.
+    let mut published = Vec::with_capacity(60);
+    for index in 0..60 {
         let mut representations = Vec::new();
         let mut original = None;
         for (variant, width) in [
@@ -112,7 +130,7 @@ async fn main() -> Result<()> {
             let bytes = STANDARD.decode(&image.base64)?;
             let hash: ContentHash = blake3::hash(&bytes).to_hex().as_str().parse()?;
             ensure!(
-                index >= 60 || hashes.insert(hash.to_string()),
+                hashes.insert(hash.to_string()),
                 "fixture images must have distinct content hashes"
             );
             let source_dir = store.tmp_dir()?;
@@ -144,11 +162,19 @@ async fn main() -> Result<()> {
                 i64::try_from(bytes.len())?,
             ));
         }
-        let original = original.context("missing fixture original")?;
+        published.push((
+            original.context("missing fixture original")?,
+            representations,
+        ));
+    }
+    for index in 0..count {
+        let (original, representations) = published
+            .get(usize::try_from(index % 60)?)
+            .context("missing published fixture")?;
         let targets = if index == 0 {
             vec![album.id, restricted]
         } else {
-            vec![album.id]
+            vec![if index < 60 { album.id } else { search_album }]
         };
         for target in targets {
             let title = format!("Garden view {index:02}");
@@ -219,7 +245,7 @@ async fn main() -> Result<()> {
             )
             .execute(&mut *conn)
             .await?;
-            for (variant, width, height, hash, len) in &representations {
+            for (variant, width, height, hash, len) in representations {
                 if index == 0 && *variant == "small" {
                     derivative = Some(format!("/i/{hash}/small.jpeg"));
                 }
@@ -227,6 +253,11 @@ async fn main() -> Result<()> {
             }
         }
     }
+    // Do not benchmark stale planner estimates while autovacuum is still waiting
+    // to observe the newly seeded 10k-photo library.
+    sqlx::query!("ANALYZE albums, photos, derivatives, embeddings, ocr_text")
+        .execute(&mut *conn)
+        .await?;
     let public_photo = public_photo.context("missing public photo")?;
     let seed = public_photo
         .strip_prefix("/p/")

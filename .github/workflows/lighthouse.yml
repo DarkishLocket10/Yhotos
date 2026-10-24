@@ -28,6 +28,10 @@ jobs:
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    env:
+      # Use the hosted runner's current Chrome (146+) for both fixture generation
+      # and measurement; older Playwright Chrome creates a legacy NSS home DB.
+      CHROME_PATH: /usr/bin/google-chrome
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -37,6 +41,9 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: web/package-lock.json
+      - name: Install native libraries and the browser CA import tool
+        timeout-minutes: 16
+        run: scripts/ci-apt.sh
       - name: Install pinned browser harness
         run: |
           npm --prefix web ci --no-audit

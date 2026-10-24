@@ -370,6 +370,7 @@ fn photo_rows(photos: &[PagePhoto], sort: PageSort, styles: &mut String) -> Vec<
         .iter()
         .enumerate()
         .map(|(row_index, row)| {
+            let gaps = row.end - row.start - 1;
             let cells = photos
                 .iter()
                 .enumerate()
@@ -381,7 +382,10 @@ fn photo_rows(photos: &[PagePhoto], sort: PageSort, styles: &mut String) -> Vec<
                     let (w, h) = dimensions(p);
                     let _ = write!(
                         styles,
-                        "#cell{index}{{flex:{ratio:.5} 1 {percent:.5}%;aspect-ratio:{w}/{h};{}}}",
+                        // Reserve final widths before the whole row has arrived in
+                        // the HTML stream; flex-grow otherwise shifts parsed cells.
+                        "#cell{index}{{flex:0 0 calc((100% - {gaps} * var(--gap)) * {:.6});aspect-ratio:{w}/{h};{}}}",
+                        percent / 100.0,
                         background(p, row_index == 0)
                     );
                     Cell {
@@ -390,11 +394,14 @@ fn photo_rows(photos: &[PagePhoto], sort: PageSort, styles: &mut String) -> Vec<
                         image: image(
                             p,
                             format!(
-                                "(max-width: 1232px) calc((100vw - 32px) * {:.6}), {:.0}px",
+                                // Include gaps: a 104px cell at DPR 3 fits the 320w
+                                // image, whereas an overstated 109px slot loads 640w.
+                                "(max-width: 1232px) calc((100vw - 32px - {gaps} * 8px) * {:.6}), calc((1200px - {gaps} * 8px) * {:.6})",
                                 percent / 100.0,
-                                1200.0 * percent / 100.0
+                                percent / 100.0
                             ),
-                            row_index == 0,
+                            // Several scaled rows fit above the fold on phones.
+                            row_index < 3,
                             true,
                         ),
                         badge: match p.kind.as_str() {

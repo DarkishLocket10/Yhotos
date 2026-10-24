@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
-//! Complete grid/template render and optional warm PostgreSQL page query.
+//! Complete grid/template render, including reserved cell widths and eager rows,
+//! and optional warm PostgreSQL page query.
 use criterion::Criterion;
 use serde_json::json;
 use std::{error::Error, hint::black_box, time::Instant};

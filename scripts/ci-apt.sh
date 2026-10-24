@@ -3,7 +3,7 @@
 # for 10+ minutes on some runs, so each attempt is time-boxed and later attempts switch to other
 # official mirrors.
 set -uo pipefail
-pkgs=(libvips-dev libvips-tools liblcms2-dev libclang-dev libjxl-dev
+pkgs=(libvips-dev libvips-tools liblcms2-dev libclang-dev libjxl-dev libnss3-tools
       libheif-plugin-aomenc libheif-plugin-aomdec libheif-plugin-libde265)
 opts=(-o Acquire::Retries=2 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
 attempt() {

@@ -4,9 +4,10 @@
       "numberOfRuns": 3,
       "settings": {
         "onlyCategories": [
-          "performance"
+          "performance",
+          "seo"
         ],
-        "chromeFlags": "--headless --no-sandbox --ignore-certificate-errors",
+        "chromeFlags": "--headless --no-sandbox",
         "formFactor": "mobile",
         "screenEmulation": {
           "mobile": true,
